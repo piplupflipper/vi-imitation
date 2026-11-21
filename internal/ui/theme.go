@@ -117,6 +117,14 @@ const (
 	StyleScrollbarDiagnosticInfo    = "scrollbar.diagnostic.info"
 	StyleScrollbarDiagnosticHint    = "scrollbar.diagnostic.hint"
 	StyleScrollbarSearch            = "scrollbar.search"
+	// StyleBand は、表示領域の上の端の帯（Frame.Band。FR-237）の本文の列である（nvim-treesitter-context の TreesitterContext）。
+	// 帯の行の範囲の色（拡張機能が送った色の名前）は、この上に重ねる。
+	StyleBand = "band"
+	// StyleBandLineNr は、帯の行の、印の列と行番号の列である（nvim-treesitter-context の TreesitterContextLineNumber）。
+	StyleBandLineNr = "band.linenr"
+	// StyleBandBottom は、帯の最後の行に、列の全体に重ねる色である（nvim-treesitter-context の TreesitterContextBottom）。
+	// 帯と本文の境目に下線を引くときに使う。既定の対応には無い（TreesitterContextBottom の既定のリンク先は NONE）。
+	StyleBandBottom = "band.bottom"
 	// StyleStatusLineMode などは、ステータス行の部品ごとの色である。名前は "statusline." と部品の ID（StatusPart...）をつないだもの。
 	// 部品は StyleStatusLine の上に重ねて描く（Attr.Over）ので、文字の色だけを変えることもできる。既定の対応には無い。
 	StyleStatusLineMode      = "statusline.mode"
@@ -155,6 +163,7 @@ var styleNames = []string{
 	StyleProgress, StyleProgressTitle, StyleProgressDone, StyleProgressFailed,
 	StyleScrollbar, StyleScrollbarDiagnosticError, StyleScrollbarDiagnosticWarning, StyleScrollbarDiagnosticInfo, StyleScrollbarDiagnosticHint,
 	StyleScrollbarSearch,
+	StyleBand, StyleBandLineNr, StyleBandBottom,
 	StyleSignBreakpoint, StyleSignBreakpointUnverified, StyleSignExecutionPoint,
 	StyleSignDiagnosticError, StyleSignDiagnosticWarning, StyleSignDiagnosticInfo, StyleSignDiagnosticHint,
 	StyleStatusLineMode, StyleStatusLineName, StyleStatusLineModified, StyleStatusLineReadOnly, StyleStatusLineFileType,
@@ -343,7 +352,12 @@ func DefaultTheme() Theme {
 		StyleScrollbarDiagnosticInfo:    {Fg: Indexed(12)},
 		StyleScrollbarDiagnosticHint:    {Fg: Indexed(8)},
 		StyleScrollbarSearch:            {Fg: Indexed(14)},
-		StyleSignBreakpoint:             {Fg: Indexed(9), Bold: true},
+		// 帯の本文は、nvim-treesitter-context の既定（TreesitterContext は浮かべた窓の NormalFloat へのリンク）に合わせ、
+		// 浮かべた窓の popup と同じ番号にした。行番号の列は、既定（TreesitterContextLineNumber は LineNr へのリンク）に合わせ、
+		// linenr と同じ番号にした。
+		StyleBand:                       {Fg: Indexed(15), Bg: Indexed(8)},
+		StyleBandLineNr:                 {Fg: Indexed(11)},
+		StyleSignBreakpoint:            {Fg: Indexed(9), Bold: true},
 		StyleSignBreakpointUnverified:   {Fg: Indexed(8)},
 		StyleSignExecutionPoint:         {Fg: Indexed(11), Bold: true},
 		StyleSignDiagnosticError:        {Fg: Indexed(9)},

@@ -24,12 +24,16 @@ const (
 	// HitScrollbar は、表示領域の右端のスクロールバー（Frame.Scrollbar。FR-186、FR-189）の、つまみか印を描いたセルである。
 	// 同じ列でも、つまみも印も描いていないセルと、スクロールバーを描いていない（表示領域に収まる、設定で出さない）ときは HitText である。
 	HitScrollbar
+	// HitBand は、表示領域の上の端の帯（Frame.Band。FR-237、FR-238）の、バッファの行に当たる行の上である。
+	// Line、Col、Below は、帯の下に隠れた本文の位置（HitText と同じ）で、BandLine は帯の行に当たるバッファの行である。
+	// 帯の行に当たる行が無いか、帯を作った後に本文が変わった行（BandLine.Stale）は HitText である。
+	HitBand
 )
 
 // Hit は、画面の位置にあるもの（Renderer.HitTest の結果）である。
 type Hit struct {
 	Area HitArea
-	// Line は、Area が HitText か HitFloat のときの、バッファの行（0 から数える）である。
+	// Line は、Area が HitText か HitFloat か HitBand のときの、バッファの行（0 から数える）である。HitBand では、帯の下に隠れた本文の行である。
 	// 最後の行より下の "~" の行は最後の行に、見比べの詰め物の行はその下の行（無ければ上の行）にする。
 	// Area が HitScrollbar のときは、その行のセルに割り付けたバッファの行の範囲の最初の行である（drawScrollbar の割り付け。
 	// 範囲は [Line, LineEnd)）。
@@ -53,7 +57,7 @@ type Hit struct {
 	// ThumbRow は、Area が HitScrollbar のときの、直前の Render が描いたつまみの最初の行（表示領域の中の行）である。
 	// つまみを押した位置とつまみの最初の行の差を、ドラッグの間に保つために使う（FR-210）。
 	ThumbRow int
-	// Col は、Area が HitText か HitFloat のときの、行の表示の列（0 から数える）である。
+	// Col は、Area が HitText か HitFloat か HitBand のときの、行の表示の列（0 から数える）である。
 	// 行を折り返さないときは行の先頭からの列（横のスクロールの位置を足したもの）、折り返すときは WrapLines の列
 	// （見た目の行の番号 × 本文の幅 + 見た目の行の中の列）で、どちらも望みの列（internal/command の State の want）と同じ数え方である。
 	// 印の列と行番号の列は、本文の左の端の列として数える。
@@ -64,6 +68,8 @@ type Hit struct {
 	Tab int
 	// Over は、HitTest を部品の中へ寄せて解いたときに、位置が部品の上（負）か下（正）へはみ出していた行の数である。
 	Over int
+	// BandLine は、Area が HitBand のときの、押した帯の行に当たるバッファの行（0 から数える。ui.BandLine.Line）である。
+	BandLine int
 }
 
 // rect は、画面の矩形（行と列は 0 から数える。タブの行を除いた座標）である。
@@ -97,10 +103,15 @@ type hitState struct {
 	barLines int
 	// pin は、つまみのドラッグの間に、つまみを描く行（Renderer.HoldScrollbarThumb）である。Render の始めに空にしない。
 	pin scrollbarPin
+	// band は、描いた帯の場所（高さ 0 なら描いていない）で、bandLines は、その行ごとの、押したら移るバッファの行（無ければ -1）である
+	// （drawBand が残す）。
+	band      rect
+	bandLines []int
 }
 
 // reset は、h を空にする。
 func (h *hitState) reset() {
+	h.band, h.bandLines = rect{}, h.bandLines[:0]
 	h.lines, h.floatOK, h.barOK = 0, false, false
 	h.covers, h.tabs = h.covers[:0], h.tabs[:0]
 }
@@ -121,8 +132,10 @@ func (h *hitState) cover(row, x, n, w int) {
 // 直前の Render が右端のスクロールバー（FR-186）のつまみか印を描いたセルは、浮かべた窓の下でなければ HitScrollbar にする（FR-189）。
 // clamp が HitScrollbar なら（つまみのドラッグの間。FR-210）、位置を画面の中へ寄せてから、列に依らずスクロールバーの行として解き、
 // 表示領域の外の行もそのまま Hit.Row に入れる。スクロールバーを描いていなければ HitNone を返す。
+// 直前の Render が描いた帯（FR-237）の、バッファの行に当たる行は、浮かべた窓とスクロールバーのつまみと印の下でなければ
+// HitBand にする（FR-238）。clamp が HitText なら、帯の上も本文として解く。
 //
-// req: FR-181, FR-182, FR-185, FR-189, FR-210
+// req: FR-181, FR-182, FR-185, FR-189, FR-210, FR-238
 func (r *Renderer) HitTest(row, col int, clamp HitArea) Hit {
 	none := Hit{Area: HitNone, Tab: -1}
 	if !r.rendered || r.Width <= 0 || r.Height <= 0 {
@@ -162,6 +175,10 @@ func (r *Renderer) HitTest(row, col int, clamp HitArea) Hit {
 		if h, ok := r.hitScrollbar(row - b.top); ok {
 			return h
 		}
+	}
+	// 帯はスクロールバーの下に描く（layers.go）ので、スクロールバーのつまみと印のセルの後に引く。
+	if h, ok := r.hitBand(row, col); ok {
+		return h
 	}
 	if col >= 0 && col < r.Width {
 		// ステータス行は表示領域のすぐ下、コマンドラインの行は画面の最後の行である（render）。出力の欄の行はどちらでもない。

@@ -136,7 +136,7 @@ type Float struct {
 	// ID は、窓を見分ける番号である。替わったら窓の中のスクロールの位置を決め直す。0 も 1 つの窓として扱う。
 	ID uint64
 	// View は、窓の中に描くバッファの Frame である。Text、Cursor、Mode、Selection、Decorations、Diagnostics、Wrap を読み、
-	// Tabs、Output、List、Choice、Float、Diff、Message、LineNumbers、Search、Highlights、Progress、Scrollbar、Intro は読まない
+	// Tabs、Output、List、Choice、Float、Diff、Message、LineNumbers、Search、Highlights、Progress、Scrollbar、Intro、Band は読まない
 	// （窓の中に行番号と検索の一致の色とヤンクした範囲の色とスクロールバーと起動の案内は出さない）。
 	// Text が nil なら窓を出さない。
 	View *Frame
@@ -315,6 +315,9 @@ type Frame struct {
 	// internal/editor が、client の画面（bufferFrame）にだけ、出すときに詰める。いつ出していつ消すかは internal/editor が決める。
 	// 描き方は drawIntro の doc にある。
 	Intro *Intro
+	// Band は、バッファの表示領域の上の端に重ねて描く帯である（FR-237。拡張機能の band/set）。nil なら描かない。
+	// internal/editor が、client の画面（bufferFrame）にだけ、描くたびに今の帯から詰める。描き方は drawBand の doc にある。
+	Band *Band
 	// Output は、開いている出力の欄である。nil なら欄を開いていない。
 	Output *Output
 	// Float は、バッファの表示領域の上に浮かべて出すポップアップである（基本設計 1.4。FR-68）。nil なら出さない。
