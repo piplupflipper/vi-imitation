@@ -4753,7 +4753,7 @@ Vim 9.1 の `:tabe` を引数なしで打つと、`:tabnew` と同じく空の�
 #359 で、設定 `commandLine.popup`（7.3）が真なら、コマンドライン（`:`）と検索（`/`、`?`）の入力を、画面の最後の行の代わりに、画面の上の中央のポップアップの枠の中に描くようにした（`internal/ui` の `cmdlinepopup.go`。FR-215〜FR-217）。
 置き方と大きさは、オーナーの nvim の設定（`lua/plugins/noice.lua` の `cmdline = { view = "cmdline_popup" }` と `presets.command_palette = true`）と同じになるよう、noice.nvim（コミット 7bfd942445fb63089b59f97ca487d605e715f155。オーナーの nvim の `lazy-lock.json` の版）の既定と、それを置く nui.nvim（コミット 10fc361835c856ba4233ef5ea135b919bf3dce97）の計算を 2026-11-22 に読んで写した。
 読んだのは、noice.nvim の `lua/noice/config/views.lua`（`cmdline_popup`）、`lua/noice/config/preset.lua`（`command_palette`）、`lua/noice/config/cmdline.lua`（題）、`lua/noice/config/init.lua`（`cmdline.format`）、`lua/noice/config/highlights.lua`（色）、`lua/noice/ui/popupmenu/nui.lua`（一覧の幅）と、nui.nvim の `lua/nui/layout/utils.lua`（`calculate_window_position`）と `lua/nui/popup/border.lua`（`calculate_position`、題の `top_align`）である。
-同じ日に、80 列 24 行の tmux の中で、`nvim --clean`（Neovim 0.12.5）に同じ版の noice.nvim と nui.nvim を読み込んでオーナーの設定と同じ `opts` で `setup` し、`:e a<Tab>`、`/fo`、`?fo` の画面を本体と見比べた。入力の枠（2〜4 行目、8〜71 列）、題の位置、一覧の枠（5 行目から同じ 64 列）、項目を並べ始める列（10 列目）は一致した。
+同じ日に、80 列 24 行の tmux の中で、`nvim --clean`（Neovim 0.12.5）に同じ版の noice.nvim と nui.nvim を読み込んでオーナーの設定と同じ `opts` で `setup` し、`:e a<Tab>`、`/fo`、`?fo` の画面を本体と見比べた。入力の枠（0 から数えて 2〜4 行目、8〜71 列）、題の位置、一覧の枠（5 行目から同じ 64 列）、項目を並べ始める列（10 列目）は一致した。
 表に無い点はどれも仮である。
 
 | 項目 | 扱い | noice.nvim と nui.nvim の値 |
