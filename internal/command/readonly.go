@@ -17,6 +17,7 @@ var keepsTextActions = map[string]bool{
 	"visual-line":      true,
 	"visual-swap":      true,
 	"select-all":       true,
+	"select-all-lines": true,
 	"page-down":        true,
 	"page-up":          true,
 	// スクロールの操作（FR-173）は、表示領域とカーソルだけを動かす。

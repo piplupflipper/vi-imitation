@@ -615,7 +615,11 @@ func TestDefaultKeymap(t *testing.T) {
 			if s.modes != 0 && s.modes&mode == 0 {
 				mode = MapVisual // ビジュアルモードだけの登録
 			}
-			b, ok := km.Lookup(mode, editcmd.MustParseKeys(s.keys))
+			keys, err := editcmd.ParseKeysLeader(s.keys, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, ok := km.Lookup(mode, keys)
 			if !ok || b.Kind != tt.kind || b.Ref.ID != s.id || !b.Ref.Builtin() {
 				t.Errorf("%v %q: got %+v, %v", tt.kind, s.keys, b, ok)
 			}

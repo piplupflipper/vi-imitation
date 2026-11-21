@@ -74,6 +74,7 @@ func init() {
 		"visual-line":       actVisual(ModeVisualLine),
 		"visual-swap":       actVisualSwap,
 		"select-all":        actSelectAll,
+		"select-all-lines":  actSelectAllLines,
 		"page-down":         actPage(true),
 		"page-up":           actPage(false),
 		// スクロールの操作（FR-173。scroll.go）。
