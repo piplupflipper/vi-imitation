@@ -253,8 +253,8 @@ func TestBufferArgEscapedSpace(t *testing.T) {
 		{keys: `:b tail\ <CR>`, cur: "tail "},
 		{keys: `:b tail\  <CR>`, cur: "tail "},
 		{keys: `:b tail <CR>`, cur: "tail "},
-		// 補った候補を入れる形と、:b の読み方が往復する。
-		{keys: `:b sp<Tab><CR>`, cur: "sp a.txt"},
+		// 補った候補を入れる形と、:b の読み方が往復する。候補が 2 つなので、1 つ目の <CR> は選んだ候補で決める（#363）。
+		{keys: `:b sp<Tab><CR><CR>`, cur: "sp a.txt"},
 		{keys: `:b tai<Tab><CR>`, cur: "tail "},
 		{keys: `:bd sp\ |ls<CR>`, cur: "other.txt", msg: `"spx.txt"`, listed: "[spx.txt],[a|b.txt],[tail ],[other.txt]"},
 		{keys: `:bd! tail\  <CR>`, cur: "other.txt", listed: "[spx.txt],[a|b.txt],[other.txt]"},
