@@ -66,6 +66,17 @@ const (
 	// StylePopupScrollbar と StylePopupThumb は、補完の候補の一覧のスクロールバーの溝とつまみである（Vim の PmenuSbar と PmenuThumb）。
 	StylePopupScrollbar = "popup.scrollbar"
 	StylePopupThumb     = "popup.thumb"
+	// StyleCommandLinePopup は、コマンドラインと検索の入力を画面の上のポップアップに出すとき（Frame.CommandLinePopup。FR-215）の、
+	// 入力の枠の中と、その下の補完の候補の一覧の項目である（noice.nvim の NoiceCmdlinePopup。既定のリンク先の Normal と同じく、
+	// 既定の対応には無い）。一覧の選んでいる項目と打った語に当たる文字は、下の端の一覧と同じ StylePopupSelected と StylePopupMatch で描く。
+	StyleCommandLinePopup = "commandLine.popup"
+	// StyleCommandLinePopupBorder は、コマンドライン（:）の入力の枠と、その下の補完の候補の一覧の枠の、枠線と題である（FR-216。
+	// noice.nvim の NoiceCmdlinePopupBorder と NoiceCmdlinePopupTitle。既定のリンク先の DiagnosticSignInfo に合わせ、
+	// sign.diagnostic.info と同じ色にした）。
+	StyleCommandLinePopupBorder = "commandLine.popup.border"
+	// StyleCommandLinePopupBorderSearch は、検索（/ と ?）の入力の枠の、枠線と題である（FR-216。noice.nvim の
+	// NoiceCmdlinePopupBorderSearch。既定のリンク先の DiagnosticSignWarn に合わせ、sign.diagnostic.warning と同じ色にした）。
+	StyleCommandLinePopupBorderSearch = "commandLine.popup.border.search"
 	// StyleStatusLineNC は、出力の欄の下の行（カーソルの無い窓のステータス行。Vim の StatusLineNC）である。
 	StyleStatusLineNC = "statuslinenc"
 	// StyleSign... は、印の列の印である。名前は "sign." と印の種類をつないだもの。診断の印は "sign.diagnostic." と重要度をつなぐ。
@@ -140,6 +151,7 @@ var styleNames = []string{
 	StyleMessageInfo, StyleMessageWarning, StyleMessageError,
 	StyleDiagnosticError, StyleDiagnosticWarning, StyleDiagnosticInfo, StyleDiagnosticHint,
 	StylePopup, StylePopupSelected, StylePopupBorder, StylePopupMatch, StylePopupScrollbar, StylePopupThumb, StyleFinderMatch, StylePreviewLine,
+	StyleCommandLinePopup, StyleCommandLinePopupBorder, StyleCommandLinePopupBorderSearch,
 	StyleProgress, StyleProgressTitle, StyleProgressDone, StyleProgressFailed,
 	StyleScrollbar, StyleScrollbarDiagnosticError, StyleScrollbarDiagnosticWarning, StyleScrollbarDiagnosticInfo, StyleScrollbarDiagnosticHint,
 	StyleScrollbarSearch,
@@ -304,6 +316,10 @@ func DefaultTheme() Theme {
 		// プレビューの項目の指す行は、窓の色（StylePopup の背景の 8 番）の上で見分けられ、構文の色（文字の色）を消さないよう、
 		// 背景の色だけを持つ。
 		StylePreviewLine: {Bg: Indexed(0)},
+		// 画面の上のポップアップのコマンドラインの枠線と題は、noice.nvim の既定のリンク先（コマンドラインは DiagnosticSignInfo、
+		// 検索は DiagnosticSignWarn）に当たる、本体の sign.diagnostic.info と sign.diagnostic.warning と同じ番号にした（FR-216）。
+		StyleCommandLinePopupBorder:       {Fg: Indexed(12)},
+		StyleCommandLinePopupBorderSearch: {Fg: Indexed(11)},
 		// 進み具合の表題は、fidget.nvim の既定（続いている間は WarningMsg、終わったら Constant）に合わせ、本体の既定の
 		// message.warning と constant と同じ番号にした。
 		StyleProgressTitle: {Fg: Indexed(11)},

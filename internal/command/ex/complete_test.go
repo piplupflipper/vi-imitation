@@ -107,7 +107,7 @@ func TestCompleteOptions(t *testing.T) {
 	}{
 		{"option.get lineNumber.", 11, []string{option.LineNumberMinWidth, option.LineNumberShow}},
 		{"option.toggle lineNumber.", 14, []string{option.LineNumberShow}},
-		{"option.set commandLine.", 11, []string{option.CommandLineCompleteIgnoreCase, option.CommandLineCompleteMode}},
+		{"option.set commandLine.", 11, []string{option.CommandLineCompleteIgnoreCase, option.CommandLineCompleteMode, option.CommandLinePopup}},
 		{"option.set lineNumber.show ", 27, []string{"true", "false"}},
 		{"option.set lineNumber.show f", 27, []string{"false"}},
 		{"option.set tab.width ", 21, []string{"8"}},

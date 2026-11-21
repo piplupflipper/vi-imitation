@@ -256,8 +256,12 @@ type Frame struct {
 	// CommandLineType は、コマンドラインの行の先頭に出す文字である（Ex コマンドは ':'、検索は '/' か '?'）。0 なら ':' にする。
 	CommandLineType rune
 	// Completion は、コマンドラインの補完の候補の一覧である（FR-197）。nil なら出さない。コマンドラインモードのときだけ、
-	// コマンドラインの行の真上に描く（drawCompletion）。
+	// コマンドラインの行の真上に描く（drawCompletion）。CommandLinePopup なら、入力の枠のすぐ下に描く（drawPaletteMenu。FR-217）。
 	Completion *CompletionMenu
+	// CommandLinePopup は、コマンドラインモードの入力（CommandLine と CommandLineType）を、最後の行の代わりに、
+	// 画面の上の中央のポップアップの枠の中に描くかである（設定の commandLine.popup。FR-215。drawCommandLinePopup）。
+	// 枠を置けないほど画面が狭いか低いときは、false のときと同じく最後の行に描く。コマンドラインモードでなければ読まない。
+	CommandLinePopup bool
 	// OperatorPending は、オペレーターの後でモーションを待っているかどうかである。カーソルを下線の形にする。
 	OperatorPending bool
 	// Recording は、記録中のマクロのレジスターの名前である。0 なら記録していない。

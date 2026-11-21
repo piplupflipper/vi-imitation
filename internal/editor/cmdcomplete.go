@@ -430,6 +430,16 @@ func (e *Editor) wildMenuFrame(bs *bufferState) *ui.CompletionMenu {
 	}
 }
 
+// cmdlinePopup は、コマンドラインと検索の入力を画面の上の中央のポップアップに描くか（ui.Frame.CommandLinePopup）を、
+// 描くたびに設定の commandLine.popup の今の値から読む（FR-215）。client の画面（frame）と、ペインの部品の client の画面
+// （paneComponentFrame）の両方に詰める。ポップアップの部品の client の画面（popupComponentFrame）は frame を元に作るので、同じ値になる。
+// 補完の候補の一覧の中身（wildMenuFrame）は、どちらに描くときも同じものを渡し、描く場所は ui が決める（FR-217）。
+//
+// req: FR-215
+func (e *Editor) cmdlinePopup() bool {
+	return e.options.Get(option.CommandLinePopup).Bool()
+}
+
 // withPrefix は、words のうち prefix で始まるものを、元の順に返す。
 func withPrefix(words []string, prefix string) []string {
 	var out []string

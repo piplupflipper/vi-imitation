@@ -16,7 +16,13 @@ package ui
 //	7    出力の欄                                                       drawOutput
 //	8    コマンドラインの行（メッセージ、上へ広げた複数の行のメッセージ、選択肢の問い） drawCommandLine
 //	8.1  補完の候補の一覧（Frame.Completion。FR-197。コマンドラインの行の真上）   drawCommandLine の中の drawCompletion
+//	8.2  画面の上のポップアップのコマンドラインの枠（Frame.CommandLinePopup。FR-215、FR-216） drawCommandLine の中の drawCommandLinePopup
+//	8.3  その下の補完の候補の一覧の枠（FR-217）                                 drawCommandLinePopup の中の drawPaletteMenu
 //	9    タブの行（画面の一番上の 1 行。ほかの部品を 1 行下へずらす）        renderWithTabLine
+//
+// 画面の上のポップアップのコマンドライン（8.2、8.3）は、最後の行の代わりに描くので、8.1 と同じ画面には出ない。
+// どの窓よりも上に重ねるのは、noice.nvim の cmdline_popup と cmdline_popupmenu の zindex（200）が、浮かべた窓の既定（50）と
+// fidget.nvim（45）と nvim-scrollview（40）より上にあるのと同じ重なりにするためである。ステータス行と出力の欄の上にも重なる。
 //
 // 行を足すときは、今の行の番号を振り直さず、間に小数の番号（2.5、8.1）で入れる。
 // ほかの文書とコメントは、この表の行を番号でなく部品の名前と描く関数（drawCompletion など）で指す（PR #358 のレビューの推奨 6）。

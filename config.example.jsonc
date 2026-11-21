@@ -109,6 +109,12 @@
     "scrollbar.diagnostic.warning": "▲",
     "scrollbar.diagnostic.info": "ⓘ",
     "scrollbar.diagnostic.hint": "⚑",
+    // 画面の上のポップアップのコマンドライン（下の commandLine の popup）の枠の題。本体の既定は Cmdline、Search forward、Search backward。
+    // noice.nvim が入力の行の頭に出す Nerd Font の印（: は U+F054、/ は U+F002 と U+F103、? は U+F002 と U+F102）を、
+    // noice.nvim の題（Cmdline と Search）の前に付けた。Nerd Font が入っていない環境では、この 3 行を消す
+    "commandLine.title.command": " Cmdline",
+    "commandLine.title.searchForward": "  Search",
+    "commandLine.title.searchBackward": "  Search",
   },
 
   // ファジーファインダーとファイラの項目の前に、ファイルの種類のアイコンを付ける（本体の既定も付ける）。
@@ -149,7 +155,11 @@
   // ファイルの名前は大文字と小文字を区別せずに補い（nvim の wildignorecase）、一覧は 12 行まで出す（nvim の pumheight=12。本体の既定は 0 で、
   // 画面に収まるだけ出す）。一覧の間は <C-n>、<C-p>、<Up>、<Down> で選び、<C-e> で取り消し、<C-y> で決める。
   // 説明は docs/usage.md の「コマンドラインの補完」にある
-  "commandLine": { "completeMode": "longest:full,full", "completeIgnoreCase": true },
+  // popup で、: と / と ? の入力を、画面の最後の行の代わりに、画面の上の中央の枠に出し、候補の一覧をその枠のすぐ下に同じ幅で出す
+  // （nvim の noice.nvim の cmdline = { view = "cmdline_popup" } と presets.command_palette = true に当たる。本体の既定は Vim と同じく最後の行）。
+  // 枠線は上の symbols の popup.border、題は symbols の commandLine.title.*、色は colors の commandLine.popup.border などである。
+  // 説明は docs/usage.md の「コマンドラインを画面の上に出す」にある
+  "commandLine": { "completeMode": "longest:full,full", "completeIgnoreCase": true, "popup": true },
   "completionMenu": { "height": 12 },
 
   // 直前の検索のパターンに一致する範囲に色を付ける（:set hlsearch に当たる。本体の既定は Vim と同じく付けない）。
