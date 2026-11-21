@@ -473,6 +473,10 @@ type Editor struct {
 	// progressCleared は、取っておいた状態の変化のうち、取っておいたときにその拡張機能の進み具合を消したものである
 	// （clearProgressNow。後で処理するときに消し直さない）。
 	progressCleared map[*exthost.StateChange]bool
+	// windows は、窓の変化の知らせ（window/change）を送った中身と、間引きのタイマーである（window.go。FR-235、FR-236）。
+	windows windowNotifier
+	// bands は、拡張機能が band/set で送った帯を、窓と拡張機能の組ごとに持つ（window.go。FR-237）。
+	bands map[ext.WindowID]map[string]ext.BandSetParams
 	// outputOrder は、出力の欄を、最初に書き足された順に並べたものである（<C-w>P で切り替える順）。
 	outputOrder []outputKey
 	// outputLast は、最後に書き足された欄である。

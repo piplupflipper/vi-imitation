@@ -242,7 +242,7 @@ func (e *Editor) hold(ev exthost.Event) (redraw bool) {
 	for i, h := range e.held {
 		switch h.(type) {
 		case *exthost.DecorationSet, *exthost.MessageShow, *exthost.DiagnosticSet, *exthost.SignSet,
-			*exthost.PopupShow, *exthost.OutputAppend, *exthost.ViewUpdate:
+			*exthost.PopupShow, *exthost.OutputAppend, *exthost.ViewUpdate, *exthost.BandSet:
 			drop = i
 		}
 		if drop >= 0 {

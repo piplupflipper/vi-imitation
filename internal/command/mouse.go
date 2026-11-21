@@ -24,11 +24,15 @@ const (
 	// 左のボタンを押すと、つまみならドラッグを始め、印ならその印の行へ移る（FR-210、FR-211）。ホイールはこの表示領域を送る。
 	// ボタンをスクロールバーで押した後のドラッグ（Target の drag が true）は、列に依らずスクロールバーの行として解く。
 	MouseScrollbar
+	// MouseBand は、この State の表示領域の上の端の帯（拡張機能の band/set。FR-237）の、バッファの行に当たる行である（FR-238）。
+	// ノーマルモードで左のボタンを押すと、その行（BandLine）へ移る。ほかのモードと、ほかの出来事（ドラッグ、2 回目のクリック、ホイール）は、
+	// 帯の下に隠れた本文の位置（Line と Col。MouseText と同じ）として扱う（nvim-treesitter-context と同じ）。
+	MouseBand
 )
 
 // scrollable は、t の位置のホイールでこの State の表示領域を送るかを返す。
 func (t MouseTarget) scrollable() bool {
-	return t.Kind == MouseText || t.Kind == MouseWindow || t.Kind == MouseScrollbar
+	return t.Kind == MouseText || t.Kind == MouseWindow || t.Kind == MouseScrollbar || t.Kind == MouseBand
 }
 
 // MouseTarget は、マウスの出来事の位置を、この State のバッファの位置に解いたものである（Mouse.Target）。
@@ -48,6 +52,8 @@ type MouseTarget struct {
 	// Marks は、Kind が MouseScrollbar のときの、位置のセルに描いた印の種類の行（そのセルに割り付けた行の範囲に入るもの）を、
 	// 小さい順に並べたものである。印が無ければ空である。描いた印と同じ選び方の種類の行で、書き換えない。
 	Marks []int
+	// BandLine は、Kind が MouseBand のときの、押した帯の行に当たるバッファの行である。
+	BandLine int
 }
 
 // Mouse は、マウスの出来事の位置を解く口である（FR-181〜FR-185）。
@@ -121,6 +127,7 @@ func insertMouse(id string) func(*State) {
 //   - ビジュアルモードでは、選択を終えてノーマルモードへ戻ってから移る。インサートモードでは、インサートモードのまま移り、入力を区切る
 //   - タブの行のタブの見出しは、そのタブへ移る（Mouse.Activate）
 //   - 右端のスクロールバーのつまみは、つまみのドラッグを始め、印はその印の行へ移る（mouseBarPress。FR-210、FR-211）
+//   - 上の端の帯の行は、ノーマルモードならその行へ移り（mouseBandJump。FR-238）、ほかのモードでは帯の下の本文の位置へ移る
 //
 // 押した位置は、続くドラッグ（mouse.drag）の選択の始まりとして覚える。
 //
@@ -139,6 +146,12 @@ func (s *State) mouseClick() error {
 	case MouseScrollbar:
 		s.mouseBarPress(t)
 		return nil
+	case MouseBand:
+		if s.mode == ModeNormal {
+			s.mouseBandJump(t.BandLine)
+			return nil
+		}
+		t.Kind = MouseText
 	case MouseText:
 	}
 	if s.mode.visual() {
@@ -423,6 +436,20 @@ func (s *State) mouseMarkJump(lines []int) {
 	}
 }
 
+// mouseBandJump は、ノーマルモードで、表示領域の上の端の帯の、バッファの行 line に当たる行を押したことである（FR-238）。
+// 移る前の位置をジャンプリストに記録し、line 行の先頭（バイト 0）へ移り、望みの列をその列にする。
+// nvim-treesitter-context（コミット 8decd73460d26ef0a0befb745d022dd1fc2c38b8 の lua/treesitter-context.lua の on_key）が、
+// ノーマルモードの <LeftMouse> を受けて normal! m' と nvim_win_set_cursor(winid, { line, 0 }) で移り、押下を捨てるのと同じにした。
+// 押した位置を、続くドラッグの選択の始まりとしては覚えない（nvim-treesitter-context も押下を捨てる）。
+//
+// req: FR-238
+func (s *State) mouseBandJump(line int) {
+	s.markJump()
+	s.cursor = s.clampNormal(s.clampPos(pos(min(max(line, 0), s.lastLine()), 0)))
+	s.updateWant()
+	s.followCursor()
+}
+
 // mouseSelect は、<2-LeftMouse>（line が false。mouse.select-word）と <3-LeftMouse>（line が true。mouse.select-line）である
 // （FR-183）。マウスの位置へ移ってから、単語（iw と同じ範囲。空白の上なら空白の並び）を文字単位の、行を行単位のビジュアルモードで選ぶ。
 // 単語を選んだときのカーソルは単語の終わりに、行を選んだときのカーソルは押した位置に置く（Neovim 0.12.5 と同じ）。
@@ -447,6 +474,10 @@ func (s *State) mouseSelect(line bool) error {
 		return nil
 	case MouseElsewhere:
 		return s.Mouse.Activate()
+	case MouseBand:
+		// 帯の上の 2 回目と 3 回目のクリックは、帯の下の本文の位置で選ぶ（nvim-treesitter-context は <LeftMouse> だけを扱い、
+		// <2-LeftMouse> は Neovim が帯の下の本文の窓で扱う）。
+		t.Kind = MouseText
 	case MouseText:
 	}
 	if s.mode == ModeInsert {

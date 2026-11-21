@@ -118,9 +118,9 @@ func (e *Editor) frame() *ui.Frame {
 // 行の文字の並べ方（ui.Frame.LineLayout。タブ文字の幅と、空白の記号を描くか）は、gj と gk と望みの列と同じ lineLayout で作る（FR-170）。
 // 行番号の列と同じく、空白の記号を描くのは client の画面のバッファの表示領域だけである（ポップアップとプレビューの中には描かない）。
 // 拡張機能の進み具合（uiProgress。FR-178）と、右端のスクロールバーと印（uiScrollbar。FR-186、FR-187）と、
-// 起動の案内（uiIntro。FR-205、FR-207）も、この画面にだけ重ねる。
+// 起動の案内（uiIntro。FR-205、FR-207）と、拡張機能の窓の上端の帯（uiBand。FR-237）も、この画面にだけ重ねる。
 //
-// req: FR-135, FR-140, FR-153, FR-156, FR-170, FR-178, FR-186, FR-205
+// req: FR-135, FR-140, FR-153, FR-156, FR-170, FR-178, FR-186, FR-205, FR-237
 func (e *Editor) bufferFrame() *ui.Frame {
 	f := e.frame()
 	f.LineNumbers = e.uiLineNumbers()
@@ -132,6 +132,7 @@ func (e *Editor) bufferFrame() *ui.Frame {
 	f.Progress = e.uiProgress()
 	f.Scrollbar = e.uiScrollbar(bs, f.Search)
 	f.Intro = e.uiIntro()
+	f.Band = e.uiBand(bs)
 	e.incSearchFrame(f)
 	return f
 }
@@ -383,6 +384,7 @@ func (v viewport) SetLeft(left int) { v.r.SetLeft(left) }
 // render は、繋いでいるすべての client の画面を描いて、それぞれの端末へ出す。
 // 描き終えたら、読み込む client を描く前のものに戻す。
 // 見比べている組は、描く前に差分の計算し直しを始め、描いた後に両側のスクロールをそろえる（diff.go）。
+// 描いた後に、窓の変化を拡張機能へ知らせる（window.go の notifyWindows。FR-235）。
 func (e *Editor) render() {
 	e.syncAsker()
 	e.refreshDiffs()
@@ -396,6 +398,7 @@ func (e *Editor) render() {
 		e.renderComponents()
 	})
 	e.syncDiffScroll()
+	e.notifyWindows()
 }
 
 // renderView は、読み込んでいる client の画面を描いて端末へ出す。

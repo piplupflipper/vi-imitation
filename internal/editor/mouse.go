@@ -73,10 +73,15 @@ func (m mouseLocator) hit(drag bool) (ui.Hit, *ui.Renderer, bool) {
 	r, down := e.mouseScreen(c)
 	clamp := ui.HitNone
 	if drag {
-		if *down != ui.HitText && *down != ui.HitFloat && *down != ui.HitScrollbar {
+		switch *down {
+		case ui.HitText, ui.HitFloat, ui.HitScrollbar:
+			clamp = *down
+		case ui.HitBand:
+			// 帯の上で押したボタンのドラッグは、帯の下の本文の位置として解く（FR-238）。
+			clamp = ui.HitText
+		case ui.HitNone, ui.HitTabLine, ui.HitStatusLine, ui.HitCommandLine:
 			return ui.Hit{}, nil, false
 		}
-		clamp = *down
 	}
 	return r.HitTest(c.mouse.row, c.mouse.col, clamp), r, true
 }
@@ -111,9 +116,12 @@ func (e *Editor) mouseFloat() *floatState {
 //     そのスクロールバー（MouseScrollbar）である。押した行、つまみの最初の行、つまみの上か、描いた印の種類の行の一覧を入れる
 //     （FR-189、FR-210、FR-211）。ホイールはその表示領域を送る。同じ列でも、つまみも印も描いていないセルは HitText なので、本文である。
 //     スクロールバーで押したボタンのドラッグは、列に依らずスクロールバーの行として解く（つまみのドラッグ）
+//   - 表示領域の上の端の帯（FR-237）の、バッファの行に当たる行（ui.HitBand）は、キーを受けるバッファがタブのバッファなら、
+//     その帯の行（MouseBand）である。帯の行に当たるバッファの行と、帯の下の本文の位置を入れる（FR-238）。フォーカスのある
+//     ポップアップから見ると、本文と同じくほかの部品である。帯の上で押したボタンのドラッグは、帯の下の本文として解く
 //   - ほか（枠線、ファインダー、閉じた窓の跡など）は MouseNone である
 //
-// req: FR-189, FR-210, FR-211
+// req: FR-189, FR-210, FR-211, FR-238
 func (m mouseLocator) Target(drag bool) command.MouseTarget {
 	none := command.MouseTarget{Kind: command.MouseNone}
 	h, r, ok := m.hit(drag)
@@ -127,11 +135,15 @@ func (m mouseLocator) Target(drag bool) command.MouseTarget {
 		if e.cur == m.bs && !drag {
 			return command.MouseTarget{Kind: command.MouseWindow}
 		}
-	case ui.HitText:
+	case ui.HitText, ui.HitBand:
 		if e.mouseComp() != nil {
 			return none
 		}
 		if e.tab() == m.bs {
+			if h.Area == ui.HitBand && e.cur == m.bs {
+				// 上の端の帯の行は、帯の行に当たるバッファの行と、帯の下の本文の位置を入れる（FR-238）。
+				text.Kind, text.BandLine = command.MouseBand, h.BandLine
+			}
 			return text
 		}
 		if f := e.float; f != nil && f.focused && !f.center && f.bs == m.bs && !drag {
@@ -216,7 +228,8 @@ func (m mouseLocator) Activate() error {
 		if to := e.view.tabs[h.Tab]; to != e.tab() {
 			e.gotoBuffer(m.bs, to)
 		}
-	case ui.HitText:
+	case ui.HitText, ui.HitBand:
+		// フォーカスのあるポップアップの外の帯は、帯の下の本文と同じく、元のタブへ戻ってその位置へ移る。
 		f := e.float
 		if f == nil || !f.focused || f.center || f.bs != m.bs {
 			return nil

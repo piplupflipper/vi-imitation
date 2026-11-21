@@ -522,6 +522,8 @@ func (e *Editor) removeClient(c *clientView) {
 	}
 	c.keyGen++
 	e.stopHold(c)
+	// 窓の帯を消す。閉じた窓の知らせは、次の描画の後に送る（window.go の flushWindows）。
+	delete(e.bands, windowIDOf(c))
 	if c == e.view {
 		c.v = e.viewFields
 	}
