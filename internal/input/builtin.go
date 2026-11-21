@@ -9,7 +9,7 @@ import (
 
 // spec は、本体の操作の表の 1 行である。
 type spec struct {
-	keys      string // ParseKeys の表記
+	keys      string // editcmd.ParseKeysLeader の表記。<Leader> を含んでよい（builtinKeymap）
 	id        string
 	takesChar bool
 	// takesChar2 は、操作が 2 つ目の文字の引数を取るかである（Binding.TakesSecondChar）。
@@ -214,6 +214,11 @@ var (
 		// バッファの全体を文字単位のビジュアルモードで選ぶ。カーソルも画面も動かさない（FR-130。#263）。
 		// 既定のキーは無く、設定の keymap で割り当てたときだけ使える。
 		{keys: "", id: "select-all", modes: MapNormal | MapVisual, desc: "カーソルを動かさずにバッファの全体を選ぶ"},
+		// バッファの全体を、ノーマルモードの ggVG と同じく行単位のビジュアルモードで選ぶ（FR-220。#364）。
+		// 既定のキーは、オーナーの nvim の割り当て（ノーマルモードの <Leader>a を ggVG にする）に合わせた。
+		// <Leader> は、LSP と DAP の既定のキー（providerKeys）と同じく、キーマップを作る時点の leader にする（builtinKeymap）。
+		// req: FR-220
+		{keys: "<Leader>a", id: "select-all-lines", modes: MapNormal, desc: "最初の行（回数があればその行）から最後の行までを、行単位のビジュアルモードで選ぶ（ggVG）"},
 		// スクロールの操作（FR-173）。画面の表示領域を動かすので、モーションではなく操作にする。
 		// Vim と同じく、オペレーターの後では使えない（d<PageDown>、d<C-d>、dzt は誤りになる）。
 		// <PageDown> と <C-f>、<PageUp> と <C-b> は、Vim 9.1 と Neovim 0.12.5 と同じく同じ操作である（Neovim の nv_page。#337）。
@@ -522,14 +527,15 @@ func DefaultKeymap() *Keymap {
 	return m
 }
 
-// DefaultKeymapLeader は、DefaultKeymap と同じだが、LSP と DAP の操作の既定のキー（providerKeys）と
-// キーの一覧の既定のキー（keyListKeys）の <Leader> を leader にする。
+// DefaultKeymapLeader は、DefaultKeymap と同じだが、本体の操作の表（builtinActions の <Leader>a など）と、
+// LSP と DAP の操作の既定のキー（providerKeys）と、キーの一覧の既定のキー（keyListKeys）の <Leader> を leader にする。
 // leader が nil なら既定の leader を使う。
-// 利用者の leader によって本体の操作と同じキーの列になった既定のキーは登録せず、errs に返す（本体の操作を優先する）。
+// 利用者の leader によって、先に登録した既定のキーと同じキーの列になった既定のキーは登録せず、errs に返す
+// （<Leader> を含まない本体の操作のキーを優先する）。
 //
 // req: FR-03, FR-95, FR-96, FR-97
 func DefaultKeymapLeader(leader []editcmd.Key) (m *Keymap, errs []error) {
-	m = builtinKeymap()
+	m, errs = builtinKeymap(leader)
 	for _, s := range providerKeys {
 		keys, err := editcmd.ParseKeysLeader(s.keys, leader)
 		if err == nil {
@@ -575,28 +581,34 @@ var builtinTables = []struct {
 
 // builtinKeymap は、本体の操作の表（builtinMotions など）だけを登録したキーマップを返す。
 // keys が空の行（既定のキーの無い操作）は登録しない。
-func builtinKeymap() *Keymap {
-	m := NewKeymap()
+// keys の <Leader> は leader（nil なら既定の leader）にする（editcmd.ParseKeysLeader）。
+// <Leader> を含む行は、利用者の leader によっては先に登録した行と同じキーの列になる（leader が s なら <Leader>a は sa になる）ので、
+// 登録できなかった行は panic せずに errs に返す（providerKeys と同じ扱い）。
+// 既定の leader で errs が空であること（表の誤りが無いこと）は、テスト（TestProviderKeys、TestLeaderSelectAll）が確かめる。
+func builtinKeymap(leader []editcmd.Key) (m *Keymap, errs []error) {
+	m = NewKeymap()
 	for _, t := range builtinTables {
 		for _, s := range t.specs {
 			if s.keys == "" {
 				continue
 			}
-			err := m.Bind(Binding{
-				Kind:            t.kind,
-				Modes:           s.modes,
-				Keys:            editcmd.MustParseKeys(s.keys),
-				Ref:             editcmd.Ref{ID: s.id},
-				TakesChar:       s.takesChar,
-				TakesSecondChar: s.takesChar2,
-				NextMode:        s.next,
-				Description:     s.desc,
-			})
+			keys, err := editcmd.ParseKeysLeader(s.keys, leader)
+			if err == nil {
+				err = m.Bind(Binding{
+					Kind:            t.kind,
+					Modes:           s.modes,
+					Keys:            keys,
+					Ref:             editcmd.Ref{ID: s.id},
+					TakesChar:       s.takesChar,
+					TakesSecondChar: s.takesChar2,
+					NextMode:        s.next,
+					Description:     s.desc,
+				})
+			}
 			if err != nil {
-				// 表の誤りはプログラムの誤りで、テストで検出する。
-				panic(fmt.Sprintf("本体の操作の表の誤り: %v", err))
+				errs = append(errs, fmt.Errorf("本体の操作 %s の既定のキー %s を登録できない: %w", s.id, s.keys, err))
 			}
 		}
 	}
-	return m
+	return m, errs
 }
