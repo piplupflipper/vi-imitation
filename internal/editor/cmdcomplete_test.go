@@ -2,6 +2,7 @@ package editor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -152,6 +153,116 @@ func TestCmdlineCompleteLongest(t *testing.T) {
 	h.keys("<Tab><Tab><C-y>")
 	h.waitCmdline(":e beta/<Tab><Tab><C-y>", "e beta/one.txt", "")
 	h.keys("<Esc>")
+}
+
+// 一覧を出していて候補を選んでいる間の <CR> は、選んだ候補で決めて一覧を閉じ、コマンドを実行しない。もう一度の <CR> で実行する。
+// 一覧を出していない、何も選んでいないときの <CR> は、そのまま実行する。ファイルの引数の語が "/" で終わるときの <CR> は、
+// 補完で入れた語でも打った語でも実行せず、コマンドラインに残って続けて中を補える（#363。Vim と Neovim は実行する）。
+// 画面の上の中央のポップアップに描くとき（commandLine.popup）も同じに動く。
+//
+// req: FR-198
+func TestCmdlineCompleteEnter(t *testing.T) {
+	for _, popup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("popup=%v", popup), func(t *testing.T) {
+			h := startCompletion(t, completionFiles, map[string]option.Value{option.CommandLinePopup: option.BoolValue(popup)})
+			state := func() (mode command.Mode, name string) {
+				h.settle()
+				h.e.do(func() { mode, name = h.e.cur.state.Mode(), h.e.bufferName(h.e.cur) })
+				return mode, name
+			}
+			wantOpened := func(what, want string) {
+				t.Helper()
+				if mode, name := state(); mode != command.ModeNormal || name != want {
+					t.Errorf("%s: モード = %v、バッファ = %q, want ノーマルモードで %q", what, mode, name, want)
+				}
+			}
+			wantKept := func(what, line string) {
+				t.Helper()
+				h.waitCmdline(what, line, "")
+				if mode, _ := state(); mode != command.ModeCommandLine {
+					t.Errorf("%s: モード = %v, want コマンドラインモード", what, mode)
+				}
+			}
+
+			// <Tab> で選んだ候補の <CR> は決めるだけで、もう一度の <CR> で開く。
+			h.keys(":e al<Tab>")
+			h.waitCmdline(":e al<Tab>", "e alpha2.go", "[alpha2.go] alpine.md")
+			h.keys("<CR>")
+			wantKept(":e al<Tab><CR>", "e alpha2.go")
+			h.keys("<CR>")
+			wantOpened(":e al<Tab><CR><CR>", "alpha2.go")
+
+			// <C-n> と <Down> で選んだ候補も同じ。
+			h.keys(":e al<Tab><Down>")
+			h.waitCmdline(":e al<Tab><Down>", "e alpine.md", "alpha2.go [alpine.md]")
+			h.keys("<CR>")
+			wantKept(":e al<Tab><Down><CR>", "e alpine.md")
+			h.keys("<CR>")
+			wantOpened(":e al<Tab><Down><CR><CR>", "alpine.md")
+
+			// 打った語に戻して何も選んでいない一覧の <CR> は、打った語で実行する。
+			h.keys(":e al<Tab><Tab><Tab>")
+			h.waitCmdline(":e al<Tab><Tab><Tab>", "e al", "alpha2.go alpine.md")
+			h.keys("<CR>")
+			wantOpened(":e al<Tab><Tab><Tab><CR>", "al")
+
+			// 候補が 1 つで一覧を出さなかったときの <CR> は実行する。
+			h.keys(":e alpha2<Tab>")
+			h.waitCmdline(":e alpha2<Tab>", "e alpha2.go", "")
+			h.keys("<CR>")
+			wantOpened(":e alpha2<Tab><CR>", "alpha2.go")
+
+			// ディレクトリの候補を決めた後の <CR> は実行せず、続けて中を補える。
+			h.keys(":e b<Tab>")
+			h.waitCmdline(":e b<Tab>", "e beta/", "")
+			h.keys("<CR>")
+			wantKept(":e b<Tab><CR>", "e beta/")
+			h.keys("<Tab>")
+			h.waitCmdline(":e b<Tab><CR><Tab>", "e beta/one.txt", "[one.txt] two.txt")
+			h.keys("<CR><CR>")
+			wantOpened(":e b<Tab><CR><Tab><CR><CR>", "beta/one.txt")
+
+			// 一覧で選んだディレクトリも、決めた後の <CR> で実行しない。打った "/" で終わる語と :w も同じ。
+			h.keys(":e <Tab><Tab><Tab><Tab>")
+			h.waitCmdline(":e <Tab>×4", "e beta/", `Alpha.txt alpha2.go alpine.md [beta/] foo.c sp\ ace.txt foo.h foo.o`)
+			h.keys("<CR>")
+			wantKept(":e <Tab>×4<CR>", "e beta/")
+			h.keys("<CR>")
+			wantKept(":e <Tab>×4<CR><CR>", "e beta/")
+			h.keys("<Esc>:w beta/<CR>")
+			wantKept(":w beta/<CR>", "w beta/")
+			h.keys("<Esc>")
+
+			// コマンドの名前の候補も、選んでいれば決めるだけである。
+			h.keys(":set nu<Tab>")
+			h.waitCmdline(":set nu<Tab>", "set number", "[number] numberwidth")
+			h.keys("<CR>")
+			wantKept(":set nu<Tab><CR>", "set number")
+			h.keys("<CR>")
+			wantOpened(":set nu<Tab><CR><CR>", "beta/one.txt")
+		})
+	}
+}
+
+// オーナーの nvim の設定（longest:full,full）では、1 回目の <Tab> の後の一覧は何も選んでいないので、<CR> は共通の先頭のまま実行する。
+// 2 回目の <Tab> で選んだ後の <CR> は、選んだ候補で決めるだけである（#363）。
+//
+// req: FR-198
+func TestCmdlineCompleteEnterLongest(t *testing.T) {
+	h := startCompletion(t, completionFiles, map[string]option.Value{
+		option.CommandLineCompleteMode: option.StringValue("longest:full,full"),
+	})
+	h.keys(":e alp<Tab>")
+	h.waitCmdline(":e alp<Tab>", "e alp", "alpha2.go alpine.md")
+	h.keys("<Tab><CR>")
+	h.waitCmdline(":e alp<Tab><Tab><CR>", "e alpha2.go", "")
+	h.keys("<Esc>:e alp<Tab><CR>")
+	h.settle()
+	var name string
+	h.e.do(func() { name = h.e.bufferName(h.e.cur) })
+	if name != "alp" {
+		t.Errorf(":e alp<Tab><CR> のバッファ = %q", name)
+	}
 }
 
 // マクロを記録している間に補うと、補った後の文字が記録に入り（<Tab> は入らない）、再生すると同じコマンドラインになる。
@@ -333,7 +444,7 @@ func TestCmdlineCompleteTypeahead(t *testing.T) {
 }
 
 // ファイルの候補を集めている間は、その client のキーを列に残し、集め終えて補ってから順に処理する（<Tab> の後の <CR> は、
-// 補った後のコマンドラインを実行する）。集めている間に <C-c> を打つと、集めるのを取り消し、<C-c> までのキーを捨てて、
+// 補った後の一覧で働き、選んだ候補で決める。もう一度の <CR> で実行する）。集めている間に <C-c> を打つと、集めるのを取り消し、<C-c> までのキーを捨てて、
 // 補う前の語のままコマンドラインに残る（Neovim 0.12.5 の補完の途中の <C-c> と同じ）。
 //
 // req: FR-199
@@ -358,6 +469,8 @@ func TestCmdlineCompleteSlowFiles(t *testing.T) {
 		return h.e.cur.state.CommandLine() == "e al" && h.e.keys.has(h.e.op)
 	})
 	release <- struct{}{}
+	h.waitCmdline("集め終えた後の <CR> は候補を決める", "e alpha2.go", "")
+	h.keys("<CR>")
 	h.settle()
 	var name string
 	h.e.do(func() { name = h.e.bufferName(h.e.cur) })

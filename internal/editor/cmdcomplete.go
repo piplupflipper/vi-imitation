@@ -32,7 +32,7 @@ import (
 //
 // ファイルの候補は、大きなディレクトリでも編集の全体を止めないよう、イベントループの外で集める（completion.go の completionJob。
 // filecomplete.go）。集めている間は、その client のキーとキーマップの展開の残りを止めておき、集め終えて補った後に続けるので、
-// <Tab> の直後に届いた <CR> も、補った後のコマンドラインを実行する。
+// <Tab> の直後に届いた <CR> も、補った後のコマンドラインと一覧で働く（候補を選んでいれば決めるだけ、候補が 1 つなら実行する。wildKey）。
 
 // wildMenu は、1 つの client の、コマンドラインの補完の状態である（viewFields.wild）。Neovim の expand_T と
 // CommandLineState の wim_index に当たる。候補と選んでいる候補は completionChoice に持つ。
@@ -100,6 +100,7 @@ var (
 	wildPrevKey     = editcmd.Key{Code: editcmd.CodeRune, Rune: 'p', Mod: editcmd.ModCtrl}
 	wildCancelKey   = editcmd.Key{Code: editcmd.CodeRune, Rune: 'e', Mod: editcmd.ModCtrl}
 	wildAcceptKey   = editcmd.Key{Code: editcmd.CodeRune, Rune: 'y', Mod: editcmd.ModCtrl}
+	wildEnterKey    = editcmd.Special(editcmd.CodeEnter)
 )
 
 // currentWild は、読み込んでいる client の補う状態を、今のコマンドラインのものであれば返す。
@@ -138,9 +139,14 @@ func (e *Editor) endWild() {
 //   - 一覧を出している間の <Down>、<Right> と <Up>、<Left>: 次と前の候補（<Down> と <Up> はオーナーの nvim の割り当て。
 //     <Left> と <Right> は Neovim の wildmenu_translate_key）。<PageDown> と <PageUp>: 一覧の高さだけ先と前の候補
 //   - 一覧を出している間の <C-e>: 補う前の語に戻して一覧を閉じる。<C-y>: 入れている候補のまま一覧を閉じる
+//   - 一覧を出していて候補を選んでいる間の <CR>: <C-y> と同じく、入れている候補のまま一覧を閉じ、コマンドを実行しない（#363。
+//     Vim と Neovim は実行する）。一覧を出していない、何も選んでいない（打った語に戻した、noselect、longest の後）ときの <CR> は、
+//     下のディレクトリの場合を除き、State へ渡して実行する
+//   - ファイルの引数の語が "/" で終わるときの <CR>: 何もしない（wildDirectoryArg。ディレクトリの候補を決めた後に、続けて中を補えるようにする）
 //   - 一覧を出している間のマウスの出来事: 何もしない（コマンドラインはマウスを読まない。一覧も閉じない）
 //
 // 候補を集めている間（wildMenu.pending）の client のキーは、ここへ届く前に止めている（completionJob）。
+// 集め終えて補った後に処理するので、まとめて届いた <Tab><CR> の <CR> も、補った後の一覧の状態で上のとおりに働く。
 //
 // req: FR-195, FR-198
 func (e *Editor) wildKey(k editcmd.Key) bool {
@@ -175,7 +181,7 @@ func (e *Editor) wildKey(k editcmd.Key) bool {
 		e.wildSetWord(w, w.orig)
 		e.endWild()
 		return true
-	case w.menu && k == wildAcceptKey:
+	case w.menu && (k == wildAcceptKey || (k == wildEnterKey && w.selected >= 0)):
 		e.endWild()
 		return true
 	case w.menu && k.IsMouse():
@@ -184,7 +190,21 @@ func (e *Editor) wildKey(k editcmd.Key) bool {
 	if w != nil {
 		e.endWild()
 	}
-	return false
+	return k == wildEnterKey && e.wildDirectoryArg(st.CommandLine())
+}
+
+// wildDirectoryArg は、Ex コマンドのコマンドライン line（先頭の ":" を除く）の行末が、ファイルの引数を補う所（ex.CompleteFile）で、
+// その語が "/" で終わるかを返す。そのときの <CR> は実行しない（wildKey）。
+//
+// ディレクトリの候補を決めた（:e beta/）後の <CR> で、ディレクトリを開こうとして誤りを出したり、:w でディレクトリへ書こうとしたり
+// せずに、コマンドラインに残って続けて中を補えるようにするためである（#363。オーナーの nvim の <CR> の割り当てと同じ考え方）。
+// オーナーの nvim はファイルを開くコマンドの名前の表で決めるが、本体は補う語の種類で決めるので、:w と :wq と :x も含む。
+// 補完で入れた語に限らず、打った語でも同じにする。Vim と Neovim は実行する（docs/vim-differences.md）。
+//
+// req: FR-198
+func (e *Editor) wildDirectoryArg(line string) bool {
+	c := ex.Complete(&e.cur.state.Ex, line)
+	return c.Kind == ex.CompleteFile && strings.HasSuffix(line[c.Start:], "/")
 }
 
 // wildTab は、<Tab> を処理する。候補を集めていれば（2 回目からの <Tab>）、今の部分の補い方で補う。
