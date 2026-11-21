@@ -247,10 +247,10 @@ func sumTo(widths []int, from, to int) int {
 // 1 行低い画面として描き、その下に 1 行ずらして置き、空いた一番上の行にタブの行を描く。
 func (r *Renderer) renderWithTabLine(f *Frame) Screen {
 	r.Height--
-	r.tabRows = 0
+	r.tabRows, r.bodyTop = 0, 1
 	body := r.render(f)
 	r.Height++
-	r.tabRows = 1
+	r.tabRows, r.bodyTop = 1, 0
 	theme := r.Theme
 	if theme == nil {
 		theme = DefaultTheme()

@@ -9,8 +9,9 @@ import (
 //
 // 一覧の中身（項目、選んでいる項目、項目を並べ始めるコマンドラインの中の位置）は internal/editor が持ち、
 // 描く位置と大きさはここで決める。コマンドラインの一覧は、Neovim 0.12.5 の wildoptions=pum（popupmenu.c の pum_display）と
-// 同じく、コマンドラインの行の真上に、項目を並べ始める列から下へ詰めて描く。後にコマンドラインを画面の別の場所に出す設定を足すときは、
-// 描く位置だけをここで変え、中身の作り方は変えない。
+// 同じく、コマンドラインの行の真上に、項目を並べ始める列から下へ詰めて描く（drawCompletion）。
+// コマンドラインを画面の上のポップアップに出すとき（Frame.CommandLinePopup。FR-215）は、同じ中身を入力の枠のすぐ下に描く
+// （cmdlinepopup.go の drawPaletteMenu。FR-217）。どちらも、項目の行は drawCompletionRows で描き、中身の作り方は変えない。
 
 // CompletionMenu は、補完の候補の一覧である（Frame.Completion。FR-197）。
 type CompletionMenu struct {
@@ -171,6 +172,23 @@ func (r *Renderer) drawCompletion(g *Grid, theme Theme, m *CompletionMenu, row, 
 		r.pum.valid = false
 		return
 	}
+	left := p.col
+	if p.col > 0 {
+		left = p.col - 1 // 項目の左の空白
+	}
+	right := p.col + p.width
+	if p.scrollbar {
+		right++
+	}
+	r.drawCompletionRows(g, theme, m, p, left, right, theme.attr(StylePopup))
+	r.hits.cover(p.top, left, p.height, right-left)
+}
+
+// drawCompletionRows は、一覧 m の項目を、場所 p に描く（drawCompletion と drawPaletteMenu が使う）。
+// 各行の left 列から right 列の手前までを、選んでいる項目なら StylePopupSelected、ほかは normal の空白で塗ってから、
+// 項目の文字を p の欄に描く。項目が行の数より多ければ、欄の右の列（p.col + p.width）にスクロールバーを描く。
+// 一覧の送り方（一番上の行の項目）は、描画をまたいで r.pum に保つ。
+func (r *Renderer) drawCompletionRows(g *Grid, theme Theme, m *CompletionMenu, p completionPlace, left, right int, normal Attr) {
 	size := len(m.Items)
 	st := &r.pum
 	if !st.valid || st.id != m.ID {
@@ -188,15 +206,7 @@ func (r *Renderer) drawCompletion(g *Grid, theme Theme, m *CompletionMenu, row, 
 		rng := size - p.height
 		thumbPos = (first*(p.height-thumbHeight) + rng/2) / rng
 	}
-	left := p.col
-	if p.col > 0 {
-		left = p.col - 1 // 項目の左の空白
-	}
-	right := p.col + p.width
-	if p.scrollbar {
-		right++
-	}
-	normal, selected := theme.attr(StylePopup), theme.attr(StylePopupSelected)
+	selected := theme.attr(StylePopupSelected)
 	match := theme.attr(StylePopupMatch)
 	for i := range p.height {
 		idx := first + i
@@ -206,7 +216,7 @@ func (r *Renderer) drawCompletion(g *Grid, theme Theme, m *CompletionMenu, row, 
 			a = selected
 		}
 		clearSplit(g, y, left, right)
-		for x := left; x < p.col+p.width; x++ {
+		for x := left; x < right; x++ {
 			g.set(y, x, blank(a))
 		}
 		r.drawCompletionItem(g, y, p, m.Items[idx], m.Match, a, a.Over(match))
@@ -218,7 +228,6 @@ func (r *Renderer) drawCompletion(g *Grid, theme Theme, m *CompletionMenu, row, 
 			g.set(y, p.col+p.width, blank(sa))
 		}
 	}
-	r.hits.cover(p.top, left, p.height, right-left)
 }
 
 // drawCompletionItem は、項目 text を row 行目の欄 p に描く。先頭が leader と大文字と小文字を区別せずに同じなら、その部分を ma で描く。

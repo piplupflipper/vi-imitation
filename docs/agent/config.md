@@ -103,6 +103,7 @@
 | `scrollbar.excludedFileTypes` | 文字列 | エディタ全体 | `""` |  |
 | `commandLine.completeMode` | 文字列 | エディタ全体 | `"full"` |  |
 | `commandLine.completeIgnoreCase` | 真偽 | エディタ全体 | `false` |  |
+| `commandLine.popup` | 真偽 | エディタ全体 | `false` |  |
 | `completionMenu.height` | 整数 | エディタ全体 | `0` | 0 から 9999 |
 | `intro.show` | 真偽 | エディタ全体 | `true` |  |
 <!-- generated:options:end -->

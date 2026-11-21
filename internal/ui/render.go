@@ -84,6 +84,9 @@ type Renderer struct {
 	diffOn bool
 	// tabRows は、直前の Render でタブの行に使った行数（0 か 1）である。Render の外から読む表示領域の行数（TextRows）から除く。
 	tabRows int
+	// bodyTop は、render が描いている格子の最初の行の、画面の中の行の番号（タブの行を出しているときは 1、ほかは 0）である。
+	// render の中では tabRows が 0 なので、画面の上の端から数える位置（drawCommandLinePopup）はこれで引く。
+	bodyTop int
 	left    int // 表示領域の左の端の列（行の先頭を 0 とする表示の列）
 	// skip は、行を折り返すとき、最初の行（top）を折り返した見た目の行のうち、表示領域より上に隠す行数である
 	// （Vim の w_skipcol を見た目の行で数えたもの）。最初の行が表示領域より高く、カーソルがその行にあるときだけ 0 でない（scroll）。
@@ -951,6 +954,8 @@ func (r *Renderer) position(lineCount int) string {
 // drawCommandLine は、最後の行にコマンドラインかメッセージを描く。選択肢の問い（Frame.Choice）があれば、どちらより先に問いを描く。
 // コマンドラインモードでは ":" と入力中の文字列を出し、カーソル（縦線）を ok が true で返す。
 // 入力中の文字列が幅に収まらなければ、末尾が見えるように先頭の側を隠す。
+// Frame.CommandLinePopup なら、入力を最後の行でなく画面の上の中央のポップアップに描き（drawCommandLinePopup。FR-215）、
+// 最後の行は空けておく。ポップアップを置けないほど画面が狭いか低ければ、最後の行に描く。
 func (r *Renderer) drawCommandLine(g *Grid, theme Theme, f *Frame) (Cursor, bool) {
 	row := r.Height - 1
 	if f.Choice != nil {
@@ -962,13 +967,16 @@ func (r *Renderer) drawCommandLine(g *Grid, theme Theme, f *Frame) (Cursor, bool
 		if f.CommandLineType != 0 {
 			prefix = f.CommandLineType
 		}
+		if f.CommandLinePopup {
+			// 画面の上の中央のポップアップに描く（FR-215）。置けなければ、最後の行に描く。
+			if c, ok := r.drawCommandLinePopup(g, theme, f, prefix); ok {
+				return c, true
+			}
+		}
 		full := string(prefix) + f.CommandLine
-		s := full
 		tabStop := tabStopOr(r.tabStop)
 		// 末尾の後ろのカーソルの 1 列を残して収まるまで、先頭の文字を落とす。
-		for s != "" && StringWidth(s, tabStop)+1 > r.Width {
-			s = s[nextGlyph(s, 0, 0, tabStop).size:]
-		}
+		s := r.cmdlineTail(full, r.Width)
 		end := r.drawText(g, row, 0, r.Width, s, Attr{})
 		if m := f.Completion; m != nil && m.Start >= 0 && m.Start <= len(f.CommandLine) {
 			// 補完の候補の一覧は、項目を並べ始める位置の文字の列（落とした先頭の文字の分だけ左へずらした列）に合わせる（FR-197）。

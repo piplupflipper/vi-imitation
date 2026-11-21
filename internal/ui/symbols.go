@@ -59,6 +59,14 @@ const (
 	SymbolScrollbarDiagnosticInfo    = StyleScrollbarDiagnosticInfo
 	SymbolScrollbarDiagnosticHint    = StyleScrollbarDiagnosticHint
 	SymbolScrollbarSearch            = StyleScrollbarSearch
+	// SymbolCommandLineTitleCommand、SymbolCommandLineTitleSearchForward、SymbolCommandLineTitleSearchBackward は、
+	// コマンドラインと検索の入力を画面の上のポップアップに出すとき（Frame.CommandLinePopup。FR-216）の、入力の枠の題である。
+	// 順に、コマンドライン（:）、前方の検索（/）、後方の検索（?）のときに出す。空なら題を出さない。
+	// noice.nvim の cmdline_popup の題（入力の種類の名前の " Cmdline " と " Search "）と同じ考え方で、前方と後方は、
+	// noice.nvim が入力の行の頭に出す印（Nerd Font の下と上の矢印）の代わりに、題の文字で見分ける。既定は ASCII にした。
+	SymbolCommandLineTitleCommand        = "commandLine.title.command"
+	SymbolCommandLineTitleSearchForward  = "commandLine.title.searchForward"
+	SymbolCommandLineTitleSearchBackward = "commandLine.title.searchBackward"
 )
 
 // borderChars は、SymbolPopupBorder の文字の数である。
@@ -95,6 +103,10 @@ var defaultSymbols = Symbols{
 	SymbolScrollbarDiagnosticInfo:    "I",
 	SymbolScrollbarDiagnosticHint:    "H",
 	SymbolScrollbarSearch:            "=",
+
+	SymbolCommandLineTitleCommand:        "Cmdline",
+	SymbolCommandLineTitleSearchForward:  "Search forward",
+	SymbolCommandLineTitleSearchBackward: "Search backward",
 }
 
 // DefaultSymbols は、既定の記号の対応を返す。返す対応は呼び出しごとに作り直す。
@@ -115,8 +127,9 @@ func SymbolNames() []string {
 //   - ほかの空白の記号（"whitespace." で始まる名前）: 空か、表示幅が 1 の文字 1 つ（Vim の 'listchars' と同じ。空白 1 つのセルに描くため）
 //   - スクロールバーの印（"scrollbar." で始まる名前。FR-187）: 空か、表示幅が 1 の文字 1 つ（右端の 1 列のセルに描くため）。
 //     名前は、既定の表に無くても IsScrollbarMarkName の形なら受け付ける（後に拡張機能が足す種類の記号を書けるようにするため）
-//   - それ以外（SymbolReadOnly、SymbolModified、SymbolShowBreak、SymbolProgressRunning、SymbolProgressDone、SymbolProgressFailed）: 任意の文字列。
-//     空ならその部品（続きの行の記号、進み具合の印）を出さない
+//   - それ以外（SymbolReadOnly、SymbolModified、SymbolShowBreak、SymbolProgressRunning、SymbolProgressDone、SymbolProgressFailed、
+//     SymbolCommandLineTitleCommand、SymbolCommandLineTitleSearchForward、SymbolCommandLineTitleSearchBackward）: 任意の文字列。
+//     空ならその部品（続きの行の記号、進み具合の印、コマンドラインの枠の題）を出さない
 //
 // どれも、タブと制御文字を含めない（描くと ^I の形になり、幅が変わるため）。
 //

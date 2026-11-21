@@ -599,16 +599,17 @@ func (e *Editor) paneComponentFrame(p *floatState) *ui.Frame {
 	p.focused = focused
 	fl.Fill = true
 	return &ui.Frame{
-		Name:            bufferTitle(bs),
-		Modified:        bs.buf.Modified(),
-		ReadOnly:        bs.buf.ReadOnly(),
-		FileType:        bs.fileType(),
-		Mode:            uiMode(st.Mode()),
-		CommandLine:     st.CommandLine(),
-		CommandLineType: st.CommandLineType(),
-		Completion:      e.wildMenuFrame(bs),
-		Recording:       st.Recording(),
-		OperatorPending: st.Mode() == command.ModeNormal && st.Pending(),
-		Float:           fl,
+		Name:             bufferTitle(bs),
+		Modified:         bs.buf.Modified(),
+		ReadOnly:         bs.buf.ReadOnly(),
+		FileType:         bs.fileType(),
+		Mode:             uiMode(st.Mode()),
+		CommandLine:      st.CommandLine(),
+		CommandLineType:  st.CommandLineType(),
+		Completion:       e.wildMenuFrame(bs),
+		CommandLinePopup: e.cmdlinePopup(),
+		Recording:        st.Recording(),
+		OperatorPending:  st.Mode() == command.ModeNormal && st.Pending(),
+		Float:            fl,
 	}
 }

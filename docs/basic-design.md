@@ -4099,6 +4099,7 @@ nvim-scrollview の既定のリンク先は、`ScrollView` が `Visual`、診断
 ただし、`scrollbar.` の後の最初の点までの部分が、本体の種類（本体の色の名前の表にある `diagnostic` と `search`）と同じか、編集距離が 2 以下で、本体の表に無い名前（`scrollbar.diagnostics.error`、`scrollbar.diagnostic.err`、`scrollbar.serch`）は、書き間違いとして受け付けず、今までどおり「未知の色の名前」「未知の記号の名前」の設定の誤りにする（PR #351 の再レビューの推奨 3）。
 拡張機能の種類の名前は、本体の種類の名前と似ないもの（`git`、`todo`、`mark`。`search` との距離は 4 以上）にする。拡張機能が起動した後に、どの種類にも使われていない名前を知らせる形は、拡張機能が種類を足す口（#317 の第 3 弾）と一緒に考える。
 #350 で、コマンドラインの補完の候補の一覧（7.4）の色の名前 `popup.match`（打った語に当たる文字。`popup` か `popup.selected` の上に重ねる。Neovim 0.12.5 の `PmenuMatch`）、`popup.scrollbar`、`popup.thumb`（スクロールバーの溝とつまみ。Vim の `PmenuSbar` と `PmenuThumb`）を足した。項目と選んでいる項目は、`:registers` の一覧と同じ `popup` と `popup.selected` で描く（Vim の `Pmenu` と `PmenuSel` に当たる）。既定の色は 7.4 の「一覧の描き方」にある。同梱の iceberg には、iceberg.vim（コミット 23835d5ed696436f716cbfdb56a93a7850fe3b18）の dark の側の `PmenuSbar` と `PmenuThumb` の背景の色を写した。iceberg.vim に `PmenuMatch` は無いので、`popup.match` は本体の既定（太字）のままにした。
+#359 で、画面の上のポップアップのコマンドライン（7.4 の「画面の上のポップアップ」）の色の名前 `commandLine.popup`（枠の中と、その下の一覧の項目。noice.nvim の `NoiceCmdlinePopup`）、`commandLine.popup.border`（コマンドラインの枠と一覧の枠の、枠線と題。`NoiceCmdlinePopupBorder`）、`commandLine.popup.border.search`（検索の枠の、枠線と題。`NoiceCmdlinePopupBorderSearch`）を足した。既定は noice.nvim（コミット 7bfd942445fb63089b59f97ca487d605e715f155）の `lua/noice/config/highlights.lua` の既定のリンク先（`Normal`、`DiagnosticSignInfo`、`DiagnosticSignWarn`）に当て、`commandLine.popup` は既定の対応に置かず（`progress` と同じく端末の既定の色）、枠線と題は `sign.diagnostic.info` と `sign.diagnostic.warning` と同じ番号にした。同梱の iceberg には、iceberg.vim の dark の側の `DiagnosticSignInfo` と `DiagnosticSignWarn` の文字の色を写した。名前を `popup.` の下に置かないのは、浮かべる窓の色（`popup`）と別に選べるようにするためである。
 
 ```jsonc
 {
@@ -4189,6 +4190,9 @@ PR #345 のレビューの推奨 2 で、失敗して終わったものの印 `p
 #348 で、右端のスクロールバー（6.7 の「スクロールバー」）の印 `scrollbar.diagnostic.error`、`scrollbar.diagnostic.warning`、`scrollbar.diagnostic.info`、`scrollbar.diagnostic.hint`（既定は `E`、`W`、`I`、`H`）と `scrollbar.search`（既定は `=`）を足した。
 既定は nvim-scrollview の既定（診断は印の列の記号が無ければ `E`、`W`、`I`、`H`。検索の一致は、1 つの印に当たる行が 1 つのときの `=`）に合わせた。nvim-scrollview は印に当たる行の数で記号を替えられる（検索の一致の既定は `=`、`=`、`≡`）が、本体の記号は 1 つにした。
 値は空か表示幅が 1 の文字 1 つで、空ならその種類の印を描かない（1 列のセルに描くため。`CheckSymbol`）。同梱の `config.example.jsonc` では、診断の印を印の列と同じ記号にしている。
+#359 で、画面の上のポップアップのコマンドライン（7.4 の「画面の上のポップアップ」）の枠の題 `commandLine.title.command`、`commandLine.title.searchForward`、`commandLine.title.searchBackward`（既定は `Cmdline`、`Search forward`、`Search backward`）を足した。
+noice.nvim の題（`Cmdline` と `Search`）と同じく入力の種類の名前を出し、noice.nvim が入力の行の頭の Nerd Font の印（下と上の矢印）で見分ける前方と後方は、題の文字で見分ける。任意の文字列を書け、空なら題を出さない。同梱の `config.example.jsonc` では、noice.nvim の印を題の前に付けている。
+枠線は、浮かべる窓と同じ `popup.border` で描く（noice.nvim は常に `rounded` の枠線を描く）。
 
 #295 で、一覧と木の項目のファイルの種類のアイコン（1.4 の「#295 のアイコン」。FR-152）の表を、設定の `icons` で書き換えられるようにした。
 記号と違い、既定は ASCII にせず、Nerd Font のグリフで出す（#295 のオーナーの決め）。
@@ -4405,6 +4409,7 @@ Vim の短い名前（`number`）は、何の設定かが名前で分からな�
 | `scrollbar.excludedFileTypes` | 文字列 | エディタ全体 | 空 | 無し | 出さないバッファのファイルの種類をコンマで区切ったもの（FR-186。nvim-scrollview の `excluded_filetypes`）。既定は nvim-scrollview と同じく空 |
 | `commandLine.completeMode` | 文字列（`full`、`longest`、`noselect` の語の列） | エディタ全体 | `full` | `wildmode` | コマンドラインの `<Tab>` の補い方（7.4。FR-196）。書き方は Vim の `'wildmode'` と同じで、語の列として読めない値は表の欄 `option.Def.Words` で断る（`:set` と `:option.set` は `E474`。Neovim 0.12.5 の `:set wildmode=foo` と同じ番号）。既定は Vim と Neovim と同じ。`<Tab>` を打つたびに読む。同梱の `config.example.jsonc` では、オーナーの nvim と同じ `longest:full,full` |
 | `commandLine.completeIgnoreCase` | 真偽 | エディタ全体 | `false` | `wildignorecase` | コマンドラインの補完で、ファイルとディレクトリの名前の大文字と小文字を区別しないか（7.4。FR-196）。既定は Vim と同じく区別する。候補を集めるたびに読む。同梱の `config.example.jsonc` では `true` |
+| `commandLine.popup` | 真偽 | エディタ全体 | `false` | 無し | コマンドラインと検索の入力を、最後の行の代わりに画面の上の中央のポップアップに描くか（7.4 の「画面の上のポップアップ」。FR-215）。既定は Vim と Neovim と同じく最後の行に描く。描くたびに読む。同梱の `config.example.jsonc` では、オーナーの nvim（noice.nvim の `cmdline_popup` と `command_palette`）と同じく `true` |
 | `completionMenu.height` | 整数（0 から 9999） | エディタ全体 | `0` | `pumheight` | 補完の候補の一覧の行の数の上限（7.4。FR-197）。0 なら画面に収まるだけ出す（Vim と同じ）。描くたびに読む。同梱の `config.example.jsonc` では、オーナーの nvim と同じ `12` |
 | `intro.show` | 真偽 | エディタ全体 | `true` | 無し（Vim の `'shortmess'` の `I` に当たるが、`search.showCount` と同じく `'shortmess'` の別名は作らない） | 引数なしで起動したときに起動の案内を出すか（7.2 の「起動の案内」。FR-206）。既定は Vim と Neovim と同じく出す。描くたびに読み、偽を読んだら、その後に真へ戻しても出さない。`:intro` はこの値によらず出す。同梱の `config.example.jsonc` では、出さない書き方をコメントで示す |
 
@@ -4420,6 +4425,7 @@ Vim の短い名前（`number`）は、何の設定かが名前で分からな�
 `scroll.margin` と `scroll.sideMargin` は #337 で足した。名前は issue の案のとおりにした。
 `mouse.enabled`、`mouse.scrollLines`、`mouse.scrollColumns` は #343 で足した。issue は名前を実装者に任せていた。Neovim の `'mousescroll'` の 2 つの値を、行と列の 2 つの項目に分けた。
 `commandLine.completeMode`、`commandLine.completeIgnoreCase`、`completionMenu.height` は #350 で足した。issue は名前を実装者に任せていた。補い方と大文字と小文字の区別はコマンドラインの補完のものなので `commandLine.`（設定の `keymap` のモードの名前と同じ）の下に置き、一覧の高さは後に作るインサートモードの補完の一覧も同じ上限を使う（Vim の `'pumheight'` と同じ）ので、補完の一覧の名前の `completionMenu.` の下に置いた。`:set` の別名は、オーナーの nvim の設定が長い名前で書いているので、長い名前（`wildmode`、`wildignorecase`、`pumheight`）だけを受け付ける。
+`commandLine.popup` は #359 で足した。issue は名前を実装者に任せていた。描く場所を選ぶ真偽で、`diagnostic.popup` と同じく「ポップアップに出すか」を `popup` にし、コマンドラインの設定なので `commandLine.` の下に置いた。検索の入力も同じ場所に描くが、検索はコマンドラインの行の編集を使う（`internal/command` の `cmdlineKey`）ので、名前を分けていない。Vim と Neovim に対応する設定は無いので、`:set` の別名は作らない。
 #318 の 4 つの名前は、issue の案のとおりにした。インデントの文字と幅は `indent.` の下に、タブ文字の表示幅は字下げに限らない（行の途中のタブ文字も描く）ので `tab.` の下に置いた。
 `preview.*` の名前は、何の窓の何の値かが分かるように、窓の幅の境目（`minWindowWidth`）、プレビューの割合（`widthPercent`）、窓の割合（`windowWidthPercent`）にした（fzf-lua の `flip_columns` は、何を反転するのかが名前から分からないため写さなかった）。
 
@@ -4723,7 +4729,7 @@ Vim 9.1 の `:tabe` を引数なしで打つと、`:tabnew` と同じく空の�
 | 一覧の描画 | `internal/ui` の `completion.go`（`ui.Frame.Completion`） | 項目、選んでいる項目、項目を並べ始めるコマンドラインの中の位置を受け取り、位置と大きさとスクロールの位置を決めて描く。窓の重なりの表（`layers.go`）の「補完の候補の一覧」の行（`drawCompletion`）である |
 | 設定 | `internal/option` の表（7.3） | `commandLine.completeMode`、`commandLine.completeIgnoreCase`、`completionMenu.height` |
 
-一覧の中身（`wildMenu`）を描く位置から分けて持つのは、コマンドラインと検索の入力を画面の上の中央のポップアップに出す表示（noice.nvim の `command_palette`。別の issue）が、同じ中身を別の場所に描けるようにするためである。
+一覧の中身（`wildMenu`）を描く位置から分けて持つのは、コマンドラインと検索の入力を画面の上の中央のポップアップに出す表示（noice.nvim の `command_palette`。下の「画面の上のポップアップ」。#359）が、同じ中身を別の場所に描けるようにするためである。
 インサートモードの補完（6.3 の未決）は、`completionChoice` で候補を選び、選んだ候補をバッファの編集で入れる（コマンドラインの `wildSetWord` の代わり）。
 拡張機能に引数を補わせる口は、`completionJob` の集める関数（`func(ctx) (items, shown, err)`）で問い合わせの応答を待つ。
 どちらも、`ui.CompletionMenu` と `completionMenu.height` と色の名前（`popup`、`popup.selected`、`popup.match`、`popup.scrollbar`、`popup.thumb`）を使う想定である。
@@ -4732,9 +4738,45 @@ Vim 9.1 の `:tabe` を引数なしで打つと、`:tabnew` と同じく空の�
 | 足すもの | 要る理由 |
 |---|---|
 | 項目の文字列のほかの欄（Neovim の pum の `kind` と `menu`） | LSP の `completion` の項目の種類（`kind`）と説明（`detail`）を出す |
-| 置く向き（下の行の上に積むか、上の行の下に垂らすか。入らなければ反対へ） | `command_palette` は入力の行の下に、インサートモードの補完はカーソルの下（入らなければ上）に出す。今の `placeCompletion` は、コマンドラインの行の上に積む向きだけを持つ |
+| 置く向き（下の行の上に積むか、上の行の下に垂らすか。入らなければ反対へ） | インサートモードの補完はカーソルの下（入らなければ上）に出す。今の `placeCompletion` は、コマンドラインの行の上に積む向きだけを持つ |
 
-`command_palette` では、`ui` の描く位置を変え、`ui.CompletionMenu` の `Start`（コマンドラインの中のバイト位置）を、入力の行を描く列から数え直す。
+#359 の `command_palette`（下の「画面の上のポップアップ」）は、`placeCompletion` に向きを足さず、別の置き場所の関数（`drawPaletteMenu`）で入力の枠の下に描いた。
+一覧を入力の枠と同じ幅の枠に、決まった列から並べ、補う語の列に合わせないので、`placeCompletion` の横の位置と幅の決め方（Neovim の `pum_display`）を使わないためである。
+同じ理由で、`ui.CompletionMenu` の `Start` も数え直さずに使わない。
+項目の行の描き方（色、送り方、スクロールバー、収まらない項目の切り方）は、両方の置き場所で `drawCompletionRows` を共にする。
+インサートモードの補完で向きを足すときは、`placeCompletion` に足す。
+
+#### 画面の上のポップアップ
+
+#359 で、設定 `commandLine.popup`（7.3）が真なら、コマンドライン（`:`）と検索（`/`、`?`）の入力を、画面の最後の行の代わりに、画面の上の中央のポップアップの枠の中に描くようにした（`internal/ui` の `cmdlinepopup.go`。FR-215〜FR-217）。
+置き方と大きさは、オーナーの nvim の設定（`lua/plugins/noice.lua` の `cmdline = { view = "cmdline_popup" }` と `presets.command_palette = true`）と同じになるよう、noice.nvim（コミット 7bfd942445fb63089b59f97ca487d605e715f155。オーナーの nvim の `lazy-lock.json` の版）の既定と、それを置く nui.nvim（コミット 10fc361835c856ba4233ef5ea135b919bf3dce97）の計算を 2026-11-22 に読んで写した。
+読んだのは、noice.nvim の `lua/noice/config/views.lua`（`cmdline_popup`）、`lua/noice/config/preset.lua`（`command_palette`）、`lua/noice/config/cmdline.lua`（題）、`lua/noice/config/init.lua`（`cmdline.format`）、`lua/noice/config/highlights.lua`（色）、`lua/noice/ui/popupmenu/nui.lua`（一覧の幅）と、nui.nvim の `lua/nui/layout/utils.lua`（`calculate_window_position`）と `lua/nui/popup/border.lua`（`calculate_position`、題の `top_align`）である。
+同じ日に、80 列 24 行の tmux の中で、`nvim --clean`（Neovim 0.12.5）に同じ版の noice.nvim と nui.nvim を読み込んでオーナーの設定と同じ `opts` で `setup` し、`:e a<Tab>`、`/fo`、`?fo` の画面を本体と見比べた。入力の枠（2〜4 行目、8〜71 列）、題の位置、一覧の枠（5 行目から同じ 64 列）、項目を並べ始める列（10 列目）は一致した。
+表に無い点はどれも仮である。
+
+| 項目 | 扱い | noice.nvim と nui.nvim の値 |
+|---|---|---|
+| 入力の枠の縦の位置 | 枠の上の端（枠線の行）を、タブの行を含めた画面の上から 0 から数えて 2 行目に置く。入力はその下の 3 行目 | `cmdline_popup` の `position.row = 3` は中身の窓の行で、枠線は `calculate_position` で 1 行上になる。`relative = "editor"` はタブの行も数える |
+| 入力の枠の幅 | 入力の欄を、60 列と入力の幅（カーソルの 1 列を含む）の大きい方にし、左右に 1 列の余白と枠線を足す。画面の幅に収まらなければ画面の幅まで詰め、入力の先頭を隠す（最後の行に描くときと同じ `cmdlineTail`） | `size.min_width = 60`、`width = "auto"`、`border.padding = { 0, 1 }`。枠の全体は 64 列 |
+| 横の位置 | 枠の全体を `(画面の幅 - 枠の幅) / 2` の列から置く | `position.col = "50%"` で、中身の窓を `(画面の幅 - 中身の幅) × 0.5` に置き、枠線と余白の 2 列だけ左から枠が始まる。入力の欄が 60 列なら同じ列になる |
+| 題 | 上の枠線の中央に、前後に空白を付けて描く（`" Cmdline "`）。題の記号は 7.1 | `border.text.top` は `" " .. 種類の名前 .. " "`、nui.nvim の `top_align` の既定は `"center"` |
+| 枠線 | 記号 `popup.border` で描き、空なら描かずに、題を枠の最初の行に描く（浮かべる窓の `drawFloat` と同じ） | `border.style = "rounded"` |
+| 色 | 枠の中は `commandLine.popup`、枠線と題は `commandLine.popup.border`（検索は `commandLine.popup.border.search`）。7.1 | `NoiceCmdlinePopup`（`Normal`）、`NoiceCmdlinePopupBorder` と `NoiceCmdlinePopupTitle`（`DiagnosticSignInfo`）、`NoiceCmdlinePopupBorderSearch`（`DiagnosticSignWarn`） |
+| 入力の行 | 頭に `:`、`/`、`?` を残す。構文の色は付けない（[Vim との違い](vim-differences.md)） | `conceal` の既定で頭の文字を隠し、`icon` の印（Nerd Font）を出す。`lang` で構文の色を付ける |
+| 候補の一覧 | 入力の枠の下の枠線のすぐ下の行から、入力の枠と同じ幅の枠に描く。項目の文字は枠の中の左の 1 列の余白の後から並べ、右の 1 列の余白にスクロールバーを描く | `cmdline_popupmenu` の `position.row = 6`（枠線は 5 行目）、`size.width = 60` に余白の 2 列を足した 62 列（`M.opts`）、`border.style = "rounded"` |
+| 一覧の行の数 | 15 と `completionMenu.height`（0 でなければ）と、最後の行の上に枠ごと収まる行の数の最も小さいもの。1 行しか取れないのに 2 項目以上なら出さない（下の端の一覧の `placeCompletion` と同じ） | `size.max_height = 15`、`height = "auto"` |
+| 一覧の色 | 項目は `commandLine.popup`、選んでいる項目は `popup.selected`、打った語に当たる文字は `popup.match`、枠線は `commandLine.popup.border` | `winhighlight = { Normal = "Normal", FloatBorder = "NoiceCmdlinePopupBorder" }` |
+| 最後の行 | 入力の間は空ける。入力を終えた後のメッセージは最後の行に出す | オーナーの nvim は `messages = { enabled = false }` |
+| 置けないとき | 最後の行の上に入力の枠が収まらない（枠を上へ詰めても）か、入力の欄が 2 列も取れなければ、最後の行に描く | — |
+| 重なり | 浮かべる窓、進み具合、スクロールバー、ステータス行、出力の欄の上に描く（`internal/ui` の `layers.go` の表の 8.2 と 8.3） | `zindex = 200` |
+| マウス | 枠の場所を、浮かべた窓と同じく何も無い所（`HitNone`）として残す（`hitState.cover`）。枠の上を押しても何もしない。`HitTest` に場所の種類は足していない | — |
+
+設定は描くたびに読み（`internal/editor` の `cmdlinePopup`）、client の画面（`frame`）とペインの部品の client の画面（`paneComponentFrame`）の `ui.Frame.CommandLinePopup` に詰める。
+ポップアップの部品の client の画面（`popupComponentFrame`）は `frame` を元に作るので、同じ値になる。
+どの画面でも、その画面の `ui.Renderer` が、その画面の大きさで置き場所を決める。
+選択肢の問い（`Frame.Choice`）を出している間は、今までどおり最後の行から上へ問いを描き、枠は出さない。
+検索の一致の件数（6.7 の「検索の一致の件数」）は検索で動いた後のメッセージなので、最後の行に出す。
+打つたびの検索（6.7）で画面を送るとき、枠の行を避けないので、動いた先の一致が枠の下に隠れることがある。
 
 #### 補う語と候補
 

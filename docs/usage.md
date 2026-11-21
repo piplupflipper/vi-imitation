@@ -600,6 +600,8 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 | `popup.border` | 浮かべる窓の枠線。書かなければ `popup` の色 | なし |
 | `popup.match` | 補完の候補の一覧の項目の、打った語に当たる先頭の文字（Neovim の `PmenuMatch`）。`popup` か `popup.selected` の上に重ねる | 太字 |
 | `popup.scrollbar`、`popup.thumb` | 補完の候補の一覧のスクロールバーの溝とつまみ（Vim の `PmenuSbar` と `PmenuThumb`） | 順に灰色（`popup` と同じ）、明るい灰色の背景 |
+| `commandLine.popup` | コマンドラインを画面の上に出すとき（[コマンドラインを画面の上に出す](#コマンドラインを画面の上に出す)）の、入力の枠の中と、その下の候補の一覧の項目（noice.nvim の `NoiceCmdlinePopup`）。一覧の選んでいる項目と打った語に当たる文字は `popup.selected` と `popup.match` で描く | なし（端末の既定の文字と背景の色。noice.nvim の既定のリンク先の `Normal` と同じ） |
+| `commandLine.popup.border`、`commandLine.popup.border.search` | コマンドラインを画面の上に出すときの枠線と題の、コマンドライン（`:`。候補の一覧の枠線も）と検索（`/`、`?`）（noice.nvim の `NoiceCmdlinePopupBorder` と `NoiceCmdlinePopupBorderSearch`） | 順に端末の 16 色の 12、11（noice.nvim の既定のリンク先の `DiagnosticSignInfo` と `DiagnosticSignWarn` に当たる `sign.diagnostic.info` と `sign.diagnostic.warning` と同じ番号）。同梱の iceberg では iceberg.vim の `DiagnosticSignInfo` と `DiagnosticSignWarn` の文字の色 |
 | `finder.match` | ファジーファインダーの一覧の、入力に一致した文字 | 太字と下線 |
 | `preview.line` | 項目のプレビュー（[項目のプレビュー](#項目のプレビュー)）の、項目の指す行（検索の一致した行など）。行の全体に付け、構文の色をその上に重ねる | 背景が端末の 16 色の 0。同梱の iceberg では iceberg.vim の `CursorLine` の背景 |
 | `progress` | 画面の右下に重ねる拡張機能の進み具合（[拡張機能の進み具合](#拡張機能の進み具合)）の本文と百分率 | なし（端末の既定の文字の色） |
@@ -628,7 +630,8 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 | `sign.diagnostic.error`、`sign.diagnostic.warning`、`sign.diagnostic.info`、`sign.diagnostic.hint` | 診断の印 | `E`、`W`、`I`、`H` | 同上 |
 | `readonly` | ステータス行の編集の禁止の印 | `[RO]` | 任意の文字列 |
 | `modified` | ステータス行の未保存の印 | `[+]` | 任意の文字列 |
-| `popup.border` | 浮かべる窓（編集の画面の中に描く窓。端末多重化ソフトのポップアップの枠線は端末多重化ソフトが描くので効かない）の枠線 | 空（枠線なし） | 空か、表示幅が 1 の文字を 8 つ。並びは左上、上、右上、右、右下、下、左下、左 |
+| `popup.border` | 浮かべる窓（編集の画面の中に描く窓。端末多重化ソフトのポップアップの枠線は端末多重化ソフトが描くので効かない）と、画面の上に出すコマンドライン（[コマンドラインを画面の上に出す](#コマンドラインを画面の上に出す)）の枠線 | 空（枠線なし） | 空か、表示幅が 1 の文字を 8 つ。並びは左上、上、右上、右、右下、下、左下、左 |
+| `commandLine.title.command`、`commandLine.title.searchForward`、`commandLine.title.searchBackward` | 画面の上に出すコマンドラインの枠の題の、コマンドライン（`:`）、前方の検索（`/`）、後方の検索（`?`）。色は `commandLine.popup.border` と `commandLine.popup.border.search` | `Cmdline`、`Search forward`、`Search backward` | 任意の文字列。空なら題を出さない |
 | `lineWrap.showBreak` | 長い行を折り返したとき（[長い行の折り返し](#長い行の折り返し)）に、続きの見た目の行の頭に付ける記号（Vim の `'showbreak'`）。色は `nontext` | 空（付けない） | 任意の文字列。本文の幅から 2 を引いた列数より広ければ付けない |
 | `whitespace.tab` | 空白の記号を描くとき（[空白の記号](#空白の記号)）の、タブ文字の記号（Vim の `'listchars'` の `tab`）。色は `whitespace` | `> ` | 空か、表示幅が 1 の文字を 2 つか 3 つ。空ならタブ文字を `^I` で描く |
 | `whitespace.space` | 行頭と行末でない空白の記号（`space`）。色は `whitespace` | 空（描かない） | 空か、表示幅が 1 の文字を 1 つ |
@@ -932,6 +935,34 @@ UTF-8 として正しくない名前のファイルは、候補に出さない�
 マクロを記録している間に補うと、補った後の文字が記録に入る。
 再生すると、`<Tab>` を打たずに同じコマンドラインになる（Vim は `<Tab>` を記録し、再生ではタブ文字が入る）。
 
+### コマンドラインを画面の上に出す
+
+設定の `commandLine.popup` を `true` にすると、`:` と `/` と `?` の入力を、画面の最後の行の代わりに、画面の上の中央の枠に出す（nvim の noice.nvim の `cmdline_popup` と `presets.command_palette` と同じ置き方）。
+補完の候補の一覧は、入力の枠のすぐ下に、入力の枠と同じ幅で出す。
+本体の既定は `false`（Vim と同じく最後の行に出す）で、同梱の `config.example.jsonc` は `true` にしている。
+
+```jsonc
+{
+  "commandLine": { "popup": true },
+  "symbols": {
+    // 枠線（浮かべる窓と同じ記号）。書かなければ枠線を描かず、題を枠の最初の行に出す
+    "popup.border": "╭─╮│╯─╰│",
+  },
+}
+```
+
+| 項目 | 出し方 |
+|---|---|
+| 入力の枠 | 枠の上の端を画面の上から 3 行目（タブの行を出していても同じ行）に置き、横は画面の中央に置く。入力の欄は 60 列で、入力が長くなれば画面の幅まで広げ、それでも収まらなければ先頭を隠す。入力の行の頭には、最後の行に出すときと同じく `:`、`/`、`?` を出す |
+| 題 | 枠の上の枠線の中央に、入力の種類の記号（`commandLine.title.command`、`commandLine.title.searchForward`、`commandLine.title.searchBackward`。既定は `Cmdline`、`Search forward`、`Search backward`）を出す。色は、コマンドラインが `commandLine.popup.border`、検索が `commandLine.popup.border.search` で、枠線も同じ色で描く |
+| 候補の一覧 | 入力の枠のすぐ下の枠に、15 行まで出す。`completionMenu.height` を書いていれば、その行の数までにする。画面が低ければ、最後の行の上に収まる行の数まで詰める。選び方のキーは[コマンドラインの補完](#コマンドラインの補完)と同じ |
+| 最後の行 | 入力の間は空ける。入力を終えた後のメッセージ（誤り、`:w` の結果、検索の一致の件数）は、今までどおり最後の行に出す |
+| 狭い画面 | 最後の行の上に枠を置けないほど低い画面（タブの行を除いて、入力の枠の行の数に最後の行の 1 行を足した数より低い画面。枠線を描くなら入力の枠は 3 行で、4 行より低い画面）と、入力の欄が 2 列も取れないほど狭い画面では、最後の行に出す |
+
+枠は、浮かべる窓、進み具合、スクロールバー、ステータス行の上に重ねて出す。
+枠の上でマウスのボタンを押しても何もしない。
+打つたびの検索で画面が動いた先の一致が、枠の下に隠れることがある（枠の行を避けて画面を送ることはしない）。
+
 ## 実行中に設定を変える
 
 [設定の名前の一覧](#設定の名前の一覧)にある設定の項目は、実行中に Ex コマンドで変えたり読んだりできる。
@@ -1013,6 +1044,7 @@ Vim の短い名前（`ft`）、`inv` の接頭辞、`+=`、`-=`、`^=`、`&`（
 | `scrollbar.excludedFileTypes` | 文字列 | エディタ全体 | 無し | スクロールバーを出さないバッファのファイルの種類（`filetype` の値）を、コンマで区切って並べたもの。既定は空（どのファイルの種類にも出す） |
 | `commandLine.completeMode` | 文字列 | エディタ全体 | `wildmode` | コマンドラインの `<Tab>` の補い方（[コマンドラインの補完](#コマンドラインの補完)）。Vim の `'wildmode'` と同じ書き方で、語は `full`、`longest`、`noselect`。既定は `full`（Vim と同じ）。同梱の `config.example.jsonc` は `longest:full,full` にしている |
 | `commandLine.completeIgnoreCase` | 真偽 | エディタ全体 | `wildignorecase` | コマンドラインの補完で、ファイルとディレクトリの名前の大文字と小文字を区別しないか。既定は `false`（区別する。Vim と同じ）。同梱の `config.example.jsonc` は `true` にしている |
+| `commandLine.popup` | 真偽 | エディタ全体 | 無し | `:` と `/` と `?` の入力を、画面の最後の行の代わりに、画面の上の中央の枠に出すか（[コマンドラインを画面の上に出す](#コマンドラインを画面の上に出す)）。既定は `false`（最後の行に出す。Vim と Neovim と同じ）。同梱の `config.example.jsonc` は `true` にしている |
 | `completionMenu.height` | 整数 | エディタ全体 | `pumheight` | 補完の候補の一覧に出す行の数の上限。既定は `0`（画面に収まるだけ出す。Vim と同じ）、範囲は 0 から 9999。同梱の `config.example.jsonc` は `12` にしている |
 | `intro.show` | 真偽 | エディタ全体 | 無し | 引数なしで起動したときに、画面の中央に起動の案内を出すか（[起動の案内](#起動の案内)）。既定は `true`（出す。Vim と Neovim と同じ）。Vim の `'shortmess'` の `I` に当たるが、`:set shortmess` の別名は無いので、設定ファイルに `"intro": { "show": false }` と書く。実行中に `false` にすると案内が消え、`true` に戻しても出ない |
 

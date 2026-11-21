@@ -271,6 +271,11 @@ func (r *Renderer) drawBorder(g *Grid, theme Theme, chars [borderChars]string, t
 	if !ok {
 		a = theme.attr(StylePopup)
 	}
+	r.drawBorderAttr(g, a, chars, top, x0, h, w)
+}
+
+// drawBorderAttr は、drawBorder の、枠線を色 a で描くものである（画面の上のポップアップのコマンドラインの枠。FR-216）。
+func (r *Renderer) drawBorderAttr(g *Grid, a Attr, chars [borderChars]string, top, x0, h, w int) {
 	put := func(row, col int, s string) {
 		if row >= 0 && row < r.Height && col >= 0 && col < r.Width {
 			clearSplit(g, row, col, col+1)

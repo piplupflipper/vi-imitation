@@ -355,6 +355,11 @@ const (
 	// CommandLineCompleteIgnoreCase は、コマンドラインの補完で、ファイルとディレクトリの名前の大文字と小文字を区別しないかである
 	// （FR-196。Vim の 'wildignorecase'）。既定は Vim と同じく区別する。補う候補を集めるたびに読む。
 	CommandLineCompleteIgnoreCase = "commandLine.completeIgnoreCase"
+	// CommandLinePopup は、コマンドライン（:）と検索（/、?）の入力を、画面の最後の行の代わりに、画面の上の中央のポップアップの枠の中に
+	// 描くかである（FR-215。noice.nvim の cmdline_popup と command_palette に当たる）。範囲はエディタ全体で、既定は Vim と Neovim と同じく
+	// 最後の行に描く。補完の候補の一覧は、入力の枠のすぐ下に、枠と同じ幅で描く（FR-217）。描くたびに読む。
+	// Vim と Neovim に対応する設定は無いので、:set の別名は作らない。
+	CommandLinePopup = "commandLine.popup"
 	// CompletionMenuHeight は、補完の候補の一覧（ポップアップの一覧）に出す行の数の上限である（FR-197。Vim の 'pumheight'）。
 	// 0 なら画面に収まるだけ出す（Vim と同じ）。範囲は 0 から 9999 である（scroll.margin と同じ上限）。描くたびに読む。
 	// 名前をコマンドラインの下に置かないのは、後に作るインサートモードの補完の一覧も同じ上限を使うためである（Vim の 'pumheight' と同じ）。
@@ -414,6 +419,7 @@ var defs = []Def{
 	{Name: ScrollbarExcludedFileTypes, Type: String, Scope: ScopeEditor, Default: StringValue("")},
 	{Name: CommandLineCompleteMode, Type: String, Scope: ScopeEditor, Default: StringValue("full"), Words: CompleteModeWords},
 	{Name: CommandLineCompleteIgnoreCase, Type: Bool, Scope: ScopeEditor, Default: BoolValue(false)},
+	{Name: CommandLinePopup, Type: Bool, Scope: ScopeEditor, Default: BoolValue(false)},
 	{Name: CompletionMenuHeight, Type: Int, Scope: ScopeEditor, Default: IntValue(0), Range: &IntRange{Min: 0, Max: 9999}},
 	{Name: IntroShow, Type: Bool, Scope: ScopeEditor, Default: BoolValue(true)},
 }
