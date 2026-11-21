@@ -242,7 +242,7 @@ func (e *Editor) hold(ev exthost.Event) (redraw bool) {
 	for i, h := range e.held {
 		switch h.(type) {
 		case *exthost.DecorationSet, *exthost.MessageShow, *exthost.DiagnosticSet, *exthost.SignSet,
-			*exthost.PopupShow, *exthost.OutputAppend, *exthost.ViewUpdate, *exthost.BandSet:
+			*exthost.PopupShow, *exthost.OutputAppend, *exthost.ViewUpdate, *exthost.BandSet, *exthost.VirtualTextSet:
 			drop = i
 		}
 		if drop >= 0 {
@@ -449,7 +449,7 @@ func (x *extQuery) Motion(ref editcmd.Ref, b *buffer.Buffer, req target.Request,
 	if cols == nil {
 		cols = target.CharColumns{}
 	}
-	return target.Result{Pos: pos, Kind: kind, Want: cols.Column(b.Line(pos.Line), pos.Byte)}, nil
+	return target.Result{Pos: pos, Kind: kind, Want: cols.Column(pos.Line, b.Line(pos.Line), pos.Byte)}, nil
 }
 
 // TextObject は、textObject/resolve を問い合わせる。

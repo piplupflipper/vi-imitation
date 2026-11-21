@@ -68,7 +68,7 @@ func setupIndent(t *testing.T, cfg string, auto bool, text string) *State {
 // widthColumns は、internal/ui の Columns と同じ数え方を、wideTextWidth の幅で写したものである（タブ文字の上ではタブ文字の最後の列）。
 type widthColumns struct{ tab int }
 
-func (c widthColumns) Column(line string, byteOff int) int {
+func (c widthColumns) Column(_ int, line string, byteOff int) int {
 	for i, r := range line {
 		if i == byteOff {
 			col := wideTextWidth(line[:i], c.tab)
@@ -81,7 +81,7 @@ func (c widthColumns) Column(line string, byteOff int) int {
 	return wideTextWidth(line, c.tab)
 }
 
-func (c widthColumns) ByteAt(line string, col int) int {
+func (c widthColumns) ByteAt(_ int, line string, col int) int {
 	last := 0
 	for i := range line {
 		_, size := utf8.DecodeRuneInString(line[i:])

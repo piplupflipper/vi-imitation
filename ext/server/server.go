@@ -72,7 +72,7 @@ const codeRequestCancelled = -32800
 //
 // # 本体へ送るメッセージ
 //
-// 通知（SetDecorations、ShowMessage、SetDiagnostics、SetSigns、ShowPopup、AppendOutput、ReportProgress、SetBand）は、どこから呼んでもよい。
+// 通知（SetDecorations、SetVirtualTexts、ShowMessage、SetDiagnostics、SetSigns、ShowPopup、AppendOutput、ReportProgress、SetBand）は、どこから呼んでもよい。
 // リクエスト（Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice）と WaitBuffer は、
 // 本体の応答かループの処理を待つので、ループの上から呼んではならない（Edit の doc）。
 // ハンドラーかフックから使うときは、go で別の goroutine を起こし、Server が渡したのとは別の ctx で呼ぶ。

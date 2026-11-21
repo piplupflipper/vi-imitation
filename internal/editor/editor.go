@@ -537,6 +537,10 @@ type bufferState struct {
 	decoView    *ui.Decorations
 	diagnostics map[string][]ext.Diagnostic
 	signs       map[string][]ext.Sign
+	// virtualTexts は、拡張機能ごとの仮想テキストの一覧（virtualText/set。位置は今の版のもの）で、virtView はそれを合わせた描画の表である
+	// （virtualtext.go）。一覧が無ければ virtView は nil である。
+	virtualTexts map[string][]ext.VirtualText
+	virtView     *ui.VirtualTexts
 
 	// decoBuilding は、decoView を別の goroutine で作っている途中かである（rebuildDecorations）。
 	decoBuilding bool
@@ -1210,6 +1214,7 @@ func (e *Editor) replaceBuffer(bs *bufferState, b *buffer.Buffer) {
 	bs.decoView = nil
 	bs.diagnostics = map[string][]ext.Diagnostic{}
 	bs.signs = map[string][]ext.Sign{}
+	bs.clearVirtualTexts()
 	e.initState(bs)
 	bs.state.TakeOver(old)
 	bs.state.SetCursor(old.Cursor())

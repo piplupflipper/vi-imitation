@@ -80,12 +80,12 @@ func BenchmarkWrapLinesHugeLine(b *testing.B) {
 	r.Render(&Frame{Text: sameLines{line, 1}, Wrap: true})
 	l := r.WrapLines(LineLayout{TabStop: DefaultTabStop})
 	b.ResetTimer()
-	n := l.Column(line, len(line))
+	n := l.Column(0, line, len(line))
 	for i := range b.N {
 		// 行の最後の見た目の行から gk を打つ。行の最後の列、望みの列の文字、着いた文字の列を数える。
-		_ = l.Column(line, len(line))
-		at := l.ByteAt(line, n-l.Width()-(i%l.Width()))
-		_ = l.Column(line, at)
+		_ = l.Column(0, line, len(line))
+		at := l.ByteAt(0, line, n-l.Width()-(i%l.Width()))
+		_ = l.Column(0, line, at)
 	}
 }
 

@@ -36,6 +36,9 @@ type LineLayout struct {
 	// "whitespace." で始まる名前で決まる。true なら、タブの上のカーソルと望みの列はタブの最初の列になり、タブ文字の記号
 	// （SymbolWhitespaceTab）が空ならタブ文字を ^I の 2 列で数える。
 	Whitespace bool
+	// Virtual は、行に出す仮想テキスト（拡張機能の virtualText/set。FR-231〜FR-234。virtual.go）である。nil なら出さない。
+	// inline の仮想テキストは行の文字と同じく列を占めるので、描画、望みの列、折り返しの数え方のどれも、この値で列を数える。
+	Virtual *VirtualTexts
 }
 
 // lineRule は、LineLayout と記号の対応から作った、行の文字を画面の列に並べる規則である。
@@ -52,11 +55,13 @@ type lineRule struct {
 	space, lead, trail, nbsp string
 	// eol は、list のときの行末の記号（SymbolWhitespaceEOL）である。空なら描かない。
 	eol string
+	// virt は、行に出す仮想テキスト（LineLayout.Virtual）である。行の文字は walk で並べる。
+	virt *VirtualTexts
 }
 
 // newLineRule は、並べ方 l で規則を作る。symbol は記号の名前から文字列を引く関数で、l.Whitespace のときだけ呼ぶ。
 func newLineRule(l LineLayout, symbol func(string) string) lineRule {
-	m := lineRule{tabStop: l.TabStop, list: l.Whitespace}
+	m := lineRule{tabStop: l.TabStop, list: l.Whitespace, virt: l.Virtual}
 	if !m.list {
 		return m
 	}

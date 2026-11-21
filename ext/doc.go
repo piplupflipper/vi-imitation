@@ -104,4 +104,8 @@ package ext
 // 古い本体は windowEvents を未知の項目として警告にして window/change を送らず、band/set を知らない通知として捨てる。
 // 0.18.0 で、textObject/resolve の params の selection（ビジュアルモードの今の選択）と、result の replaceSelection（選択をその範囲で置き換える）を
 // 足した（#373。FR-240）。古い本体は selection を送らず replaceSelection を捨てるので、tree-sitter の an と in を繰り返しても選択が外へ広がらない。
-const APIVersion = "0.18.0"
+// 0.19.0 で、decoration/set の範囲に直に付ける色（Decoration.Attr、TextAttr）と、仮想テキストを出す virtualText/set
+// （VirtualTextSetParams。virtualtext.go）を足した（#368。FR-230〜FR-234）。
+// 古い本体は、Attr を付けた範囲のある decoration/set の通知の全体を誤りとして捨て（styles の項目を文字列として読めないため）、
+// virtualText/set を知らない通知として捨てる。直に付ける色を使う拡張機能は、initialize の apiVersion を見てから付ける。
+const APIVersion = "0.19.0"

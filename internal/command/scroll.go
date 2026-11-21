@@ -43,7 +43,7 @@ func (s *State) lineHeight() func(int) int {
 	if sl == nil || !sl.Wrap() {
 		return func(int) int { return 1 }
 	}
-	return func(l int) int { return sl.Rows(s.buf.Line(l)) }
+	return func(l int) int { return sl.Rows(l, s.buf.Line(l)) }
 }
 
 // scrollMargin は、カーソルの上下に残す余白の行数（設定の scroll.margin。FR-174）を返す。設定の口が無ければ（テスト）表の既定値である。
@@ -93,7 +93,7 @@ func (s *State) scrollView() (v scroll.View, ok bool) {
 
 // cursorColumn は、カーソルの表示の列（行を折り返すときは、見た目の行の番号 × 本文の幅を足した列）を返す。
 func (s *State) cursorColumn() int {
-	return s.columns().Column(s.line(s.cursor.Line), s.cursor.Byte)
+	return s.columns().Column(s.cursor.Line, s.line(s.cursor.Line), s.cursor.Byte)
 }
 
 // screenWidth は、行を折り返して描くときの本文の幅を返す。折り返さないなら 0 である。
@@ -110,7 +110,7 @@ func (s *State) cursorRow() int {
 	if w == 0 {
 		return 0
 	}
-	return s.columns().Column(s.line(s.cursor.Line), s.cursor.Byte) / w
+	return s.columns().Column(s.cursor.Line, s.line(s.cursor.Line), s.cursor.Byte) / w
 }
 
 // setView は、数え方が決めた位置を表示領域に戻す。hold なら、カーソルがその行にある間は描画で決め直させない（Viewport.SetView）。
@@ -130,7 +130,7 @@ func (s *State) cursorToLine(l int) {
 		s.cursor = pos(l, s.insertByteAt(l, s.want))
 		return
 	}
-	s.cursor = s.clampNormal(s.clampPos(pos(l, s.columns().ByteAt(s.line(l), s.want))))
+	s.cursor = s.clampNormal(s.clampPos(pos(l, s.columns().ByteAt(l, s.line(l), s.want))))
 	if s.mode.visual() {
 		s.cursor = s.visualCursor()
 	}
@@ -289,7 +289,7 @@ func (s *State) smoothCursor(start buffer.Position) func(v *scroll.View, cur int
 		soCols, size := 0, 0
 		if so != 0 {
 			soCols = w + (so-1)*w
-			size = cols.Column(line, len(line))
+			size = cols.Column(cur, line, len(line))
 		}
 		switch spaceCols := (h - 1) * w; {
 		case v.Top == 0 && v.Skip == 0:
@@ -315,9 +315,9 @@ func (s *State) smoothCursor(start buffer.Position) func(v *scroll.View, cur int
 		bot := skipcol + w + (h-1)*w - soCols
 		b := start.Byte
 		if cur != start.Line {
-			b = cols.ByteAt(line, s.want)
+			b = cols.ByteAt(cur, line, s.want)
 		}
-		vc := cols.Column(line, b)
+		vc := cols.Column(cur, line, b)
 		col := vc
 		if col < top {
 			if col < w {
@@ -335,9 +335,9 @@ func (s *State) smoothCursor(start buffer.Position) func(v *scroll.View, cur int
 			return cur
 		}
 		s.want = col
-		if end := cols.Column(line, len(line)); end <= col && skipcol > 0 && cur < s.lastLine() {
+		if end := cols.Column(cur, line, len(line)); end <= col && skipcol > 0 && cur < s.lastLine() {
 			// 望みの列に届かず、カーソルが最初の行の見えている部分に入らないときは、次の行へ移す。
-			if nb := cols.ByteAt(line, col); cols.Column(line, nb) < skipcol+overlap {
+			if nb := cols.ByteAt(cur, line, col); cols.Column(cur, line, nb) < skipcol+overlap {
 				s.want = 0
 				return cur + 1
 			}

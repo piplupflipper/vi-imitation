@@ -137,3 +137,77 @@ func TestDecorationSetJSONSize(t *testing.T) {
 		}
 	}
 }
+
+// TestDecorationSetJSONAttr は、直に付ける色（Decoration.Attr。FR-230）のある範囲を、styles の表の名前と色のオブジェクトにし、
+// 同じ組の範囲は同じ添字を指し、読み戻せることを確かめる。名前の無い組と、名前だけの組（文字列）も混ぜる。
+func TestDecorationSetJSONAttr(t *testing.T) {
+	hint := &TextAttr{Fg: "#8b80a8", Italic: true}
+	red := &TextAttr{Bg: "#FF0000"}
+	p := DecorationSetParams{Buffer: 2, Version: 9, Decorations: []Decoration{
+		{Range: rng(0, 0, 0, 7), Style: "keyword"},
+		{Range: rng(0, 8, 0, 12), Style: "comment", Attr: hint},
+		{Range: rng(1, 0, 1, 7), Attr: red},
+		{Range: rng(2, 0, 2, 7), Style: "comment", Attr: &TextAttr{Fg: "#8b80a8", Italic: true}}, // hint と同じ値
+		{Range: rng(3, 0, 3, 1), Style: "comment"},
+	}}
+	want := `{"buffer":2,"version":9,"styles":["keyword",{"style":"comment","attr":{"fg":"#8b80a8","italic":true}},{"attr":{"bg":"#FF0000"}},"comment"],` +
+		`"data":[0,0,0,7,0,0,8,0,4,1,1,0,0,7,2,1,0,0,7,1,1,0,0,1,3]}`
+	roundTrip(t, p, want)
+	if got := p.JSONSize(); got != len(want) {
+		t.Errorf("JSONSize = %d, want %d", got, len(want))
+	}
+	var back DecorationSetParams
+	if err := json.Unmarshal([]byte(want), &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Decorations[1].Attr != back.Decorations[3].Attr {
+		t.Errorf("the decorations with the same styles entry do not share Attr")
+	}
+}
+
+// TestDecorationSetJSONAttrErrors は、"#rrggbb" でない色と、名前でも色のオブジェクトでもない styles の項目を誤りにすることを確かめる。
+func TestDecorationSetJSONAttrErrors(t *testing.T) {
+	for _, st := range []string{
+		`{"attr":{"fg":"red"}}`,
+		`{"attr":{"bg":"#12345"}}`,
+		`{"attr":{"sp":"#12345g"}}`,
+		`{"attr":{"fg":1}}`,
+		`1`,
+		`["a"]`,
+	} {
+		var p DecorationSetParams
+		if err := json.Unmarshal([]byte(`{"buffer":1,"version":1,"styles":[`+st+`],"data":[0,0,0,1,0]}`), &p); err == nil {
+			t.Errorf("styles %s: Unmarshal succeeded with %+v, want an error", st, p)
+		}
+	}
+}
+
+// TestVirtualTextSetValidate は、virtualText/set の置き方と色の検査を確かめる。
+func TestVirtualTextSetValidate(t *testing.T) {
+	ok := []VirtualTextSetParams{
+		{},
+		{VirtualTexts: []VirtualText{
+			{Position: Position{Line: 1, Byte: 2}, Placement: VirtualTextInline, Chunks: []VirtualTextChunk{{Text: ": int", Attr: &TextAttr{Fg: "#8b80a8"}}}},
+			{Placement: VirtualTextEOL, Chunks: []VirtualTextChunk{{Text: "x", Style: "comment"}}},
+			{Placement: VirtualTextOverlay},
+		}},
+	}
+	for _, p := range ok {
+		if err := p.Validate(); err != nil {
+			t.Errorf("Validate(%+v) = %v, want nil", p, err)
+		}
+	}
+	bad := []VirtualTextSetParams{
+		{VirtualTexts: []VirtualText{{Placement: "right_align"}}},
+		{VirtualTexts: []VirtualText{{}}},
+		{VirtualTexts: []VirtualText{{Placement: VirtualTextEOL, Chunks: []VirtualTextChunk{{Text: "x", Attr: &TextAttr{Bg: "#ff00"}}}}}},
+	}
+	for _, p := range bad {
+		if err := p.Validate(); err == nil {
+			t.Errorf("Validate(%+v) = nil, want an error", p)
+		}
+	}
+	roundTrip(t, VirtualTextSetParams{Buffer: 1, Version: 2, VirtualTexts: []VirtualText{
+		{Position: Position{Line: 0, Byte: 3}, Placement: VirtualTextInline, Chunks: []VirtualTextChunk{{Text: "a", Style: "comment", Attr: &TextAttr{Bold: true}}}},
+	}}, `{"buffer":1,"version":2,"virtualTexts":[{"position":{"line":0,"byte":3},"placement":"inline","chunks":[{"text":"a","style":"comment","attr":{"bold":true}}]}]}`)
+}

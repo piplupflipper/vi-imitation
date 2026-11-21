@@ -26,16 +26,118 @@ import (
 // 整数は符号付きで、範囲の順序と値に制約は無い（並んでいなくても、行をまたいでも、終わりが開始より前でも表せる）。
 // 送る側の一覧（DecorationSetParams.Decorations）は、順序を含めてそのまま読み戻せる。
 // 本体は、重なった範囲を一覧の後ろのものほど上に描くので、順序には意味がある。
+//
+// styles の 1 つの項目は、色の種類の名前だけなら文字列で、直に付ける色（Decoration.Attr。FR-230）があれば
+// 名前と色のオブジェクトである（名前は省いてよい）。0.16.0 までの本体は文字列でない項目を読めず、通知の全体を誤りとして捨てる。
+//
+//	{"buffer":1,"version":3,"styles":["keyword",{"style":"comment","attr":{"fg":"#8b80a8"}},{"attr":{"bg":"#ff0000"}}],"data":[...]}
 const decorationFields = 5
 
 // decorationSetWire は、decoration/set の params の JSON の形である。
 type decorationSetWire struct {
 	Buffer  BufferID        `json:"buffer"`
 	Version Version         `json:"version"`
-	Styles  []string        `json:"styles"`
+	Styles  []styleEntry    `json:"styles"`
 	Data    json.RawMessage `json:"data"`
 	// Old は、API のバージョン 0.1.0 までの形（範囲ごとのオブジェクトの配列）の項目である。読むときに誤りにするためだけに置く。
 	Old json.RawMessage `json:"decorations,omitempty"`
+}
+
+// TextAttr は、範囲（Decoration）と仮想テキスト（VirtualTextChunk）に直に付ける色と飾りである（基本設計 6.1。FR-230）。
+// 色の種類の名前（Style）と一緒に付けたら、本体は名前の色の上にこの色を重ねる（空の色は名前の色のまま、飾りはどちらかにあれば付ける）。
+// 名前の色は利用者が設定の colors で変えられるが、この色は変えられない。インレイヒントの薄い色や、色コード（#ff0000 など）の着色のように、
+// 拡張機能が値を決める色に使う。
+type TextAttr struct {
+	// Fg、Bg、Sp は、文字の色、背景の色、下線と波線の色である。"#rrggbb"（24 ビットの色。16 進の大文字と小文字のどちらでもよい）か、
+	// 空（付けない）にする。
+	Fg string `json:"fg,omitempty"`
+	Bg string `json:"bg,omitempty"`
+	Sp string `json:"sp,omitempty"`
+	// Bold は太字、Italic は斜体、Underline は下線、Undercurl は波線、Reverse は文字と背景の色の入れ替えである。
+	Bold      bool `json:"bold,omitempty"`
+	Italic    bool `json:"italic,omitempty"`
+	Underline bool `json:"underline,omitempty"`
+	Undercurl bool `json:"undercurl,omitempty"`
+	Reverse   bool `json:"reverse,omitempty"`
+}
+
+// Validate は、色が "#rrggbb" か空であることを確かめる。
+func (a *TextAttr) Validate() error {
+	for _, c := range [...]struct{ name, v string }{{"fg", a.Fg}, {"bg", a.Bg}, {"sp", a.Sp}} {
+		if c.v != "" && !IsHexColor(c.v) {
+			return fmt.Errorf("attr.%s %q is not #rrggbb", c.name, c.v)
+		}
+	}
+	return nil
+}
+
+// IsHexColor は、s が "#rrggbb"（16 進の大文字と小文字のどちらでもよい）かを返す。
+func IsHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// styleEntry は、decoration/set の styles の 1 つの項目（色の種類の名前と、直に付ける色）である。
+// Attr が nil なら JSON では名前の文字列にし、そうでなければ名前と色のオブジェクトにする。
+type styleEntry struct {
+	Style string
+	Attr  *TextAttr
+}
+
+// styleKey は、styleEntry を表の添字に引くための、比べられる形である。
+type styleKey struct {
+	style   string
+	attr    TextAttr
+	hasAttr bool
+}
+
+func (e styleEntry) key() styleKey {
+	k := styleKey{style: e.Style}
+	if e.Attr != nil {
+		k.attr, k.hasAttr = *e.Attr, true
+	}
+	return k
+}
+
+// styleEntryObject は、styleEntry のオブジェクトの形である。
+type styleEntryObject struct {
+	Style string    `json:"style,omitempty"`
+	Attr  *TextAttr `json:"attr,omitempty"`
+}
+
+// MarshalJSON は、e を名前の文字列か、名前と色のオブジェクトにする。
+func (e styleEntry) MarshalJSON() ([]byte, error) {
+	if e.Attr == nil {
+		return json.Marshal(e.Style)
+	}
+	return json.Marshal(styleEntryObject(e))
+}
+
+// UnmarshalJSON は、名前の文字列か、名前と色のオブジェクトを読む。色が "#rrggbb" でなければ誤りにする。
+func (e *styleEntry) UnmarshalJSON(b []byte) error {
+	if i := skipSpace(b, 0); i < len(b) && b[i] == '"' {
+		*e = styleEntry{}
+		return json.Unmarshal(b, &e.Style)
+	}
+	var o styleEntryObject
+	if err := json.Unmarshal(b, &o); err != nil {
+		return err
+	}
+	if o.Attr != nil {
+		if err := o.Attr.Validate(); err != nil {
+			return err
+		}
+	}
+	*e = styleEntry(o)
+	return nil
 }
 
 // JSONSize は、p を MarshalJSON で JSON にしたときのバイト数を、符号化せずに返す。
@@ -46,7 +148,7 @@ func (p DecorationSetParams) JSONSize() int {
 	n += len(mustMarshal(styles))
 	var prev Position
 	for _, d := range p.Decorations {
-		for _, v := range encodeDecoration(prev, d, index[d.Style]) {
+		for _, v := range encodeDecoration(prev, d, index.of(d)) {
 			n += intDigits(v) + 1 // 区切りの ","
 		}
 		prev = d.Range.Start
@@ -57,21 +159,48 @@ func (p DecorationSetParams) JSONSize() int {
 	return n
 }
 
-// styleTable は、decs に現れる色の種類の名前を、初めて現れた順に並べた表と、名前から添字への対応を返す。
-func styleTable(decs []Decoration) (map[string]int, []string) {
-	index := map[string]int{}
-	styles := []string{}
+// styleEntry は、d の色の種類の名前と直に付ける色の組を返す。
+func (d Decoration) styleEntry() styleEntry { return styleEntry{Style: d.Style, Attr: d.Attr} }
+
+// styleIndex は、色の種類の名前と直に付ける色の組から、styles の表の添字を引く対応である（styleTable）。
+// 直に付ける色の無い範囲（構文の色の範囲のほとんど）は、名前の文字列だけで引く。数十万の範囲を符号化するときに、
+// 色の項目まで含めた組で引くと遅くなるためである。
+type styleIndex struct {
+	names map[string]int
+	attrs map[styleKey]int
+}
+
+// of は、d の組の添字を返す。
+func (x styleIndex) of(d Decoration) int {
+	if d.Attr == nil {
+		return x.names[d.Style]
+	}
+	return x.attrs[d.styleEntry().key()]
+}
+
+// styleTable は、decs に現れる色の種類の名前と直に付ける色の組を、初めて現れた順に並べた表と、組から添字への対応を返す。
+func styleTable(decs []Decoration) (styleIndex, []styleEntry) {
+	index := styleIndex{names: map[string]int{}, attrs: map[styleKey]int{}}
+	styles := []styleEntry{}
 	for _, d := range decs {
-		if _, ok := index[d.Style]; !ok {
-			index[d.Style] = len(styles)
-			styles = append(styles, d.Style)
+		if d.Attr == nil {
+			if _, ok := index.names[d.Style]; !ok {
+				index.names[d.Style] = len(styles)
+				styles = append(styles, d.styleEntry())
+			}
+			continue
+		}
+		k := d.styleEntry().key()
+		if _, ok := index.attrs[k]; !ok {
+			index.attrs[k] = len(styles)
+			styles = append(styles, d.styleEntry())
 		}
 	}
 	return index, styles
 }
 
-// mustMarshal は、文字列の列を JSON にする。文字列の列の符号化は失敗しない。
-func mustMarshal(styles []string) []byte {
+// mustMarshal は、styles の表を JSON にする。名前の文字列と色のオブジェクトの符号化は失敗しない。
+func mustMarshal(styles []styleEntry) []byte {
 	b, err := json.Marshal(styles)
 	if err != nil {
 		panic(err)
@@ -123,7 +252,7 @@ func (p DecorationSetParams) MarshalJSON() ([]byte, error) {
 		if i > 0 {
 			b = append(b, ',')
 		}
-		for j, v := range encodeDecoration(prev, d, index[d.Style]) {
+		for j, v := range encodeDecoration(prev, d, index.of(d)) {
 			if j > 0 {
 				b = append(b, ',')
 			}
@@ -166,7 +295,7 @@ func decodeDecoration(prev Position, v [decorationFields]int) Range {
 }
 
 // UnmarshalJSON は、decoration/set の JSON の形を読む。
-// data の長さが 5 の倍数でないか、style が styles の外を指せば誤りを返す。
+// data の長さが 5 の倍数でないか、style が styles の外を指すか、styles の色が "#rrggbb" でなければ誤りを返す。
 // data の項目が無いか null の通知と、前の形の項目 decorations を持つ通知も誤りにする。
 // 前の形の拡張機能の通知を空の一覧として受け取ると、本体はその拡張機能の色を黙って消すからである。空の一覧は "data":[] で送る。
 // 一覧が空なら、Decorations は nil ではなく長さ 0 のスライスにする。
@@ -196,7 +325,8 @@ func (p *DecorationSetParams) UnmarshalJSON(b []byte) error {
 			return fmt.Errorf("decoration/set data: style index %d out of range [0, %d)", v[4], len(w.Styles))
 		}
 		r := decodeDecoration(prev, v)
-		decs[i] = Decoration{Range: r, Style: w.Styles[v[4]]}
+		st := w.Styles[v[4]]
+		decs[i] = Decoration{Range: r, Style: st.Style, Attr: st.Attr}
 		prev = r.Start
 	}
 	*p = DecorationSetParams{Buffer: w.Buffer, Version: w.Version, Decorations: decs}

@@ -63,20 +63,24 @@ func (d *drawer) searchSpans(dst []span, s string, from, to int) []span {
 
 // visibleBytes は、行 s のうち、表示の範囲（左の端 r.left から textWidth 列）に掛かる文字のバイトの範囲 [from, to) を返す。
 // drawLine の文字の走査と同じく、行の先頭から表示の列を数え、右の端に掛かる文字の次で止める。行の全体が右の端より左に収まれば to は len(s) である。
-func (d *drawer) visibleBytes(s string) (from, to int) {
+// n は s の行の番号で、inline の仮想テキスト（FR-231）の列も drawLine と同じく数える。
+func (d *drawer) visibleBytes(n int, s string) (from, to int) {
 	left, right := d.r.left, d.r.left+d.r.textWidth()
-	col, off := 0, 0
+	col := 0
 	from = -1
-	for off < len(s) && col < right {
-		gl := d.r.rule.glyph(s, off, col)
-		if from < 0 && gl.col+gl.width > left {
-			from = off
+	wk := d.r.rule.walk(n, s)
+	for wk.more() && col < right {
+		gl := wk.next(col)
+		if gl.virt == 0 {
+			if from < 0 && gl.col+gl.width > left {
+				from = gl.off
+			}
+			to = gl.off + gl.size
 		}
 		col += gl.width
-		off += gl.size
 	}
 	if from < 0 {
-		from = off
+		from = to
 	}
-	return from, off
+	return from, to
 }

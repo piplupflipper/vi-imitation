@@ -272,10 +272,10 @@ func (s *State) afterInsertMove(old buffer.Position) {
 func (s *State) insertByteAt(l, want int) int {
 	line := s.line(l)
 	cols := s.columns()
-	if line == "" || want > cols.Column(line, lastCharStart(line)) {
+	if line == "" || want > cols.Column(l, line, lastCharStart(line)) {
 		return len(line)
 	}
-	return cols.ByteAt(line, want)
+	return cols.ByteAt(l, line, want)
 }
 
 // breakInsert は、カーソルキーで動いたときに、インサートモードの入力をそこで区切る（Vim の start_arrow()）。

@@ -282,6 +282,11 @@ func (f *fakeExt) request(ctx context.Context, req *rpc.Request, reply rpc.Repli
 		// 検査を通らない band/set（窓が空）も本体が捨てるので、後の正しいものだけがイベントになる。
 		_ = f.conn.Notify(ext.MethodBandSet, ext.BandSetParams{Lines: []ext.BandLine{{Text: "bad"}}})
 		_ = f.conn.Notify(ext.MethodBandSet, ext.BandSetParams{Window: "client/1", Buffer: 1, Version: 7, Lines: []ext.BandLine{{Text: "func f() {", Line: ext.SourceLine(2)}}})
+		// 置き方の誤った virtualText/set も本体が捨てる。
+		_ = f.conn.Notify(ext.MethodVirtualTextSet, ext.VirtualTextSetParams{Buffer: 1, Version: 8, VirtualTexts: []ext.VirtualText{{Placement: "right_align"}}})
+		_ = f.conn.Notify(ext.MethodVirtualTextSet, ext.VirtualTextSetParams{Buffer: 1, Version: 9, VirtualTexts: []ext.VirtualText{
+			{Placement: ext.VirtualTextInline, Chunks: []ext.VirtualTextChunk{{Text: ": int", Attr: &ext.TextAttr{Fg: "#8b80a8"}}}},
+		}})
 		_ = reply(nil, nil)
 	case methodGarbage:
 		_, _ = os.Stdout.WriteString("Content-Length: 5\r\n\r\nhello")

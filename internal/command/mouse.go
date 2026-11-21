@@ -186,7 +186,7 @@ func (s *State) mousePos(t MouseTarget) buffer.Position {
 	if s.mode == ModeInsert {
 		return pos(l, s.insertByteAt(l, t.Col))
 	}
-	return s.clampNormal(s.clampPos(pos(l, s.columns().ByteAt(s.line(l), t.Col))))
+	return s.clampNormal(s.clampPos(pos(l, s.columns().ByteAt(l, s.line(l), t.Col))))
 }
 
 // mouseMove は、カーソルを t の位置へ移し、望みの列を t の列にする。インサートモードでは入力を区切る（afterInsertMove）。
@@ -262,7 +262,7 @@ func (s *State) MouseDragging() bool { return s.mouseAnchor != nil && s.mouseDra
 // lineWidth は、行 l の表示幅（行末の位置の表示の列）を返す。
 func (s *State) lineWidth(l int) int {
 	line := s.line(l)
-	return s.columns().Column(line, len(line))
+	return s.columns().Column(l, line, len(line))
 }
 
 // mouseDragScroll は、ドラッグの位置が表示領域の上（over が負）か下（正）へはみ出した行の数だけ表示領域を送り、
@@ -572,23 +572,24 @@ func (s *State) mouseScrollHorizontal(right bool) error {
 	}
 	siso := min(s.optionInt(option.ScrollSideMargin), (w-1)/2)
 	lo, hi := next+siso, next+w-1-siso
-	line := s.line(s.cursor.Line)
+	cl := s.cursor.Line
+	line := s.line(cl)
 	cols := s.columns()
 	want := -1
 	if line != "" {
-		start, end := s.charColumns(line, s.cursor.Byte)
+		start, end := s.charColumns(cl, line, s.cursor.Byte)
 		switch {
 		case start < lo:
 			// Neovim の set_leftcol と同じく、左の端に掛かる文字（全角文字、タブ）は、その次の文字にする。
-			b := cols.ByteAt(line, lo)
-			if st, _ := s.charColumns(line, b); st < next && b < lastCharStart(line) {
+			b := cols.ByteAt(cl, line, lo)
+			if st, _ := s.charColumns(cl, line, b); st < next && b < lastCharStart(line) {
 				b = nextChar(line, b)
 			}
 			s.cursor.Byte, want = b, lo
 		case end > hi:
 			// 右の端に掛かる文字は、その前の文字にする。
-			b := cols.ByteAt(line, hi)
-			if _, e := s.charColumns(line, b); e > next+w-1 && b > 0 {
+			b := cols.ByteAt(cl, line, hi)
+			if _, e := s.charColumns(cl, line, b); e > next+w-1 && b > 0 {
 				b = prevChar(line, b)
 			}
 			s.cursor.Byte, want = b, hi
@@ -629,17 +630,20 @@ func (s *State) optionInt(name string) int {
 	return s.Ex.Options.Get(d).Int()
 }
 
-// charColumns は、行 line の b の文字が占める最初と最後の表示の列を返す（タブと全角文字は複数の列を占める）。
+// charColumns は、n 行目（テキスト line）の b の文字が占める最初と最後の表示の列を返す（タブと全角文字は複数の列を占める）。
 // 望みの列の数え方（target.Columns）は、文字が占める列を返さないので、ByteAt で前後の列を引いて求める。
-func (s *State) charColumns(line string, b int) (start, end int) {
+// 文字の前に inline の仮想テキストがあれば、その列も文字が占める列に入る（ByteAt が仮想テキストの列をその後の文字として引くため）。
+// 使うのは横のホイールでカーソルを表示領域の中へ移す判定だけで、仮想テキストの分だけ早く次の文字へ移すことになるが、カーソルが表示領域の
+// 外に出ることは無いので、口を足さずにこの数え方のままにした。
+func (s *State) charColumns(n int, line string, b int) (start, end int) {
 	cols := s.columns()
-	width := cols.Column(line, len(line))
-	c := min(cols.Column(line, b), max(width-1, 0))
+	width := cols.Column(n, line, len(line))
+	c := min(cols.Column(n, line, b), max(width-1, 0))
 	start, end = c, c
-	for start > 0 && cols.ByteAt(line, start-1) == b {
+	for start > 0 && cols.ByteAt(n, line, start-1) == b {
 		start--
 	}
-	for end+1 < width && cols.ByteAt(line, end+1) == b {
+	for end+1 < width && cols.ByteAt(n, line, end+1) == b {
 		end++
 	}
 	return start, end

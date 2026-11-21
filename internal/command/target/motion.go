@@ -12,7 +12,7 @@ import (
 
 // at は、p へ移動した結果を、p の文字の列（req.Columns で数える）を望みの列にして返す。
 func at(b *buffer.Buffer, req Request, p buffer.Position, kind Kind) Result {
-	return Result{Pos: p, Kind: kind, Want: req.columns().Column(b.Line(p.Line), p.Byte)}
+	return Result{Pos: p, Kind: kind, Want: req.columns().Column(p.Line, b.Line(p.Line), p.Byte)}
 }
 
 // left は h である。回数の文字だけ左へ移る。行の先頭を越えない。
@@ -78,7 +78,7 @@ func up(b *buffer.Buffer, req Request) (Result, error) {
 // vertical は、line 行の、望みの列に当たる文字へ移った結果を返す。望みの列は変えない。
 // 行の幅が望みの列に届かなければ、最後の文字へ移る。
 func vertical(b *buffer.Buffer, req Request, line int) Result {
-	p := buffer.Position{Line: line, Byte: req.columns().ByteAt(b.Line(line), req.Want)}
+	p := buffer.Position{Line: line, Byte: req.columns().ByteAt(line, b.Line(line), req.Want)}
 	return Result{Pos: p, Kind: Linewise, Want: req.Want}
 }
 
@@ -119,7 +119,7 @@ func displayVertical(forward bool) MotionFunc {
 		line := req.Cursor.Line
 		s := b.Line(line)
 		// linelen は、行の最後の文字の次の列（Vim の linetabsize）で、行を移ったときだけ数え直す（数えるのは行の長さに比例する）。
-		linelen := cols.Column(s, len(s))
+		linelen := cols.Column(line, s, len(s))
 		// limit は、行の最後の見た目の行の右の端の次の列である。
 		limit := func(linelen int) int {
 			if linelen > w1 {
@@ -131,7 +131,7 @@ func displayVertical(forward bool) MotionFunc {
 		want := req.Want
 		if atend {
 			want = w1 - 1
-			if vc := cols.Column(s, req.Cursor.Byte); vc > want {
+			if vc := cols.Column(line, s, req.Cursor.Byte); vc > want {
 				want += ((vc-want-1)/w2 + 1) * w2
 			}
 		} else {
@@ -152,7 +152,7 @@ func displayVertical(forward bool) MotionFunc {
 					if want >= w1 {
 						want -= w2
 					}
-					linelen = cols.Column(s, len(s))
+					linelen = cols.Column(line, s, len(s))
 				}
 			} else {
 				if want >= w1 {
@@ -163,7 +163,7 @@ func displayVertical(forward bool) MotionFunc {
 					}
 					line--
 					s = b.Line(line)
-					linelen = cols.Column(s, len(s))
+					linelen = cols.Column(line, s, len(s))
 					if linelen > w1 {
 						want += ((linelen-w1-1)/w2 + 1) * w2
 					}
@@ -174,7 +174,7 @@ func displayVertical(forward bool) MotionFunc {
 		if moved == 0 {
 			return Result{}, ErrNoTarget
 		}
-		p := buffer.Position{Line: line, Byte: cols.ByteAt(s, max(want, 0))}
+		p := buffer.Position{Line: line, Byte: cols.ByteAt(line, s, max(want, 0))}
 		var right bool
 		if want < w1 {
 			right = want > w1/2
@@ -183,7 +183,7 @@ func displayVertical(forward bool) MotionFunc {
 		}
 		// 着いた文字の列は、望みの列が右半分のときだけ数える（数えるのは行の長さに比例する）。
 		if p.Byte > 0 && right {
-			vc := cols.Column(s, p.Byte)
+			vc := cols.Column(line, s, p.Byte)
 			if sbw := sl.BreakWidth(); vc > w1 && sbw > 0 {
 				vc -= sbw
 			}

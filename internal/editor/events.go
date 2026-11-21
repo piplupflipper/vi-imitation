@@ -73,6 +73,8 @@ func (e *Editor) handleEvent(ev exthost.Event) {
 		e.setDiagnostics(ev.Extension, ev.Params)
 	case *exthost.SignSet:
 		e.setSigns(ev.Extension, ev.Params)
+	case *exthost.VirtualTextSet:
+		e.setVirtualTexts(ev.Extension, ev.Params)
 	case *exthost.PopupShow:
 		e.showPopup(ev.Params)
 	case *exthost.OutputAppend:

@@ -39,6 +39,9 @@ type glyph struct {
 	// text は、出す文字列である。glyphText では文字と結合文字、glyphSpecial では "^A" などの表記、glyphTab では空、
 	// glyphWhitespace では空白の記号（タブ文字なら 2 文字か 3 文字、空白なら 1 文字。どの文字も幅 1）。
 	text string
+	// virt は、inline の仮想テキストの文字なら、その文字列の色の添字（VirtualTexts.styles）に 1 を足したもので、本文の文字なら 0 である
+	// （lineWalk。FR-231）。仮想テキストの文字の size は 0 で、off は後ろの本文の文字の位置である。
+	virt int
 }
 
 // cell は、セルごとに描く種類（glyphTab、glyphSpecial、glyphWhitespace）の文字の、左から i 番目（0 から数える）のセルの文字を返す。
@@ -273,19 +276,31 @@ func (c Columns) rule() lineRule {
 // ただし空白の記号を描くとき（c.Whitespace）は、タブの最初の列を返す（Vim の 'list' と同じ。lineRule の doc）。
 // 全角文字と ^A などの表記は、最初の列を返す。
 // byteOff が文字の途中（結合文字の位置など）を指すときは、その文字の列を返す。行の長さ以上なら行の表示幅を返す。
-func (c Columns) Column(line string, byteOff int) int {
+//
+// n は line の行の番号で、その行の inline の仮想テキスト（LineLayout.Virtual。FR-232）の列も数える。文字の前の仮想テキストの列は、
+// その文字より左の列になる（ノーマルモードのカーソルは仮想テキストの後ろに置く）。行の長さ以上の byteOff は、行末の位置の仮想テキストを
+// 数えない列（行末のカーソルは仮想テキストの前に置く）を返す。line は行の先頭からの部分の文字列でもよく、そのときは部分の後ろの位置の
+// 仮想テキストを数えない。
+//
+// req: FR-232
+func (c Columns) Column(n int, line string, byteOff int) int {
 	rule := c.rule()
+	w := rule.walk(n, line)
 	col := 0
-	for off := 0; off < len(line); {
-		g := rule.glyph(line, off, col)
-		if byteOff < g.off+g.size {
+	for w.more() {
+		g := w.next(col)
+		switch {
+		case g.virt != 0:
+			if g.off >= len(line) && byteOff >= len(line) {
+				return g.col
+			}
+		case byteOff < g.off+g.size:
 			if g.kind == glyphTab {
 				return g.col + g.width - 1
 			}
 			return g.col
 		}
 		col += g.width
-		off += g.size
 	}
 	return col
 }
@@ -293,18 +308,27 @@ func (c Columns) Column(line string, byteOff int) int {
 // ByteAt は、行 line で列 col を占める文字の位置（バイト）を返す。
 // col が行の表示幅以上なら最後の文字の位置を、空の行では 0 を返す。負の col は 0 列として扱う。
 // タブや全角文字の途中の列は、その文字の位置を返す（Vim の coladvance() と同じ）。
-func (c Columns) ByteAt(line string, col int) int {
+// n は line の行の番号で、inline の仮想テキストの列は、その後ろの文字の位置を返す（行末の位置の仮想テキストなら最後の文字の位置。
+// Neovim 0.12.5 の j と k とマウスのクリックと同じ。FR-232）。
+//
+// req: FR-232
+func (c Columns) ByteAt(n int, line string, col int) int {
 	rule := c.rule()
+	w := rule.walk(n, line)
 	last := 0
 	cur := 0
-	for off := 0; off < len(line); {
-		g := rule.glyph(line, off, cur)
+	for w.more() {
+		g := w.next(cur)
 		if col < g.col+g.width {
-			return g.off
+			if g.virt == 0 || g.off < len(line) {
+				return g.off
+			}
+			return last
 		}
-		last = g.off
+		if g.virt == 0 {
+			last = g.off
+		}
 		cur += g.width
-		off += g.size
 	}
 	return last
 }

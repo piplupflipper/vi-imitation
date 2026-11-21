@@ -622,7 +622,7 @@ type previewLines struct {
 func (l previewLines) LineCount() int { return l.buf.LineCount() }
 
 // Rows は、scroll.Lines の Rows である。
-func (l previewLines) Rows(line int) int { return max(l.wl.Rows(l.buf.Line(line)), 1) }
+func (l previewLines) Rows(line int) int { return max(l.wl.Rows(line, l.buf.Line(line)), 1) }
 
 // uniformLines は、どの行の高さも 1 とした、行の数が int の値の行の並びである（scroll.Lines）。
 type uniformLines int

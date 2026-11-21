@@ -12,7 +12,7 @@ import (
 func init() {
 	Symbols["github.com/piplupflipper/vi-imitation/ext/ext"] = map[string]reflect.Value{
 		// function, constant and variable definitions
-		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.18.0\"", token.STRING, 0)),
+		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.19.0\"", token.STRING, 0)),
 		"ActivationCommand":          reflect.ValueOf(ext.ActivationCommand),
 		"ActivationFileType":         reflect.ValueOf(ext.ActivationFileType),
 		"ActivationMotion":           reflect.ValueOf(ext.ActivationMotion),
@@ -30,6 +30,7 @@ func init() {
 		"HelpKindKey":                reflect.ValueOf(constant.MakeFromLiteral("\"key\"", token.STRING, 0)),
 		"HelpKindOperation":          reflect.ValueOf(constant.MakeFromLiteral("\"operation\"", token.STRING, 0)),
 		"HelpKindOption":             reflect.ValueOf(constant.MakeFromLiteral("\"option\"", token.STRING, 0)),
+		"IsHexColor":                 reflect.ValueOf(ext.IsHexColor),
 		"ListCommands":               reflect.ValueOf(ext.ListCommands),
 		"ListHelp":                   reflect.ValueOf(ext.ListHelp),
 		"ListJumps":                  reflect.ValueOf(ext.ListJumps),
@@ -88,6 +89,7 @@ func init() {
 		"MethodViewSelect":           reflect.ValueOf(constant.MakeFromLiteral("\"view/select\"", token.STRING, 0)),
 		"MethodViewTabChange":        reflect.ValueOf(constant.MakeFromLiteral("\"view/tabChange\"", token.STRING, 0)),
 		"MethodViewUpdate":           reflect.ValueOf(constant.MakeFromLiteral("\"view/update\"", token.STRING, 0)),
+		"MethodVirtualTextSet":       reflect.ValueOf(constant.MakeFromLiteral("\"virtualText/set\"", token.STRING, 0)),
 		"MethodWindowChange":         reflect.ValueOf(constant.MakeFromLiteral("\"window/change\"", token.STRING, 0)),
 		"ModeCommandLine":            reflect.ValueOf(ext.ModeCommandLine),
 		"ModeInsert":                 reflect.ValueOf(ext.ModeInsert),
@@ -149,6 +151,9 @@ func init() {
 		"ViewList":                   reflect.ValueOf(ext.ViewList),
 		"ViewText":                   reflect.ValueOf(ext.ViewText),
 		"ViewTree":                   reflect.ValueOf(ext.ViewTree),
+		"VirtualTextEOL":             reflect.ValueOf(ext.VirtualTextEOL),
+		"VirtualTextInline":          reflect.ValueOf(ext.VirtualTextInline),
+		"VirtualTextOverlay":         reflect.ValueOf(ext.VirtualTextOverlay),
 		"WindowNotifyIntervalMs":     reflect.ValueOf(constant.MakeFromLiteral("150", token.INT, 0)),
 
 		// type definitions
@@ -252,6 +257,7 @@ func init() {
 		"SignSetParams":           reflect.ValueOf((*ext.SignSetParams)(nil)),
 		"StatusLinePart":          reflect.ValueOf((*ext.StatusLinePart)(nil)),
 		"StatusLineSetParams":     reflect.ValueOf((*ext.StatusLineSetParams)(nil)),
+		"TextAttr":                reflect.ValueOf((*ext.TextAttr)(nil)),
 		"TextObjectResolveParams": reflect.ValueOf((*ext.TextObjectResolveParams)(nil)),
 		"TextObjectResolveResult": reflect.ValueOf((*ext.TextObjectResolveResult)(nil)),
 		"Transaction":             reflect.ValueOf((*ext.Transaction)(nil)),
@@ -270,6 +276,10 @@ func init() {
 		"ViewSpan":                reflect.ValueOf((*ext.ViewSpan)(nil)),
 		"ViewTabChangeParams":     reflect.ValueOf((*ext.ViewTabChangeParams)(nil)),
 		"ViewUpdateParams":        reflect.ValueOf((*ext.ViewUpdateParams)(nil)),
+		"VirtualText":             reflect.ValueOf((*ext.VirtualText)(nil)),
+		"VirtualTextChunk":        reflect.ValueOf((*ext.VirtualTextChunk)(nil)),
+		"VirtualTextPlacement":    reflect.ValueOf((*ext.VirtualTextPlacement)(nil)),
+		"VirtualTextSetParams":    reflect.ValueOf((*ext.VirtualTextSetParams)(nil)),
 		"WindowChangeParams":      reflect.ValueOf((*ext.WindowChangeParams)(nil)),
 		"WindowID":                reflect.ValueOf((*ext.WindowID)(nil)),
 	}

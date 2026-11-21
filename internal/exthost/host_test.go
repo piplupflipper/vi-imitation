@@ -701,6 +701,10 @@ func TestRequestsFromExtension(t *testing.T) {
 	if bs.Extension != "x" || bs.Params.Window != "client/1" || len(bs.Params.Lines) != 1 || *bs.Params.Lines[0].Line != 2 {
 		t.Fatalf("BandSet = %+v（窓の無いものを捨てていない）", bs)
 	}
+	vs := hs.waitEvent("virtual text", func(ev Event) bool { _, ok := ev.(*VirtualTextSet); return ok }).(*VirtualTextSet)
+	if vs.Extension != "x" || vs.Params.Version != 9 || len(vs.Params.VirtualTexts) != 1 {
+		t.Fatalf("VirtualTextSet = %+v（置き方の誤ったものを捨てていない）", vs)
+	}
 }
 
 // window/change を受け取ると名乗った（宣言ファイルの windowEvents）稼働中の拡張機能だけを返す。未起動のものは起動しない（FR-235）。

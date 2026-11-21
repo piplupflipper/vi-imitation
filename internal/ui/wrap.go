@@ -127,20 +127,22 @@ func (w wrapper) vcol(p wrapPos) int {
 	return p.row*w.width + p.x
 }
 
-// next は、行 s の off から始まる文字を、p から置いたときの配置を返す（タブの幅は、置く位置の表示の列で決める）。
-func (w wrapper) next(s string, off int, p wrapPos) glyph {
-	return w.rule.glyph(s, off, w.vcolAt(p))
+// next は、走査 wk の次の文字を、p から置いたときの配置を返す（タブの幅は、置く位置の表示の列で決める）。
+func (w wrapper) next(wk *lineWalk, p wrapPos) glyph {
+	return wk.next(w.vcolAt(p))
 }
 
-// rows は、行 s を折り返した見た目の行の数（1 以上）を返す。空の行は 1 行である。
+// rows は、n 行目（テキスト s）を折り返した見た目の行の数（1 以上）を返す。空の行は 1 行である。
 // 行末の位置が次の見た目の行に出る（ちょうど幅で終わる）ときも、その行は数えない。
 // ただし行末の記号を描くとき（FR-170）は、行末の位置も 1 セルとして数える（lastRow）。
-func (w wrapper) rows(s string) int {
+// inline の仮想テキストは本文と同じく折り返して数え、eol と overlay の仮想テキストは数えない（FR-233）。
+//
+// req: FR-233
+func (w wrapper) rows(n int, s string) int {
 	p := wrapPos{}
-	for off := 0; off < len(s); {
-		gl := w.next(s, off, p)
-		w.place(&p, gl)
-		off += gl.size
+	wk := w.rule.walk(n, s)
+	for wk.more() {
+		w.place(&p, w.next(&wk, p))
 	}
 	return w.lastRow(p) + 1
 }
@@ -156,70 +158,105 @@ func (w wrapper) lastRow(p wrapPos) int {
 	return p.row
 }
 
-// column は、行 s の byteOff の文字の表示の列（vcol）を返す。タブは最後のセルの列（Vim のノーマルモードのカーソルの列）、
+// column は、n 行目（テキスト s）の byteOff の文字の表示の列（vcol）を返す。タブは最後のセルの列（Vim のノーマルモードのカーソルの列）、
 // ほかの文字は最初のセルの列である。全角文字を次の見た目の行へ送ったときは、送った先の列である。
 // byteOff が行の長さ以上なら、最後の文字の次の列（Vim の linetabsize）を返す。
-func (w wrapper) column(s string, byteOff int) int {
+// inline の仮想テキストの扱いは Columns.Column と同じである（文字の前の仮想テキストは数え、行末の位置の仮想テキストは数えない）。
+//
+// req: FR-232
+func (w wrapper) column(n int, s string, byteOff int) int {
 	p := wrapPos{}
-	for off := 0; off < len(s); {
-		gl := w.next(s, off, p)
+	wk := w.rule.walk(n, s)
+	for wk.more() {
+		gl := w.next(&wk, p)
 		first, _, _ := w.place(&p, gl)
-		if byteOff < off+gl.size {
+		switch {
+		case gl.virt != 0:
+			if gl.off >= len(s) && byteOff >= len(s) {
+				return w.vcol(first)
+			}
+		case byteOff < gl.off+gl.size:
 			if gl.kind == glyphTab {
 				return w.vcol(p) - 1
 			}
 			return w.vcol(first)
 		}
-		off += gl.size
 	}
 	return w.vcol(p)
 }
 
-// byteAt は、行 s で表示の列 col にある文字の位置を返す。列が文字の手前の ">" の列か、続きの行の記号の列なら、その後の文字である
-// （Vim の coladvance と同じく、送った全角文字と記号の列は、その後の文字の列として数える）。
+// byteAt は、n 行目（テキスト s）で表示の列 col にある文字の位置を返す。列が文字の手前の ">" の列か、続きの行の記号の列なら、
+// その後の文字である（Vim の coladvance と同じく、送った全角文字と記号の列は、その後の文字の列として数える）。
+// inline の仮想テキストの列も、その後の文字の位置（行末の位置の仮想テキストなら最後の文字）を返す（Columns.ByteAt と同じ）。
 // col が行の最後の文字の列より右なら最後の文字を、空の行では 0 を返す。
-func (w wrapper) byteAt(s string, col int) int {
+//
+// req: FR-232
+func (w wrapper) byteAt(n int, s string, col int) int {
 	p := wrapPos{}
+	wk := w.rule.walk(n, s)
 	last := 0
-	for off := 0; off < len(s); {
-		gl := w.next(s, off, p)
+	for wk.more() {
+		gl := w.next(&wk, p)
 		w.place(&p, gl)
 		if col < w.vcol(p) {
-			return off
+			if gl.virt == 0 || gl.off < len(s) {
+				return gl.off
+			}
+			return last
 		}
-		last = off
-		off += gl.size
+		if gl.virt == 0 {
+			last = gl.off
+		}
 	}
 	return last
 }
 
-// cursor は、行 s の byteOff の文字にカーソルを置く位置を返す。tabLast なら、タブの最後のセルにする（ノーマルモード）。
-// byteOff が行の長さ以上なら、行末の位置（eol）を返す。
-func (w wrapper) cursor(s string, byteOff int, tabLast bool) wrapPos {
-	_, p := w.cursorAt(s, byteOff, tabLast)
+// cursor は、n 行目（テキスト s）の byteOff の文字にカーソルを置く位置を返す。tabLast なら、タブの最後のセルにする（ノーマルモード）。
+// byteOff が行の長さ以上なら、行末の位置（eol）を返す。inline の仮想テキストの扱いは cursorRows の doc にある。
+func (w wrapper) cursor(n int, s string, byteOff int, tabLast bool) wrapPos {
+	_, p := w.cursorAt(n, s, byteOff, tabLast)
 	return p
 }
 
 // cursorAt は、cursor と同じ位置と、その文字の最初のバイトの位置（行末なら行の長さ）を返す。
-func (w wrapper) cursorAt(s string, byteOff int, tabLast bool) (int, wrapPos) {
-	off, p, _ := w.cursorRows(s, byteOff, tabLast)
+func (w wrapper) cursorAt(n int, s string, byteOff int, tabLast bool) (int, wrapPos) {
+	off, p, _ := w.cursorRows(n, s, byteOff, tabLast)
 	return off, p
 }
 
 // cursorRows は、cursorAt の結果に加えて、行の見た目の行の数（rows）も、行を 1 回だけ数えて返す。
-func (w wrapper) cursorRows(s string, byteOff int, tabLast bool) (at int, cur wrapPos, rows int) {
+// カーソルの文字の前に inline の仮想テキストがあれば、tabLast（ノーマルモード）なら文字の上に、そうでなければ（インサートモード）
+// 仮想テキストの最初の文字の位置に置く。行末の位置（byteOff が行の長さ以上）も、行末の位置の仮想テキストの前に置く（FR-232）。
+//
+// req: FR-232
+func (w wrapper) cursorRows(n int, s string, byteOff int, tabLast bool) (at int, cur wrapPos, rows int) {
 	p := wrapPos{}
 	at = -1
-	for off := 0; off < len(s); {
-		gl := w.next(s, off, p)
+	var gap wrapPos
+	gapped := false
+	wk := w.rule.walk(n, s)
+	for wk.more() {
+		gl := w.next(&wk, p)
 		first, _, _ := w.place(&p, gl)
-		if at < 0 && byteOff < off+gl.size {
-			at, cur = off, first
-			if tabLast && gl.kind == glyphTab {
+		if gl.virt != 0 {
+			if !gapped {
+				gap, gapped = first, true
+			}
+			if at < 0 && gl.off >= len(s) && byteOff >= len(s) {
+				at, cur = len(s), gap
+			}
+			continue
+		}
+		if at < 0 && byteOff < gl.off+gl.size {
+			at, cur = gl.off, first
+			switch {
+			case !tabLast && gapped:
+				cur = gap
+			case tabLast && gl.kind == glyphTab:
 				cur = wrapPos{row: p.row, x: p.x - 1}
 			}
 		}
-		off += gl.size
+		gapped = false
 	}
 	if at < 0 {
 		at, cur = len(s), w.eol(p)
@@ -227,21 +264,21 @@ func (w wrapper) cursorRows(s string, byteOff int, tabLast bool) (at int, cur wr
 	return at, cur, w.lastRow(p) + 1
 }
 
-// span は、行 s のうち、見た目の k0 行目から k1 行目の手前までに掛かる文字のバイトの範囲 [from, to) を返す。
+// span は、n 行目（テキスト s）のうち、見た目の k0 行目から k1 行目の手前までに掛かる文字のバイトの範囲 [from, to) を返す。
 // 検索の一致を集める範囲（searchSpans）に使う。
-func (w wrapper) span(s string, k0, k1 int) (from, to int) {
+func (w wrapper) span(n int, s string, k0, k1 int) (from, to int) {
 	p := wrapPos{}
 	from = -1
-	for off := 0; off < len(s); {
-		gl := w.next(s, off, p)
+	wk := w.rule.walk(n, s)
+	for wk.more() {
+		gl := w.next(&wk, p)
 		first, _, _ := w.place(&p, gl)
 		if first.row >= k1 {
-			return max(from, off), off
+			return max(from, gl.off), gl.off
 		}
-		if from < 0 && p.row >= k0 {
-			from = off
+		if gl.virt == 0 && from < 0 && p.row >= k0 {
+			from = gl.off
 		}
-		off += gl.size
 	}
 	if from < 0 {
 		from = len(s)
@@ -274,16 +311,16 @@ func (l WrapLines) Width() int { return l.w.width }
 // BreakWidth は、続きの見た目の行の頭に描く記号（SymbolShowBreak）の列数を返す。付けないなら 0 である。
 func (l WrapLines) BreakWidth() int { return l.w.sbw }
 
-// Rows は、行 line を折り返した見た目の行の数（1 以上）を返す。
-func (l WrapLines) Rows(line string) int { return l.w.rows(line) }
+// Rows は、n 行目（テキスト line）を折り返した見た目の行の数（1 以上）を返す。n は、その行の仮想テキスト（LineLayout.Virtual）を引く行の番号である。
+func (l WrapLines) Rows(n int, line string) int { return l.w.rows(n, line) }
 
-// Column は、行 line の byteOff の位置の文字の表示の列を返す。タブはタブが占める最後の列、ほかの文字は最初の列である
+// Column は、n 行目（テキスト line）の byteOff の位置の文字の表示の列を返す。タブはタブが占める最後の列、ほかの文字は最初の列である
 // （Columns.Column と同じ）。byteOff が行の長さ以上なら、最後の文字の次の列を返す。
-func (l WrapLines) Column(line string, byteOff int) int { return l.w.column(line, byteOff) }
+func (l WrapLines) Column(n int, line string, byteOff int) int { return l.w.column(n, line, byteOff) }
 
-// ByteAt は、行 line で表示の列 col を占める文字の位置を返す。">" の列と続きの行の記号の列は、その後の文字の列として数える。
+// ByteAt は、n 行目（テキスト line）で表示の列 col を占める文字の位置を返す。">" の列と続きの行の記号の列は、その後の文字の列として数える。
 // col が行の最後の文字より右なら最後の文字を、空の行では 0 を返す（Columns.ByteAt と同じ）。
-func (l WrapLines) ByteAt(line string, col int) int { return l.w.byteAt(line, max(col, 0)) }
+func (l WrapLines) ByteAt(n int, line string, col int) int { return l.w.byteAt(n, line, max(col, 0)) }
 
 // viewRow は、表示領域の 1 行に描く中身（見た目の行）である（Renderer.view）。
 // 行番号の列、印の列、本文は、この行ごとの中身から描くので、折り返すかどうかで描き方を分けない。

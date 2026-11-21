@@ -22,10 +22,10 @@ import (
 // 10 万行のほぼ全体にまたがる範囲 100 個で 1,000 万要素（346 MB）になり、不具合のある拡張機能が全体にまたがる範囲を
 // 多数送ると、本体のメモリを使い切るおそれがあった。いまの表の大きさは、行数と範囲の数の和に比例する。
 type Decorations struct {
-	first  []int      // n 行目の範囲は spans[first[n]:first[n+1]]。長さは行数 + 1
-	spans  []decoSpan // 行の順、行の中では開始のバイトの順に並べる
-	styles []string   // 色の種類の名前の表。decoSpan.style が添字
-	rows   []decoRows // 行をまたぐ範囲の、間の行の区間。lo の順に並べる
+	first  []int       // n 行目の範囲は spans[first[n]:first[n+1]]。長さは行数 + 1
+	spans  []decoSpan  // 行の順、行の中では開始のバイトの順に並べる
+	styles []decoStyle // 色の種類の名前と直に重ねる色の組の表。decoSpan.style が添字
+	rows   []decoRows  // 行をまたぐ範囲の、間の行の区間。lo の順に並べる
 	// rowsMax は、rows を、[l, r) の中央 m を根とする暗黙の二分探索木と見たときの、m を根とする部分木の hi の最大である。
 	// ある行に掛かる区間を、全部をなめずに探すのに使う（rowsAt）。
 	rowsMax []int
@@ -75,7 +75,7 @@ func NewDecorationsSeq(hs iter.Seq[Highlight], lines int) *Decorations {
 	// 1 回目に行ごとの範囲の数を数え、間の行の区間を集める。2 回目に行ごとの範囲をその位置へ詰める。
 	d.first = make([]int, lines+1)
 	count := d.first[1:]
-	forEachLineSpan(hs, lines, func(n int, _ decoSpan, _ string) { count[n]++ }, func(r decoRows, style string) {
+	forEachLineSpan(hs, lines, func(n int, _ decoSpan, _ decoStyle) { count[n]++ }, func(r decoRows, style decoStyle) {
 		r.style = styleIndex.index(style)
 		d.rows = append(d.rows, r)
 	})
@@ -86,7 +86,7 @@ func NewDecorationsSeq(hs iter.Seq[Highlight], lines int) *Decorations {
 	}
 	// ここで count[n]（= first[n+1]）は n 行目の開始の位置である。詰めるたびに 1 つずつ進め、詰め終えると n+1 行目の開始の位置になる。
 	d.spans = make([]decoSpan, total)
-	forEachLineSpan(hs, lines, func(n int, sp decoSpan, style string) {
+	forEachLineSpan(hs, lines, func(n int, sp decoSpan, style decoStyle) {
 		sp.style = styleIndex.index(style)
 		d.spans[count[n]] = sp
 		count[n]++
@@ -146,11 +146,12 @@ func (d *Decorations) rowsAt(dst []decoSpan, n, l, r int) []decoSpan {
 // forEachLineSpan は、hs の範囲を行ごとに分け、0 行目から lines-1 行目に掛かる部分を渡す。
 // 1 行の中の部分（行をまたぐ範囲の開始の行と終わりの行の部分を含む）は f に、行をまたぐ範囲の間の行（行の全体）は
 // 行の区間にまとめて rows に渡す。rows が nil なら間の行は捨てる。
-// decoSpan と decoRows の order には hs での位置を入れ、style は入れずに名前を引数で渡す。
-func forEachLineSpan(hs iter.Seq[Highlight], lines int, f func(n int, sp decoSpan, style string), rows func(r decoRows, style string)) {
+// decoSpan と decoRows の order には hs での位置を入れ、style は入れずに名前と直に重ねる色の組を引数で渡す。
+func forEachLineSpan(hs iter.Seq[Highlight], lines int, f func(n int, sp decoSpan, style decoStyle), rows func(r decoRows, style decoStyle)) {
 	i := -1
 	for h := range hs {
 		i++
+		st := decoStyle{name: h.Style, attr: h.Attr}
 		s, e := h.Range.Start, h.Range.End
 		if e.Less(s) {
 			s, e = e, s
@@ -160,35 +161,41 @@ func forEachLineSpan(hs iter.Seq[Highlight], lines int, f func(n int, sp decoSpa
 		}
 		if s.Line == e.Line {
 			if sp := (decoSpan{start: max(s.Byte, 0), end: e.Byte, order: i}); sp.start < sp.end {
-				f(s.Line, sp, h.Style)
+				f(s.Line, sp, st)
 			}
 			continue
 		}
 		if s.Line >= 0 {
-			f(s.Line, decoSpan{start: max(s.Byte, 0), end: math.MaxInt, order: i}, h.Style)
+			f(s.Line, decoSpan{start: max(s.Byte, 0), end: math.MaxInt, order: i}, st)
 		}
 		if lo, hi := max(s.Line+1, 0), min(e.Line-1, lines-1); lo <= hi && rows != nil {
-			rows(decoRows{lo: lo, hi: hi, order: i}, h.Style)
+			rows(decoRows{lo: lo, hi: hi, order: i}, st)
 		}
 		if e.Line < lines && e.Byte > 0 {
-			f(e.Line, decoSpan{start: 0, end: e.Byte, order: i}, h.Style)
+			f(e.Line, decoSpan{start: 0, end: e.Byte, order: i}, st)
 		}
 	}
 }
 
-// styleTable は、色の種類の名前に、現れた順に添字を振る。
-// 名前の種類はふつう十に満たないので、直前の名前と表を先頭から比べる。
+// decoStyle は、範囲の色の種類の名前と、その上に直に重ねる色（Highlight.Attr。FR-230）の組である。
+type decoStyle struct {
+	name string
+	attr Attr
+}
+
+// styleTable は、色の種類の名前と直に重ねる色の組に、現れた順に添字を振る。
+// 組の種類はふつう十に満たないので、直前の組と表を先頭から比べる。
 // 同じ表から復号した名前は文字列の中身を共有するので、比べるのは速い。
 // 不具合のある拡張機能が多くの種類を送っても比べる回数が増え続けないように、種類が smallStyles を超えたら map で引く。
 type styleTable struct {
-	names  []string
+	names  []decoStyle
 	last   int
-	byName map[string]int
+	byName map[decoStyle]int
 }
 
 const smallStyles = 16
 
-func (t *styleTable) index(name string) int {
+func (t *styleTable) index(name decoStyle) int {
 	if t.last < len(t.names) && t.names[t.last] == name {
 		return t.last
 	}
@@ -205,7 +212,7 @@ func (t *styleTable) index(name string) int {
 		i = len(t.names)
 		t.names = append(t.names, name)
 		if t.byName == nil && len(t.names) > smallStyles {
-			t.byName = make(map[string]int, len(t.names))
+			t.byName = make(map[decoStyle]int, len(t.names))
 			for j, n := range t.names {
 				t.byName[n] = j
 			}
@@ -266,5 +273,13 @@ func (d *Decorations) line(n int) []decoSpan {
 
 // style は、sp の色の種類の名前を返す。sp は d.line が返したものである必要がある。
 func (d *Decorations) style(sp decoSpan) string {
-	return d.styles[sp.style]
+	return d.styles[sp.style].name
+}
+
+// attr は、sp の属性（theme の名前の色の上に、直に重ねる色を重ねたもの。FR-230）を返す。sp は d.line が返したものである必要がある。
+//
+// req: FR-230
+func (d *Decorations) attr(theme Theme, sp decoSpan) Attr {
+	st := d.styles[sp.style]
+	return theme.attr(st.name).Over(st.attr)
 }

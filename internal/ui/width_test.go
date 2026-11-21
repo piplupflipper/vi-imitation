@@ -127,7 +127,7 @@ func TestColumns(t *testing.T) {
 		{"a\x80b", 2, 5},
 	}
 	for _, tt := range columnTests {
-		if got := c.Column(tt.line, tt.off); got != tt.want {
+		if got := c.Column(0, tt.line, tt.off); got != tt.want {
 			t.Errorf("Column(%q, %d) = %d, want %d", tt.line, tt.off, got, tt.want)
 		}
 	}
@@ -154,12 +154,12 @@ func TestColumns(t *testing.T) {
 		{"\x01a", 2, 1},
 	}
 	for _, tt := range byteTests {
-		if got := c.ByteAt(tt.line, tt.col); got != tt.want {
+		if got := c.ByteAt(0, tt.line, tt.col); got != tt.want {
 			t.Errorf("ByteAt(%q, %d) = %d, want %d", tt.line, tt.col, got, tt.want)
 		}
 	}
 
-	if got := (Columns{LineLayout: LineLayout{TabStop: 4}}).Column("\tx", 1); got != 4 {
+	if got := (Columns{LineLayout: LineLayout{TabStop: 4}}).Column(0, "\tx", 1); got != 4 {
 		t.Errorf("TabStop 4: Column = %d, want 4", got)
 	}
 }

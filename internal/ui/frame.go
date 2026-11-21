@@ -63,6 +63,9 @@ type Highlight struct {
 	Range buffer.Range
 	// Style は、色の種類の名前（StyleKeyword など）である。Theme に無い名前なら色を付けない。
 	Style string
+	// Attr は、名前の色の上に直に重ねる色と飾りである（拡張機能の decoration/set の範囲の色。FR-230）。ゼロ値なら重ねない。
+	// 名前が Theme に無くても、Attr があれば Attr で色を付ける。
+	Attr Attr
 }
 
 // Severity は、診断の重要度である。値は diagnostic/set の severity と同じ文字列である（基本設計 6.7）。

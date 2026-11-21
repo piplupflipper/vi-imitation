@@ -81,24 +81,28 @@ type Find struct {
 // 表示幅の計算は internal/ui の担当で、internal/ui は internal/command と同じ層なので、このパッケージからは import できない（基本設計 2 章）。
 // このため、数え方を呼び出し側から差し込めるようにする。
 // Request.Columns が nil なら、仮の数え方として CharColumns を使う。
+//
+// どのメソッドも、行のテキスト line と一緒に、その行の番号 n を受け取る。行に拡張機能の仮想テキスト（本文の途中に差し込む文字列。
+// 基本設計 6.1 の「仮想テキスト」）があれば、その列も数えるためで、仮想テキストは行の番号で引く（FR-232）。
+// line は n 行目の行のテキストか、その先頭からの部分である。
 type Columns interface {
-	// Column は、行 line の byteOff の位置の文字の列を返す。
-	Column(line string, byteOff int) int
-	// ByteAt は、行 line で列 col にある文字の位置を返す。
+	// Column は、n 行目（テキスト line）の byteOff の位置の文字の列を返す。
+	Column(n int, line string, byteOff int) int
+	// ByteAt は、n 行目（テキスト line）で列 col にある文字の位置を返す。
 	// col が行の幅を超えるときは、最後の文字の位置を返す。空の行では 0 を返す。
-	ByteAt(line string, col int) int
+	ByteAt(n int, line string, col int) int
 }
 
-// CharColumns は、行頭からの文字数を列とする、仮の数え方である。
+// CharColumns は、行頭からの文字数を列とする、仮の数え方である。行の番号は使わない。
 type CharColumns struct{}
 
 // Column は、行の先頭から byteOff までの文字数を返す。
-func (CharColumns) Column(line string, byteOff int) int {
+func (CharColumns) Column(_ int, line string, byteOff int) int {
 	return charColumn(line, byteOff)
 }
 
 // ByteAt は、行の先頭から col 文字目の位置を返す。行の文字数を超える col は最後の文字にする。
-func (CharColumns) ByteAt(line string, col int) int {
+func (CharColumns) ByteAt(_ int, line string, col int) int {
 	return byteOfColumn(line, col)
 }
 
@@ -116,8 +120,9 @@ type ScreenLines interface {
 	Width() int
 	// BreakWidth は、続きの見た目の行の頭に描く記号（Vim の 'showbreak'）の列数を返す。付けないなら 0 である。
 	BreakWidth() int
-	// Rows は、行 line を折り返した見た目の行の数（1 以上）を返す。ページ単位のスクロールが行の高さに使う。
-	Rows(line string) int
+	// Rows は、n 行目（テキスト line）を折り返した見た目の行の数（1 以上）を返す。ページ単位のスクロールが行の高さに使う。
+	// n は Columns と同じく、行の仮想テキストを引く行の番号である。
+	Rows(n int, line string) int
 }
 
 // Request は、モーションとテキストオブジェクトへの入力である。
