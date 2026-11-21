@@ -18,11 +18,13 @@ package ui
 //     nui.nvim の border.text.top_align の既定の "center"）
 //
 // 本体は、枠線を記号 popup.border（SymbolPopupBorder）で描く（noice.nvim は常に rounded の枠線を描く）。
-// 記号が空なら、浮かべる窓（drawFloat）と同じく枠線を描かず、題を枠の最初の行に描く。
+// 記号が空（本体の既定）なら、ASCII の枠線（cmdlinePopupBorder）で描く。枠の中の色（StyleCommandLinePopup）は、noice.nvim と同じく
+// 既定では本文と同じ（端末の既定の色）なので、枠線を描かないと枠と本文を見分けられないためである（PR #362 のレビューの推奨 1）。
+// 枠線は文字と色（StyleCommandLinePopupBorder）で見分けるので、端末の背景が暗くても明るくても見分けられる。
 // 行は、noice.nvim の relative = "editor" と同じく、タブの行を含めた画面の上の端から数える（タブの行を出していても、枠は画面の同じ行に出る）。
 
 const (
-	// cmdlinePopupTop は、入力の枠の上の端の行（枠線があれば枠線の行）の、画面の上の端から数えた番号である。
+	// cmdlinePopupTop は、入力の枠の上の端の行（枠線の行）の、画面の上の端から数えた番号である。
 	cmdlinePopupTop = 2
 	// cmdlinePopupMinWidth は、入力の枠の中の、入力を描く欄の最小の列数である（noice.nvim の cmdline_popup の size.min_width）。
 	cmdlinePopupMinWidth = 60
@@ -30,6 +32,10 @@ const (
 	// cmdline_popupmenu の size.max_height）。
 	cmdlinePopupMenuRows = 15
 )
+
+// cmdlinePopupBorder は、記号 popup.border が空のときに、画面の上のポップアップのコマンドラインの枠に描く枠線である。
+// 並びは SymbolPopupBorder と同じく、左上、上、右上、右、右下、下、左下、左である。
+var cmdlinePopupBorder = [borderChars]string{"+", "-", "+", "|", "+", "-", "+", "|"}
 
 // cmdlinePopupTitle は、コマンドラインの種類 kind（':'、'/'、'?'）の枠の題の記号の名前を返す（FR-216）。
 func cmdlinePopupTitle(kind rune) string {
@@ -43,7 +49,8 @@ func cmdlinePopupTitle(kind rune) string {
 }
 
 // cmdlineTail は、コマンドラインの行に出す文字列 full の、末尾の後ろのカーソルの 1 列を残して width 列に収まる末尾の部分を返す。
-// 収まらなければ、先頭の文字を落とす（末尾が見えるようにする）。
+// 収まらなければ、先頭の文字を落とす（末尾が見えるようにする）。幅は、返す部分の先頭を 0 列目として数える
+// （タブ文字の幅も、そこから数える）ので、描くときも、返した部分の先頭を欄の左の端としてタブ文字の幅を決める（drawTextFrom）。
 func (r *Renderer) cmdlineTail(full string, width int) string {
 	s := full
 	tabStop := tabStopOr(r.tabStop)
@@ -58,25 +65,20 @@ func (r *Renderer) cmdlineTail(full string, width int) string {
 // 枠を置けない（最後の行の上に枠の行が収まらない、入力の欄が 2 列も取れない）ときは、何も描かずに ok を false で返す
 // （呼び出し側は最後の行に描く）。
 //
+// 入力は、欄の左の端を 0 列目としてタブ文字の幅を決めて描く（最後の行に描くときと同じ幅になる）。欄に収まらなければ、先頭を隠す。
 // 枠の中は StyleCommandLinePopup、枠線と題は、コマンドラインなら StyleCommandLinePopupBorder、検索なら
 // StyleCommandLinePopupBorderSearch で描く（noice.nvim の NoiceCmdlinePopupBorder と NoiceCmdlinePopupBorderSearch）。
 // 枠の場所は、マウスの出来事の位置を解くときに、浮かべた窓と同じく何も無い所（HitNone）として残す（mouse.go の covers）。
 //
 // req: FR-215, FR-216
 func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix rune) (Cursor, bool) {
-	chars, bordered := r.border()
-	b := 0
-	if bordered {
-		b = 1
+	chars, ok := r.border()
+	if !ok {
+		chars = cmdlinePopupBorder
 	}
-	title := r.symbol(cmdlinePopupTitle(prefix))
-	head := 0
-	if title != "" && !bordered {
-		head = 1
-	}
-	outerH := 2*b + head + 1
+	const outerH = 3 // 上の枠線、入力の行、下の枠線
 	top := min(cmdlinePopupTop-r.bodyTop, r.Height-1-outerH)
-	maxCW := r.Width - 2*b - 2
+	maxCW := r.Width - 4
 	if top < 0 || maxCW < 2 {
 		return Cursor{}, false
 	}
@@ -84,39 +86,30 @@ func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix r
 	tabStop := tabStopOr(r.tabStop)
 	cw := min(max(cmdlinePopupMinWidth, StringWidth(full, tabStop)+1), maxCW)
 	iw := cw + 2 // 左右の余白を含めた枠の中の列数
-	outerW := iw + 2*b
+	outerW := iw + 2
 	left := (r.Width - outerW) / 2
-	x0 := left + b
+	x0 := left + 1
 	body := theme.attr(StyleCommandLinePopup)
 	ba := theme.attr(StyleCommandLinePopupBorder)
 	if prefix == '/' || prefix == '?' {
 		ba = theme.attr(StyleCommandLinePopupBorderSearch)
 	}
-	inTop := top + b
-	for i := range head + 1 {
-		clearSplit(g, inTop+i, x0, x0+iw)
-		for c := range iw {
-			g.set(inTop+i, x0+c, blank(body))
-		}
+	row := top + 1
+	clearSplit(g, row, x0, x0+iw)
+	for c := range iw {
+		g.set(row, x0+c, blank(body))
 	}
-	if bordered {
-		r.drawBorderAttr(g, ba, chars, inTop, x0, head+1, iw)
-	}
-	if title != "" {
+	r.drawBorderAttr(g, ba, chars, row, x0, 1, iw)
+	if title := r.symbol(cmdlinePopupTitle(prefix)); title != "" {
 		t := " " + title + " "
 		x := x0 + max((iw-StringWidth(t, tabStop))/2, 0)
-		row := inTop
-		if bordered {
-			row = top
-		}
-		r.drawText(g, row, x, x0+iw, t, ba)
+		r.drawText(g, top, x, x0+iw, t, ba)
 	}
-	row := inTop + head
 	s := r.cmdlineTail(full, cw)
-	end := r.drawText(g, row, x0+1, x0+1+cw, s, body)
+	end := r.drawTextFrom(g, row, x0+1, x0+1+cw, s, body)
 	r.hits.cover(top, left, outerH, outerW)
 	if m := f.Completion; m != nil && m.Start >= 0 && m.Start <= len(f.CommandLine) {
-		r.drawPaletteMenu(g, theme, m, top+outerH, left, outerW, chars, bordered)
+		r.drawPaletteMenu(g, theme, m, top+outerH, left, outerW, chars)
 	} else {
 		r.pum.valid = false
 	}
@@ -124,36 +117,30 @@ func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix r
 }
 
 // drawPaletteMenu は、補完の候補の一覧 m を、top 行目から、left 列から幅 outerW 列（入力の枠と同じ幅）の枠の中に描く（FR-217）。
-// 枠線（bordered なら chars）は StyleCommandLinePopupBorder、項目は StyleCommandLinePopup の上に、下の端の一覧（drawCompletion）と
+// 枠線 chars は StyleCommandLinePopupBorder、項目は StyleCommandLinePopup の上に、下の端の一覧（drawCompletion）と
 // 同じ色（選んでいる項目は StylePopupSelected、打った語に当たる文字は StylePopupMatch、スクロールバーは StylePopupScrollbar と
 // StylePopupThumb）で描く。項目の文字は、入力の文字と同じく枠の中の左の 1 列の余白の後から並べ、右の 1 列の余白にスクロールバーを描く。
 // 一覧の項目を並べ始める位置（CompletionMenu.Start）は使わない（noice.nvim の command_palette も、一覧を補う語の列に合わせない）。
 //
-// 行の数は、項目の数、cmdlinePopupMenuRows、m.MaxHeight（0 でなければ）と、最後の行の上に枠ごと収まる行の数の最も小さいものにする。
-// 収まらない項目は、下の端の一覧と同じく選んでいる項目が見えるように送り、スクロールバーを描く。
-// 1 行しか取れないのに 2 項目以上あるか、1 行も取れなければ、一覧を出さない（下の端の一覧の placeCompletion と同じ）。
+// 行の数は、項目の数、cmdlinePopupMenuRows、m.MaxHeight（0 でなければ）と、画面の下の端までに枠ごと収まる行の数の最も小さいものにする。
+// 画面が低ければ、noice.nvim と同じく、ステータス行と最後の行の上にも重ねて、入る行だけ出す（PR #362 のレビューの推奨 2）。
+// 収まらない項目は、下の端の一覧と同じく選んでいる項目が見えるように送り、スクロールバーを描く。1 行も取れなければ一覧を出さない。
 //
 // req: FR-217
-func (r *Renderer) drawPaletteMenu(g *Grid, theme Theme, m *CompletionMenu, top, left, outerW int, chars [borderChars]string, bordered bool) {
-	b := 0
-	if bordered {
-		b = 1
-	}
+func (r *Renderer) drawPaletteMenu(g *Grid, theme Theme, m *CompletionMenu, top, left, outerW int, chars [borderChars]string) {
 	size := len(m.Items)
 	limit := cmdlinePopupMenuRows
 	if m.MaxHeight > 0 {
 		limit = min(limit, m.MaxHeight)
 	}
-	h := min(size, limit, r.Height-1-top-2*b)
-	x0, iw := left+b, outerW-2*b
-	if size == 0 || h < 1 || (h == 1 && size > 1) || iw < 3 {
+	h := min(size, limit, r.Height-top-2)
+	x0, iw := left+1, outerW-2
+	if size == 0 || h < 1 || iw < 3 {
 		r.pum.valid = false
 		return
 	}
-	p := completionPlace{top: top + b, height: h, col: x0 + 1, width: iw - 2, scrollbar: h < size}
+	p := completionPlace{top: top + 1, height: h, col: x0 + 1, width: iw - 2, scrollbar: h < size}
 	r.drawCompletionRows(g, theme, m, p, x0, x0+iw, theme.attr(StyleCommandLinePopup))
-	if bordered {
-		r.drawBorderAttr(g, theme.attr(StyleCommandLinePopupBorder), chars, p.top, x0, h, iw)
-	}
-	r.hits.cover(top, left, h+2*b, outerW)
+	r.drawBorderAttr(g, theme.attr(StyleCommandLinePopupBorder), chars, p.top, x0, h, iw)
+	r.hits.cover(top, left, h+2, outerW)
 }

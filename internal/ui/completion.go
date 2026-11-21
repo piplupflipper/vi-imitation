@@ -188,6 +188,8 @@ func (r *Renderer) drawCompletion(g *Grid, theme Theme, m *CompletionMenu, row, 
 // 各行の left 列から right 列の手前までを、選んでいる項目なら StylePopupSelected、ほかは normal の空白で塗ってから、
 // 項目の文字を p の欄に描く。項目が行の数より多ければ、欄の右の列（p.col + p.width）にスクロールバーを描く。
 // 一覧の送り方（一番上の行の項目）は、描画をまたいで r.pum に保つ。
+// マウスの出来事の位置を解くための一覧の場所（r.hits.cover）は残さない。呼び出し側が、枠線や左の空白を含めた一覧の全体の場所を残す
+// （残さないと、一覧の上の押下が下の本文へ通り抜ける。mouse.go の covers）。
 func (r *Renderer) drawCompletionRows(g *Grid, theme Theme, m *CompletionMenu, p completionPlace, left, right int, normal Attr) {
 	size := len(m.Items)
 	st := &r.pum

@@ -97,7 +97,7 @@ func TestRenderCommandLinePopup(t *testing.T) {
 }
 
 // 検索の入力は、枠線と題を commandLine.popup.border.search の色で描き、題は前方と後方で替える。
-// 題の記号が空なら題を描かない。枠線の記号が空なら、枠線を描かずに、題を枠の最初の行に描く（浮かべる窓と同じ）。
+// 題の記号が空なら題を描かない。枠線の記号が空なら、ASCII の枠線で描く。
 //
 // req: FR-216
 func TestRenderCommandLinePopupTitle(t *testing.T) {
@@ -125,21 +125,52 @@ func TestRenderCommandLinePopupTitle(t *testing.T) {
 	if got := rowTexts(s, 3)[2]; got != boxRow(8, "╭", strings.Repeat("─", 62), "╮") {
 		t.Errorf("題の無い枠 = %q", got)
 	}
-	// 枠線が無ければ、2 行目に題を、3 行目に入力を描く。幅は左右の余白を含めて 62 列で、横の中央に置く。
-	s = renderPalette(paletteRenderer(80, 24, ""), ':', "w", nil)
-	got := rowTexts(s, 5)
-	if got[2] != "~"+strings.Repeat(" ", 34)+" Cmdline" || got[3] != "~"+strings.Repeat(" ", 9)+":w" {
-		t.Errorf("枠線の無い枠 = %q", got[2:4])
+	// 枠線の記号が空（本体の既定）なら、ASCII の枠線で描く（枠の中の色が既定では本文と同じなので、枠線で見分ける）。
+	// 候補の一覧の枠も同じ枠線で描く。
+	s = renderPalette(paletteRenderer(80, 24, ""), ':', "e a", &CompletionMenu{ID: 1, Items: []string{"a1"}, Selected: -1, Start: 2})
+	got := rowTexts(s, 8)
+	dash := strings.Repeat("-", 62)
+	want := []string{
+		boxRow(8, "+", dash[:26]+" Cmdline "+dash[:27], "+"),
+		boxRow(8, "|", " :e a"+strings.Repeat(" ", 57), "|"),
+		boxRow(8, "+", dash, "+"),
+		boxRow(8, "+", dash, "+"),
+		boxRow(8, "|", " a1"+strings.Repeat(" ", 59), "|"),
+		boxRow(8, "+", dash, "+"),
 	}
-	body := paletteTheme[StyleCommandLinePopup]
-	if a, b := s.Grid.At(2, 9).Attr, s.Grid.At(3, 70).Attr; a != body || b != body {
-		t.Errorf("枠線の無い枠の色 = %+v, %+v", a, b)
+	for i, w := range want {
+		if got[2+i] != w {
+			t.Errorf("既定の枠線の %d 行目 = %q\nwant              %q", 2+i, got[2+i], w)
+		}
 	}
-	if a := s.Grid.At(2, 36).Attr; a != paletteTheme[StyleCommandLinePopupBorder] {
-		t.Errorf("枠線の無い枠の題の色 = %+v", a)
+	if a := s.Grid.At(2, 8).Attr; a != paletteTheme[StyleCommandLinePopupBorder] {
+		t.Errorf("既定の枠線の色 = %+v", a)
 	}
-	if c := s.Cursor; c.Row != 3 || c.Col != 12 {
-		t.Errorf("枠線の無い枠のカーソル = %+v", c)
+}
+
+// 入力にタブ文字があっても、タブ文字の幅を欄の左の端から数えて描くので、最後の行に描くときと同じ幅になり、
+// 欄に収まらなければ先頭を隠して、打った末尾とカーソルを見せる（PR #362 のレビューの必須 1）。
+//
+// req: FR-215
+func TestRenderCommandLinePopupTab(t *testing.T) {
+	// "/" と "xxxxxx<Tab>" で 8 列ずつになり、7 回で 56 列、"zzz" で 59 列、カーソルで 60 列の欄にちょうど収まる。
+	line := strings.Repeat("xxxxxx\t", 7) + "zzz"
+	s := renderPalette(paletteRenderer(80, 24, roundedBorder), '/', line, nil)
+	// 最初のタブ文字は欄の 7 列目から 1 列、その後は 2 列で描く。
+	if got, want := rowTexts(s, 4)[3], boxRow(8, "│", " /xxxxxx "+strings.Repeat("xxxxxx  ", 6)+"zzz  ", "│"); got != want {
+		t.Errorf("タブ文字のある入力 = %q\nwant              %q", got, want)
+	}
+	if c := s.Cursor; c.Row != 3 || c.Col != 10+59 {
+		t.Errorf("タブ文字のある入力のカーソル = %+v", c)
+	}
+	// 30 列の画面（欄は 26 列）では、先頭を隠して末尾の "zzz" とカーソルを見せる。
+	s = renderPalette(paletteRenderer(30, 10, roundedBorder), '/', line, nil)
+	row := rowTexts(s, 4)[3]
+	if !strings.Contains(row, "zzz") || !strings.HasSuffix(row, "│") {
+		t.Errorf("狭い画面のタブ文字のある入力 = %q", row)
+	}
+	if c := s.Cursor; c.Row != 3 || c.Col > 27 || s.Grid.At(3, c.Col-1).Text != "z" || s.Grid.At(3, c.Col-3).Text != "z" {
+		t.Errorf("狭い画面のタブ文字のある入力のカーソル = %+v", c)
 	}
 }
 
@@ -187,8 +218,8 @@ func TestRenderCommandLinePopupSize(t *testing.T) {
 	}
 }
 
-// 候補の一覧は、15 行と completionMenu.height と、最後の行の上に収まる行の数の小さい方まで出し、収まらない項目は送って、
-// 枠の中の右の 1 列にスクロールバーを描く。収まらなければ出さない。
+// 候補の一覧は、15 行と completionMenu.height と、画面の下の端までに収まる行の数の小さい方まで出し、収まらない項目は送って、
+// 枠の中の右の 1 列にスクロールバーを描く。1 行も取れなければ出さない。
 //
 // req: FR-217
 func TestRenderCommandLinePopupMenu(t *testing.T) {
@@ -226,18 +257,24 @@ func TestRenderCommandLinePopupMenu(t *testing.T) {
 	if r.CompletionRows() != 4 {
 		t.Errorf("completionMenu.height のときの行の数 = %d", r.CompletionRows())
 	}
-	// 12 行の画面では、最後の行の上の 11 行のうち、入力の枠の 5 行（上の 2 行を含む）と一覧の枠線の 2 行を除いた 4 行を出す。
+	// 12 行の画面では、入力の枠の 5 行（上の 2 行を含む）と一覧の枠線の 2 行を除いた 5 行を出す。
+	// 一覧は、noice.nvim と同じくステータス行（10 行目）と最後の行（11 行目）にも重ね、下の枠線を最後の行に描く。
 	r = paletteRenderer(80, 12, roundedBorder)
 	s = renderPalette(r, ':', "e i", &CompletionMenu{ID: 3, Items: items, Selected: -1, Start: 2})
-	// 一覧の下の枠線は、ステータス行（10 行目）に重なる。
-	if got := rowTexts(s, 12); r.CompletionRows() != 4 || !strings.Contains(got[10], "╰"+strings.Repeat("─", 62)+"╯") || got[11] != "" {
+	if got := rowTexts(s, 12); r.CompletionRows() != 5 || !strings.Contains(got[10], "│ i04 ") || got[11] != strings.Repeat(" ", 8)+"╰"+strings.Repeat("─", 62)+"╯" {
 		t.Errorf("低い画面の一覧 = %d 行\n%s", r.CompletionRows(), strings.Join(got, "\n"))
 	}
-	// 1 行しか取れないなら出さない。
-	r = paletteRenderer(80, 9, roundedBorder)
-	s = renderPalette(r, ':', "e i", &CompletionMenu{ID: 4, Items: items, Selected: -1, Start: 2})
-	if r.CompletionRows() != 0 || strings.Contains(s.Grid.RowText(6), "i00") {
-		t.Errorf("1 行しか取れない一覧 = %d 行", r.CompletionRows())
+	// 1 行しか取れなくても、その 1 行に選んでいる項目を出し、スクロールバーを描く。
+	r = paletteRenderer(80, 8, roundedBorder)
+	s = renderPalette(r, ':', "e i05", &CompletionMenu{ID: 4, Items: items, Selected: 5, Start: 2})
+	if r.CompletionRows() != 1 || !strings.Contains(s.Grid.RowText(6), "│ i05 ") || s.Grid.At(6, 70).Attr != thumb {
+		t.Errorf("1 行しか取れない一覧 = %d 行\n%s", r.CompletionRows(), s.Grid.String())
+	}
+	// 1 行も取れなければ出さない。
+	r = paletteRenderer(80, 7, roundedBorder)
+	s = renderPalette(r, ':', "e i", &CompletionMenu{ID: 5, Items: items, Selected: -1, Start: 2})
+	if r.CompletionRows() != 0 || strings.Contains(s.Grid.String(), "i00") {
+		t.Errorf("1 行も取れない一覧 = %d 行", r.CompletionRows())
 	}
 }
 

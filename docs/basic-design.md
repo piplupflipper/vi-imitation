@@ -4192,7 +4192,9 @@ PR #345 のレビューの推奨 2 で、失敗して終わったものの印 `p
 値は空か表示幅が 1 の文字 1 つで、空ならその種類の印を描かない（1 列のセルに描くため。`CheckSymbol`）。同梱の `config.example.jsonc` では、診断の印を印の列と同じ記号にしている。
 #359 で、画面の上のポップアップのコマンドライン（7.4 の「画面の上のポップアップ」）の枠の題 `commandLine.title.command`、`commandLine.title.searchForward`、`commandLine.title.searchBackward`（既定は `Cmdline`、`Search forward`、`Search backward`）を足した。
 noice.nvim の題（`Cmdline` と `Search`）と同じく入力の種類の名前を出し、noice.nvim が入力の行の頭の Nerd Font の印（下と上の矢印）で見分ける前方と後方は、題の文字で見分ける。任意の文字列を書け、空なら題を出さない。同梱の `config.example.jsonc` では、noice.nvim の印を題の前に付けている。
-枠線は、浮かべる窓と同じ `popup.border` で描く（noice.nvim は常に `rounded` の枠線を描く）。
+枠線は、浮かべる窓と同じ `popup.border` で描き（noice.nvim は常に `rounded` の枠線を描く）、空（本体の既定）なら ASCII の枠線（`+`、`-`、`|`）で描く。
+枠の中の色 `commandLine.popup` は noice.nvim と同じく既定では本文と同じなので、浮かべる窓のように枠線を描かないと、枠と本文を見分けられないためである（PR #362 のレビューの推奨 1）。
+背景の色でなく枠線で見分けるので、端末の背景の明暗を前提にしない（PR #351 のスクロールバーのつまみの既定を反転にしたのと同じ考え方）。
 
 #295 で、一覧と木の項目のファイルの種類のアイコン（1.4 の「#295 のアイコン」。FR-152）の表を、設定の `icons` で書き換えられるようにした。
 記号と違い、既定は ASCII にせず、Nerd Font のグリフで出す（#295 のオーナーの決め）。
@@ -4760,11 +4762,11 @@ Vim 9.1 の `:tabe` を引数なしで打つと、`:tabnew` と同じく空の�
 | 入力の枠の幅 | 入力の欄を、60 列と入力の幅（カーソルの 1 列を含む）の大きい方にし、左右に 1 列の余白と枠線を足す。画面の幅に収まらなければ画面の幅まで詰め、入力の先頭を隠す（最後の行に描くときと同じ `cmdlineTail`） | `size.min_width = 60`、`width = "auto"`、`border.padding = { 0, 1 }`。枠の全体は 64 列 |
 | 横の位置 | 枠の全体を `(画面の幅 - 枠の幅) / 2` の列から置く | `position.col = "50%"` で、中身の窓を `(画面の幅 - 中身の幅) × 0.5` に置き、枠線と余白の 2 列だけ左から枠が始まる。入力の欄が 60 列なら同じ列になる |
 | 題 | 上の枠線の中央に、前後に空白を付けて描く（`" Cmdline "`）。題の記号は 7.1 | `border.text.top` は `" " .. 種類の名前 .. " "`、nui.nvim の `top_align` の既定は `"center"` |
-| 枠線 | 記号 `popup.border` で描き、空なら描かずに、題を枠の最初の行に描く（浮かべる窓の `drawFloat` と同じ） | `border.style = "rounded"` |
+| 枠線 | 記号 `popup.border` で描き、空なら ASCII の枠線（`cmdlinePopupBorder`。7.1） | `border.style = "rounded"` |
 | 色 | 枠の中は `commandLine.popup`、枠線と題は `commandLine.popup.border`（検索は `commandLine.popup.border.search`）。7.1 | `NoiceCmdlinePopup`（`Normal`）、`NoiceCmdlinePopupBorder` と `NoiceCmdlinePopupTitle`（`DiagnosticSignInfo`）、`NoiceCmdlinePopupBorderSearch`（`DiagnosticSignWarn`） |
 | 入力の行 | 頭に `:`、`/`、`?` を残す。構文の色は付けない（[Vim との違い](vim-differences.md)） | `conceal` の既定で頭の文字を隠し、`icon` の印（Nerd Font）を出す。`lang` で構文の色を付ける |
 | 候補の一覧 | 入力の枠の下の枠線のすぐ下の行から、入力の枠と同じ幅の枠に描く。項目の文字は枠の中の左の 1 列の余白の後から並べ、右の 1 列の余白にスクロールバーを描く | `cmdline_popupmenu` の `position.row = 6`（枠線は 5 行目）、`size.width = 60` に余白の 2 列を足した 62 列（`M.opts`）、`border.style = "rounded"` |
-| 一覧の行の数 | 15 と `completionMenu.height`（0 でなければ）と、最後の行の上に枠ごと収まる行の数の最も小さいもの。1 行しか取れないのに 2 項目以上なら出さない（下の端の一覧の `placeCompletion` と同じ） | `size.max_height = 15`、`height = "auto"` |
+| 一覧の行の数 | 15 と `completionMenu.height`（0 でなければ）と、画面の下の端までに枠ごと収まる行の数の最も小さいもの。画面が低ければステータス行と最後の行の上にも重ね、1 行でも取れれば出す（80 列 9 行の noice.nvim の nvim で、一覧がステータス行と最後の行に重なって出ることを PR #362 のレビューで確かめた）。1 行も取れなければ出さない | `size.max_height = 15`、`height = "auto"` |
 | 一覧の色 | 項目は `commandLine.popup`、選んでいる項目は `popup.selected`、打った語に当たる文字は `popup.match`、枠線は `commandLine.popup.border` | `winhighlight = { Normal = "Normal", FloatBorder = "NoiceCmdlinePopupBorder" }` |
 | 最後の行 | 入力の間は空ける。入力を終えた後のメッセージは最後の行に出す | オーナーの nvim は `messages = { enabled = false }` |
 | 置けないとき | 最後の行の上に入力の枠が収まらない（枠を上へ詰めても）か、入力の欄が 2 列も取れなければ、最後の行に描く | — |
@@ -4776,7 +4778,10 @@ Vim 9.1 の `:tabe` を引数なしで打つと、`:tabnew` と同じく空の�
 どの画面でも、その画面の `ui.Renderer` が、その画面の大きさで置き場所を決める。
 選択肢の問い（`Frame.Choice`）を出している間は、今までどおり最後の行から上へ問いを描き、枠は出さない。
 検索の一致の件数（6.7 の「検索の一致の件数」）は検索で動いた後のメッセージなので、最後の行に出す。
-打つたびの検索（6.7）で画面を送るとき、枠の行を避けないので、動いた先の一致が枠の下に隠れることがある。
+打つたびの検索（6.7）は、枠の行を避けて画面を送らない。一致が画面を送らずに見える行で枠の下にあると、一致は枠の下に隠れる（PR #362 のレビューで、200 行のファイルの 3 行目の一致で確かめた。noice.nvim の nvim も同じく送らなかった）。
+画面の外の遠くの一致（150 行目）へ画面を送ったときは、一致が画面の中ほどに出て隠れなかった。
+入力の欄のタブ文字の幅は、欄の左の端を 0 列目として数えて描く（`cmdlineTail` と `drawTextFrom`）。最後の行に描くときと同じ幅になる。
+#359 の最初の版は、幅を 0 列目から数えて枠の中の列から描いたので、タブ文字の幅が食い違い、打った末尾が欄の外に出て描かれなかった（PR #362 のレビューの必須 1）。
 
 #### 補う語と候補
 

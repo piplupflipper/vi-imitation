@@ -23,7 +23,8 @@ const (
 	// SymbolModified は、ステータス行の未保存の印（部品 StatusPartModified）である。
 	SymbolModified = "modified"
 	// SymbolPopupBorder は、浮かべる窓の枠線の 8 文字である。並びは左上、上、右上、右、右下、下、左下、左（Neovim の border の配列と同じ）。
-	// 空なら枠線を描かない（既定）。
+	// 空なら枠線を描かない（既定）。画面の上のポップアップのコマンドライン（FR-216）の枠にも使い、そちらは空なら ASCII の枠線で描く
+	// （cmdlinepopup.go の cmdlinePopupBorder）。
 	SymbolPopupBorder = "popup.border"
 	// SymbolShowBreak は、行を折り返したとき（FR-156）に、続きの見た目の行の頭に付ける記号である（Vim の 'showbreak'）。
 	// 空なら付けない（既定。Vim と Neovim の既定と同じ）。本文の幅から 2 を引いた列数より広ければ付けない（wrapper）。

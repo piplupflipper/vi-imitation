@@ -907,23 +907,36 @@ func (d *drawer) drawMarks(rows int) {
 }
 
 // drawText は、row 行目の col 列から、列 limit の手前まで s を描き、描き終えた次の列を返す。
-// 収まらない文字の手前で止める。
+// 収まらない文字の手前で止める。タブ文字の幅は、グリッドの左の端を 0 列目として決める。
 func (r *Renderer) drawText(g *Grid, row, col, limit int, s string, a Attr) int {
+	return r.drawGlyphs(g, row, 0, col, limit, s, a)
+}
+
+// drawTextFrom は、drawText の、タブ文字の幅を col 列目を 0 列目として決めるものである（画面の上のポップアップのコマンドラインの欄。
+// 幅を cmdlineTail と同じく欄の左の端から数えるため。PR #362 のレビューの必須 1）。
+func (r *Renderer) drawTextFrom(g *Grid, row, col, limit int, s string, a Attr) int {
+	return r.drawGlyphs(g, row, col, 0, limit-col, s, a) + col
+}
+
+// drawGlyphs は、s の文字を、origin 列目を 0 列目とした col 列目から、その数え方の列 limit の手前まで描き、
+// 描き終えた次の列（同じ数え方）を返す。タブ文字の幅は、その数え方の列で決める。
+func (r *Renderer) drawGlyphs(g *Grid, row, origin, col, limit int, s string, a Attr) int {
 	tabStop := tabStopOr(r.tabStop)
 	for off := 0; off < len(s); {
 		gl := nextGlyph(s, off, col, tabStop)
 		if gl.col+gl.width > limit {
 			break
 		}
+		x := origin + gl.col
 		switch gl.kind {
 		case glyphTab, glyphSpecial, glyphWhitespace:
 			for i := range gl.width {
-				g.set(row, gl.col+i, Cell{Text: gl.cell(i), Width: 1, Attr: a})
+				g.set(row, x+i, Cell{Text: gl.cell(i), Width: 1, Attr: a})
 			}
 		case glyphText:
-			g.set(row, gl.col, Cell{Text: gl.text, Width: gl.width, Attr: a})
+			g.set(row, x, Cell{Text: gl.text, Width: gl.width, Attr: a})
 			if gl.width == 2 {
-				g.set(row, gl.col+1, Cell{Width: 0, Attr: a})
+				g.set(row, x+1, Cell{Width: 0, Attr: a})
 			}
 		}
 		col = gl.col + gl.width
@@ -1028,8 +1041,9 @@ func (r *Renderer) drawCommandLine(g *Grid, theme Theme, f *Frame) (Cursor, bool
 const messageRightMargin = 2
 
 // drawMessageRight は、row 行目の col 列から width 列の範囲に、左の text と、右に寄せた right を描く
-// （検索のパターンと一致の件数。FR-167）。メッセージの行では範囲は行の全体である。範囲を受けるのは、後にコマンドラインと検索の入力を
-// ポップアップに出す設定で、枠の中に同じ規則で描くためである（PR #322 のレビューの推奨 3）。
+// （検索のパターンと一致の件数。FR-167）。今の呼び出し側はメッセージの行だけで、範囲は行の全体である。
+// 範囲を受けるのは、コマンドラインと検索の入力をポップアップに出す設定（PR #322 のレビューの推奨 3）で枠の中に描くことを考えたためだが、
+// その設定（Frame.CommandLinePopup。FR-215）でも、一致の件数は入力を終えた後のメッセージなので、最後の行に描く（#359 の決め）。
 // right は、範囲の右の端の messageRightMargin 列を空けた位置で終わるように置く。text は right の手前の 1 列を空けて収まるところまで描き、
 // 収まらない後ろの側は描かない（right を隠さない）。right も収まらないほど狭ければ、right を範囲の左の端から描ける分だけ描く。
 //
