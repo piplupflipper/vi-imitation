@@ -63,10 +63,10 @@ func TestProviderKeys(t *testing.T) {
 	}
 }
 
-// 本体の操作の表の <Leader>a（select-all-lines）は、leader に従って、ノーマルモードだけの本体の操作として登録する。
+// 本体の操作の表の <Leader>a（select-all）は、leader に従って、ノーマルモードとビジュアルモードの本体の操作として登録する。
 // 利用者の leader で先に登録した本体のキーと同じ列になれば（leader が s なら sa）、登録せずに誤りを返し、先のキーを残す。
 //
-// req: FR-220
+// req: FR-130
 func TestLeaderSelectAll(t *testing.T) {
 	for _, leader := range []string{"<Space>", ",", "g", "<C-x>"} {
 		lk := editcmd.MustParseKeys(leader)
@@ -78,19 +78,20 @@ func TestLeaderSelectAll(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, ok := km.Lookup(MapNormal, keys)
-		if !ok || b.Kind != BindAction || b.Ref != (editcmd.Ref{ID: "select-all-lines"}) || b.Modes != MapNormal {
-			t.Errorf("leader %s: <Leader>a = %+v, %v", leader, b, ok)
-		}
-		if b, ok := km.Lookup(MapVisual, keys); ok {
-			t.Errorf("leader %s: ビジュアルモードの <Leader>a = %+v", leader, b)
+		for _, mode := range []MapMode{MapNormal, MapVisual} {
+			b, ok := km.Lookup(mode, keys)
+			if !ok || b.Kind != BindAction || b.Ref != (editcmd.Ref{ID: "select-all"}) || b.Modes != MapNormal|MapVisual {
+				t.Errorf("leader %s, %s: <Leader>a = %+v, %v", leader, ModeName(mode), b, ok)
+			}
 		}
 	}
-	if b, ok := DefaultKeymap().Lookup(MapNormal, editcmd.MustParseKeys("<Space>a")); !ok || b.Ref.ID != "select-all-lines" {
-		t.Errorf("DefaultKeymap <Space>a = %+v, %v", b, ok)
+	for _, mode := range []MapMode{MapNormal, MapVisual} {
+		if b, ok := DefaultKeymap().Lookup(mode, editcmd.MustParseKeys("<Space>a")); !ok || b.Ref.ID != "select-all" {
+			t.Errorf("DefaultKeymap %s <Space>a = %+v, %v", ModeName(mode), b, ok)
+		}
 	}
 	km, errs := DefaultKeymapLeader(editcmd.MustParseKeys("s"))
-	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "select-all-lines") {
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "select-all") {
 		t.Errorf("leader s: errs = %v", errs)
 	}
 	if b, ok := km.Lookup(MapNormal, editcmd.MustParseKeys("sa")); !ok || b.Ref.ID != "surround-add" {

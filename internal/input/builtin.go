@@ -212,13 +212,10 @@ var (
 		// ビジュアルモードの o は、カーソルを選択の反対の端へ移す。
 		{keys: "o", id: "visual-swap", modes: MapVisual, desc: "選択の反対の端へ移る"},
 		// バッファの全体を文字単位のビジュアルモードで選ぶ。カーソルも画面も動かさない（FR-130。#263）。
-		// 既定のキーは無く、設定の keymap で割り当てたときだけ使える。
-		{keys: "", id: "select-all", modes: MapNormal | MapVisual, desc: "カーソルを動かさずにバッファの全体を選ぶ"},
-		// バッファの全体を、ノーマルモードの ggVG と同じく行単位のビジュアルモードで選ぶ（FR-220。#364）。
-		// 既定のキーは、オーナーの nvim の割り当て（ノーマルモードの <Leader>a を ggVG にする）に合わせた。
+		// 既定のキーは、ノーマルモードとビジュアルモードの <Leader>a である（オーナーの決め。#364）。
 		// <Leader> は、LSP と DAP の既定のキー（providerKeys）と同じく、キーマップを作る時点の leader にする（builtinKeymap）。
-		// req: FR-220
-		{keys: "<Leader>a", id: "select-all-lines", modes: MapNormal, desc: "最初の行（回数があればその行）から最後の行までを、行単位のビジュアルモードで選ぶ（ggVG）"},
+		// req: FR-130
+		{keys: "<Leader>a", id: "select-all", modes: MapNormal | MapVisual, desc: "カーソルを動かさずにバッファの全体を選ぶ"},
 		// スクロールの操作（FR-173）。画面の表示領域を動かすので、モーションではなく操作にする。
 		// Vim と同じく、オペレーターの後では使えない（d<PageDown>、d<C-d>、dzt は誤りになる）。
 		// <PageDown> と <C-f>、<PageUp> と <C-b> は、Vim 9.1 と Neovim 0.12.5 と同じく同じ操作である（Neovim の nv_page。#337）。
