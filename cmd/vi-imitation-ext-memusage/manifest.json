@@ -1,0 +1,15 @@
+{
+  "id": "memusage",
+  "command": "./vi-imitation-ext-memusage",
+  "activation": [
+    { "on": "command", "id": "memusage.show" }
+  ],
+  "contributes": {
+    "commands": [
+      { "id": "memusage.show", "description": "本体と拡張機能（言語サーバーなどを含む）のメモリの使用量の内訳を出す" }
+    ],
+    "statusline": [
+      { "id": "memusage.rss", "description": "本体の RSS と、拡張機能と言語サーバーなどの RSS の合計（vi 18M · ext 410M）" }
+    ]
+  }
+}

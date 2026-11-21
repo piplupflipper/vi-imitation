@@ -13,7 +13,7 @@ BINARY  := $(BIN_DIR)/vi-imitation
 # MCP の中継コマンド。MCP のクライアントが標準入出力のサーバーとして起動する（FR-33）。
 MCP_BRIDGE := $(BIN_DIR)/vi-imitation-mcp-bridge
 # 標準の拡張機能。本体とは別の実行ファイルとして作る（NFR-01）。
-EXTENSIONS := vi-imitation-ext-line vi-imitation-ext-script vi-imitation-ext-dap vi-imitation-ext-lsp vi-imitation-ext-acp vi-imitation-ext-mcp vi-imitation-ext-git vi-imitation-ext-finder vi-imitation-ext-filer vi-imitation-ext-formatter
+EXTENSIONS := vi-imitation-ext-line vi-imitation-ext-script vi-imitation-ext-dap vi-imitation-ext-lsp vi-imitation-ext-acp vi-imitation-ext-mcp vi-imitation-ext-git vi-imitation-ext-finder vi-imitation-ext-filer vi-imitation-ext-formatter vi-imitation-ext-memusage
 # cgo を使う標準の拡張機能。C コンパイラが要る。cgo を使うのはこれだけで、本体は CGO_ENABLED=0 で作る（NFR-02）。
 # cgo の拡張機能（tree-sitter）は、glibc に動的にリンクする（NFR-01。2026-11-20 のオーナーの裁定、#277）。
 # 利用者の手元でビルドしたパーサの共有ライブラリを dlopen で読む（FR-142）ためで、musl を静的にリンクした実行ファイルは dlopen を使えない。
