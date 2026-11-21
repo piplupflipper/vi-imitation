@@ -2,10 +2,68 @@ package editor
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
+	"github.com/piplupflipper/vi-imitation/internal/command"
 )
+
+// 設定の keymap を書かなくても、ノーマルモードとビジュアルモードの <Leader>a（既定の leader では <Space>a）は select-all である（#364）。
+// カーソルを動かさずに全体を文字単位で選び、ジャンプリストにも記録しない。行単位のビジュアルモードの中では文字単位に切り替える。
+// leader を変えれば、新しい leader で始まる。<Leader>? とキーの一覧（:keys）にも本体の既定のキーとして出る。
+//
+// req: FR-90, FR-130
+func TestSelectAllDefaultKey(t *testing.T) {
+	const text = "abc\n  de\nfghij\n"
+	for _, tt := range []struct{ leader, pre, keys string }{
+		{"", "jlll", "<Space>a"},
+		{"", "jlllV", "<Space>a"},
+		{"", "jlllvk", "<Space>a"},
+		{",", "jlll", ",a"},
+	} {
+		t.Run(tt.leader+tt.pre+tt.keys, func(t *testing.T) {
+			dir := writeFiles(t, map[string]string{"a.txt": text})
+			h := start(t, Config{WorkDir: dir, Leader: tt.leader}, "a.txt")
+			h.keys(tt.pre)
+			h.settle()
+			var cur buffer.Position
+			var jumps string
+			h.e.do(func() { cur, jumps = h.e.cur.state.Cursor(), fst(h.e.jumpList()) })
+			h.keys(tt.keys)
+			h.settle()
+			h.e.do(func() {
+				st := h.e.cur.state
+				start, end, linewise, ok := st.Selection()
+				if !ok || linewise || st.Mode() != command.ModeVisual || start != (buffer.Position{}) || end != (buffer.Position{Line: 2, Byte: 5}) {
+					t.Errorf("selection = %v-%v linewise %v ok %v mode %v", start, end, linewise, ok, st.Mode())
+				}
+				if st.Cursor() != cur || fst(h.e.jumpList()) != jumps {
+					t.Errorf("cursor %v jumps %q, want %v %q", st.Cursor(), fst(h.e.jumpList()), cur, jumps)
+				}
+			})
+			h.keys("y")
+			h.settle()
+			h.e.do(func() {
+				if r, _ := h.e.cur.state.Registers().Get(0); r.Text != "abc\n  de\nfghij" || r.Linewise {
+					t.Errorf("register = %q linewise %v", r.Text, r.Linewise)
+				}
+			})
+		})
+	}
+
+	h := start(t, Config{})
+	h.keys("<Space>?")
+	h.settle()
+	if _, text := h.listText(); !strings.Contains(text, "\n<Space>a ") || !strings.Contains(text, "カーソルを動かさずにバッファの全体を選ぶ") {
+		t.Errorf("<Space>? lacks <Space>a:\n%s", text)
+	}
+	h.keys("<Esc>:keys<CR>")
+	h.settle()
+	if _, text := h.listText(); !strings.Contains(text, "\n<Space>a ") {
+		t.Errorf(":keys lacks <Space>a:\n%s", text)
+	}
+}
 
 // 外からの編集（拡張機能の buffer/edit。MCP の edit_buffer、ACP の書き込み）は、カーソルと同じ規則で
 // ビジュアルモードの選択の両端もずらす（applyExternal の ShiftPositions）。行を足す編集の後の y は、ずれた選択の全体をヤンクする

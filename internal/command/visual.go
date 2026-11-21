@@ -100,33 +100,6 @@ func actSelectAll(s *State, _ editcmd.Command) error {
 	return nil
 }
 
-// actSelectAllLines は、select-all-lines（既定のキーは <Leader>a）である。ノーマルモードで gg、V、G を続けて打ったのと同じく、
-// 最初の行（回数があればその行）から最後の行までを、行単位のビジュアルモードで選ぶ（FR-220。#364）。
-//
-// gg と G は、キーで打ったときと同じモーション（file-start と file-end）で動かす。このため、カーソルの位置
-// （最後の行の最初の空白でない文字。'startofline' がオンの Vim 9.1 と同じで、Neovim 0.12.5 の既定とは違う）、
-// ジャンプリストへの記録（gg の前の位置と、G の前の最初の行の位置）、抜けた後のマーク '< と '>、gv で選び直す範囲は ggVG と同じになる。
-// 回数は gg に渡す。オーナーの nvim の割り当て（ノーマルモードの <Leader>a を ggVG にする）で、3<Leader>a が 3ggVG になるのと同じである。
-// select-all（FR-130）と違い、カーソルを動かし、ジャンプリストにも記録する。
-//
-// req: FR-220
-func actSelectAllLines(s *State, cmd editcmd.Command) error {
-	motion := func(id string, count int, given bool) editcmd.Command {
-		return editcmd.Command{
-			Kind: editcmd.KindMotion, Count: count, CountGiven: given,
-			Target: editcmd.Target{Kind: editcmd.TargetMotion, Ref: editcmd.Ref{ID: id}},
-		}
-	}
-	// ノーマルモードだけの操作である（input の表の modes。設定の keymap でもビジュアルモードには割り当てられない）。
-	if err := s.moveMotion(motion("file-start", cmd.Count, cmd.CountGiven)); err != nil {
-		return err
-	}
-	if err := actVisual(ModeVisualLine)(s, cmd); err != nil {
-		return err
-	}
-	return s.visualMotion(motion("file-end", 1, false))
-}
-
 // actVisualSwap は、ビジュアルモードの o である。選択の両端（anchor と head）を入れ替え、カーソルを新しい head へ移す。
 // カーソルが head にあれば（普段の状態）、カーソルを選択の反対の端へ移すことになる（Vim の v_o）。
 func actVisualSwap(s *State, _ editcmd.Command) error {

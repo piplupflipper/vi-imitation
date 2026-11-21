@@ -37,8 +37,7 @@
 | `<Leader>` と `leader` | `vi-imitation --docs usage <Leader> と leader` |
 | ID の名前の付け方 | `vi-imitation --docs usage ID の書き方` |
 | インサートモードの操作（`insert.` で始まる ID）の補足 | `vi-imitation --docs usage インサートモードの操作` |
-| `select-all-lines`（既定の `<Leader>a`）の補足 | `vi-imitation --docs usage select-all-lines` |
-| `select-all` の補足 | `vi-imitation --docs usage select-all` |
+| `select-all`（既定の `<Leader>a`）の補足 | `vi-imitation --docs usage select-all` |
 
 `command` に書ける Ex コマンドの名前の一覧は `vi-imitation --docs commands` にある。
 
@@ -150,8 +149,7 @@ LSP と DAP の操作（`hover`、`debug.continue` など）は、その操作�
 | `visual` | 操作 | normal、visual | `v` | 文字単位のビジュアルモード |
 | `visual-line` | 操作 | normal、visual | `V` | 行単位のビジュアルモード |
 | `visual-swap` | 操作 | visual | `o` | 選択の反対の端へ移る |
-| `select-all` | 操作 | normal、visual |  | カーソルを動かさずにバッファの全体を選ぶ |
-| `select-all-lines` | 操作 | normal | `<Leader>a` | 最初の行（回数があればその行）から最後の行までを、行単位のビジュアルモードで選ぶ（ggVG） |
+| `select-all` | 操作 | normal、visual | `<Leader>a` | カーソルを動かさずにバッファの全体を選ぶ |
 | `page-down` | 操作 | normal、visual | `<PageDown>` `<C-f>` | 1 画面下へスクロールする |
 | `page-up` | 操作 | normal、visual | `<PageUp>` `<C-b>` | 1 画面上へスクロールする |
 | `half-page-down` | 操作 | normal、visual | `<C-d>` | 半画面（回数があれば回数の行）下へスクロールし、カーソルも同じ行数動かす |

@@ -422,14 +422,15 @@ func TestKeymapActionConfig(t *testing.T) {
 	}
 }
 
-// 設定の keymap.normal で <Leader>a に select-all を割り当てると、<Leader>a と y で、カーソルも画面も動かさずに
+// 設定の keymap.normal で <C-a> に select-all を割り当てると、<C-a> と y で、カーソルも画面も動かさずに
 // バッファの全体をヤンクし、ホストのクリップボードへ送る（#263 の「この上に何が載るか」）。ジャンプリストにも記録しない。
+// 既定の <Leader>a（#364）は、TestSelectAllDefaultKey が確かめる。
 //
 // req: FR-129, FR-130
 func TestSelectAllConfig(t *testing.T) {
 	text := numberedLines("line", 60, "")
 	dir := writeFiles(t, map[string]string{"a.txt": text})
-	cfg := Config{WorkDir: dir, KeymapActions: map[string]map[string]string{"normal": {"<Leader>a": "select-all"}}}
+	cfg := Config{WorkDir: dir, KeymapActions: map[string]map[string]string{"normal": {"<C-a>": "select-all"}}}
 	h := start(t, cfg, "a.txt")
 	h.keys("40Gw")
 	h.settle()
@@ -440,7 +441,7 @@ func TestSelectAllConfig(t *testing.T) {
 	if top == 0 || cur.Line != 39 {
 		t.Fatalf("前提: top %d cursor %v", top, cur)
 	}
-	h.keys("<Space>a")
+	h.keys("<C-a>")
 	h.settle()
 	h.e.do(func() {
 		st := h.e.cur.state
