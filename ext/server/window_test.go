@@ -26,8 +26,10 @@ func TestWindowChangeAndBand(t *testing.T) {
 		events <- g
 		if !e.Params.Closed {
 			// フックの中から帯を送れる（応答を待たない）。
-			_ = s.SetBand(ext.BandSetParams{Window: e.Params.Window, Buffer: e.Params.Buffer, Version: e.Params.Version,
-				Lines: []ext.BandLine{{Text: "func f() {", Line: ext.SourceLine(0)}}})
+			_ = s.SetBand(ext.BandSetParams{
+				Window: e.Params.Window, Buffer: e.Params.Buffer, Version: e.Params.Version,
+				Lines: []ext.BandLine{{Text: "func f() {", Line: ext.SourceLine(0)}},
+			})
 		}
 	})
 	h := start(t, s)

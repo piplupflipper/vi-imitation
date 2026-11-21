@@ -427,6 +427,80 @@ view/tabChange の params である（API 0.10.0 で足した）。
 - `buffer`（`BufferID`）: 替わった後のタブのバッファの番号である。
 - `path`（`string`、省ける）: そのバッファのファイルの絶対パスである。ファイルでないバッファでは空である。
 
+#### `WindowChangeParams`
+
+window/change の params である。
+
+- `window`（`WindowID`）: 窓の識別子である。
+- `closed`（`bool`、省ける）: 窓が無くなった（client が終わった）ことを表す。true なら、ほかの項目は読まない。
+- `buffer`（`BufferID`、省ける）: 窓に出しているバッファ（その client のカーソルのあるタブ。フォーカスのあるポップアップを開いていれば、
+  開いたときのタブ）の番号である。拡張機能へ送っていないバッファ（不正な UTF-8 を含むもの）のこともある。
+- `version`（`Version`、省ける）: 送った時点のバッファのバージョン番号である。band/set の Version にそのまま書くと、
+  本体は、帯を押したときに、帯を作ったときから本文が変わっていないかを確かめられる（BandSetParams.Version）。
+- `top`（`int`）: 表示領域の最初の行（0 から数える。Vim の line('w0') - 1）である。
+  行を折り返して描くとき、最初の行を途中から見せていることがある。
+- `bottom`（`int`）: 直前の描画で表示領域に最後まで描いた行の次の行である（Vim の w_botline。0 から数える）。
+  見えている行は Top から Bottom の前の行までで、最後に途中まで描いた行があればそれも見えている。
+- `rows`（`int`）: Rows と Columns は、表示領域の行数と、本文の列数（印の列と行番号の列を除く）である。
+- `columns`（`int`）
+- `cursor`（`Position`）: 窓のバッファのカーソル位置である。
+- `mode`（`Mode`、省ける）: 窓の client のモードである（ポップアップにフォーカスがあれば、ポップアップのバッファのモード）。
+- `diff`（`bool`、省ける）: 窓のバッファが見比べ（diff/start、:diffsplit）の片側であることを表す。
+
+#### `WindowID`
+
+JSON の文字列である。
+
+本体が窓ごとに決める識別子である。拡張機能は値の形に頼らず、window/change で受け取った値をそのまま band/set に書く。
+
+今の本体の窓は、編集の client の画面のバッファの表示領域（client ごとに 1 つ）で、識別子は "client/<client の番号>" である。
+端末多重化ソフトで分割したペインの client と、見比べ（diff/start）のために分割したペインの client は別の client なので、窓も別である。
+ポップアップの中のバッファ（ホバー、ポップアップで見る、ファインダー）と部品の client の画面は、今は窓として知らせない。
+後で知らせるときは、"client/" で始まらない識別子にする。
+
+
+#### `Mode`
+
+JSON の文字列である。
+
+本体のモードの名前である。
+
+- `"normal"`（ModeNormal）
+- `"insert"`（ModeInsert）
+- `"visual"`（ModeVisual）
+- `"visualLine"`（ModeVisualLine）
+- `"visualBlock"`（ModeVisualBlock）
+- `"commandLine"`（ModeCommandLine）
+
+#### `BandSetParams`
+
+band/set の params である。
+
+- `window`（`WindowID`）: 帯を描く窓（window/change の Window）である。
+- `buffer`（`BufferID`）: 帯を作ったときの窓のバッファである。窓のバッファが替わったら、本体は描かない。
+- `version`（`Version`）: 帯を作ったときのバッファのバージョン番号である。本体は、今のバージョン番号がこれと違う間も帯を描くが、
+  帯を押してもその行へ移らない（下の本文を押したことにする。nvim-treesitter-context の get_source_line と同じ）。
+- `lines`（`[]BandLine`）: 帯の行を上から並べたものである。空なら帯を消す。MaxBandLines（64） を超えられない。
+
+#### `BandLine`
+
+帯の 1 行である。
+
+- `text`（`string`）: 行の中身の文字列である。改行を含められない。本体は折り返さず、窓の横のスクロールの位置に合わせて、
+  本文と同じ列から描く（行を折り返して描く窓では、左の端から描く）。タブ文字は窓のバッファのタブ幅（tab.width）で広げる。
+- `line`（`*int`、省ける）: 行に当たるバッファの行（0 から数える）である。本体は、行番号の列にこの行の番号を描き、
+  帯のこの行を押したらこの行へ移る。省くと（nil）、行番号を描かず、押しても下の本文を押したことにする。
+- `highlights`（`[]BandHighlight`、省ける）: 行の中の範囲ごとの色である。後の範囲ほど上に重ねる。
+
+#### `BandHighlight`
+
+帯の行の中の、色を付ける範囲である。
+
+- `start`（`int`）: Start と End は、Text の中のバイトの範囲 [Start, End) である。
+- `end`（`int`）
+- `style`（`string`）: 色の名前（本体の色の名前のどれか。decoration/set の style と同じ）である。
+  本体は、帯の色（band）の上に、この名前の色を重ねる。本体の知らない名前なら、色を重ねない。
+
 #### `BufferCreateParams`
 
 buffer/create の params である。
@@ -850,19 +924,6 @@ editor/state の result である。
   段階 3 では client ごとに作業ディレクトリが違いうるので、拡張機能のプロセスの作業ディレクトリと一致するとは限らない。
   ファジーファインダーがファイルと検索の場所に使う。
 
-#### `Mode`
-
-JSON の文字列である。
-
-本体のモードの名前である。
-
-- `"normal"`（ModeNormal）
-- `"insert"`（ModeInsert）
-- `"visual"`（ModeVisual）
-- `"visualLine"`（ModeVisualLine）
-- `"visualBlock"`（ModeVisualBlock）
-- `"commandLine"`（ModeCommandLine）
-
 #### `BufferInfo`
 
 editor/state で返す、開いているバッファ 1 つの情報である。
@@ -1246,4 +1307,8 @@ ViewFinder（finder） 以外では Seq を読まない。
   編集の無い（NoLines と EndOfLine だけの）要求も断る。
   版の不一致（BufferEditResult の Applied が false）と違い、新しい版で作り直しても通らないので、拡張機能は繰り返さない。
   ext/server を使う拡張機能は、server.IsReadOnly で見分けられる。
+- `150`（WindowNotifyIntervalMs）: 本体が window/change を同じ拡張機能へ続けて送るときの、送る間隔の下限のミリ秒である（仮）。
+  nvim-treesitter-context（オーナーの nvim に入っているコミット 8decd73460d26ef0a0befb745d022dd1fc2c38b8）の
+  lua/treesitter-context.lua の throttle_by_id の 150 ミリ秒に合わせた。
+- `64`（MaxBandLines）: band/set の 1 つの帯に書ける行の数の上限である（仮）。超えた帯は、本体がログに残して捨てる。
 <!-- generated:types:end -->

@@ -94,8 +94,10 @@ func TestWindowChangeThrottle(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("1 回目 = %+v", got)
 	}
-	want := ext.WindowChangeParams{Window: "client/0", Buffer: 1, Version: got[0].Version, Top: 0, Bottom: 9, Rows: 9, Columns: 40,
-		Cursor: ext.Position{Line: 1}, Mode: ext.ModeNormal}
+	want := ext.WindowChangeParams{
+		Window: "client/0", Buffer: 1, Version: got[0].Version, Top: 0, Bottom: 9, Rows: 9, Columns: 40,
+		Cursor: ext.Position{Line: 1}, Mode: ext.ModeNormal,
+	}
 	if got[0] != want {
 		t.Fatalf("1 回目 = %+v, want %+v", got[0], want)
 	}
@@ -107,8 +109,8 @@ func TestWindowChangeThrottle(t *testing.T) {
 	h.keys("20j")
 	h.keys("i")
 	h.settle()
-	if got := sends.take(); len(got) != 0 {
-		t.Fatalf("間引きの間に送った: %+v", got)
+	if early := sends.take(); len(early) != 0 {
+		t.Fatalf("間引きの間に送った: %+v", early)
 	}
 	ft.fire(1)
 	h.eventually("時間が来た後の知らせ", func() bool { return sends.count() > 0 })
@@ -226,6 +228,21 @@ func TestBandClick(t *testing.T) {
 	h.settle()
 	if cur := h.cursor(); cur.Line != 55 {
 		t.Fatalf("<C-o> の後 = %+v, want 55 行目", cur)
+	}
+	// ビジュアルモードでは、選択を終えて帯の下の本文へ移る。ホイールは表示領域を送る。
+	h.keys("v")
+	h.settle()
+	vtop := h.viewTop()
+	h.click(1, 0)
+	if cur, m := h.cursor(), h.mode(); cur.Line != vtop || m != command.ModeNormal {
+		t.Fatalf("ビジュアルモードで帯を押した後 = %+v %v, want %d 行目のノーマルモード", cur, m, vtop)
+	}
+	h.keys("5j")
+	h.settle()
+	vtop = h.viewTop()
+	h.mouse("<ScrollWheelDown>", 1, 0)
+	if got := h.viewTop(); got != vtop+3 {
+		t.Fatalf("帯の上のホイールの後の最初の行 = %d, want %d", got, vtop+3)
 	}
 
 	// 作った後に本文が変わった帯の行は、押してもその行へ移らない。

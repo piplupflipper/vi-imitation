@@ -161,7 +161,7 @@ func (r *Renderer) HitTest(row, col int, clamp HitArea) Hit {
 			return none
 		}
 		return Hit{Area: HitScrollbar, Tab: -1, Mark: -1, MarkFirst: -1, MarkLast: -1, Row: row - r.hits.bar.top, ThumbRow: r.hits.barThumb}
-	case HitNone, HitTabLine, HitStatusLine, HitCommandLine:
+	case HitNone, HitTabLine, HitStatusLine, HitCommandLine, HitBand:
 	}
 	if h, ok := r.hitFloat(row, col, false); ok {
 		return h

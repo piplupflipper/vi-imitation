@@ -20,7 +20,8 @@ func TestWindowParamsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(b), `{"window":"client/1","closed":true,"top":0,"bottom":0,"rows":0,"columns":0,"cursor":{"line":0,"byte":0}}`; got != want {
+	want = `{"window":"client/1","closed":true,"top":0,"bottom":0,"rows":0,"columns":0,"cursor":{"line":0,"byte":0}}`
+	if got := string(b); got != want {
 		t.Errorf("closed = %s, want %s", got, want)
 	}
 	p := BandSetParams{Window: "client/1", Buffer: 2, Version: 3, Lines: []BandLine{

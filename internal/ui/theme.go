@@ -118,9 +118,11 @@ const (
 	StyleScrollbarDiagnosticHint    = "scrollbar.diagnostic.hint"
 	StyleScrollbarSearch            = "scrollbar.search"
 	// StyleBand は、表示領域の上の端の帯（Frame.Band。FR-237）の本文の列である（nvim-treesitter-context の TreesitterContext）。
-	// 帯の行の範囲の色（拡張機能が送った色の名前）は、この上に重ねる。
+	// 帯の行の範囲の色（拡張機能が送った色の名前）は、この上に重ねる。既定の対応は、nvim-treesitter-context の既定
+	// （TreesitterContext は浮かべた窓の NormalFloat へのリンク）に合わせ、浮かべた窓の popup と同じ番号にした。
 	StyleBand = "band"
 	// StyleBandLineNr は、帯の行の、印の列と行番号の列である（nvim-treesitter-context の TreesitterContextLineNumber）。
+	// 既定の対応は、nvim-treesitter-context の既定（TreesitterContextLineNumber は LineNr へのリンク）に合わせ、linenr と同じ番号にした。
 	StyleBandLineNr = "band.linenr"
 	// StyleBandBottom は、帯の最後の行に、列の全体に重ねる色である（nvim-treesitter-context の TreesitterContextBottom）。
 	// 帯と本文の境目に下線を引くときに使う。既定の対応には無い（TreesitterContextBottom の既定のリンク先は NONE）。
@@ -352,12 +354,9 @@ func DefaultTheme() Theme {
 		StyleScrollbarDiagnosticInfo:    {Fg: Indexed(12)},
 		StyleScrollbarDiagnosticHint:    {Fg: Indexed(8)},
 		StyleScrollbarSearch:            {Fg: Indexed(14)},
-		// 帯の本文は、nvim-treesitter-context の既定（TreesitterContext は浮かべた窓の NormalFloat へのリンク）に合わせ、
-		// 浮かべた窓の popup と同じ番号にした。行番号の列は、既定（TreesitterContextLineNumber は LineNr へのリンク）に合わせ、
-		// linenr と同じ番号にした。
 		StyleBand:                       {Fg: Indexed(15), Bg: Indexed(8)},
 		StyleBandLineNr:                 {Fg: Indexed(11)},
-		StyleSignBreakpoint:            {Fg: Indexed(9), Bold: true},
+		StyleSignBreakpoint:             {Fg: Indexed(9), Bold: true},
 		StyleSignBreakpointUnverified:   {Fg: Indexed(8)},
 		StyleSignExecutionPoint:         {Fg: Indexed(11), Bold: true},
 		StyleSignDiagnosticError:        {Fg: Indexed(9)},

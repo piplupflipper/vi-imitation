@@ -31,14 +31,14 @@ func TestRenderBand(t *testing.T) {
 		{Text: "\tif x {", Line: 1},
 		{Text: "for {", Line: -1},
 	}}
-	render := func(cursor int, f *Frame) (*Renderer, Screen) {
+	render := func(cursor int, f *Frame) Screen {
 		r := &Renderer{Width: 20, Height: 10, Theme: theme}
 		f.Text, f.Cursor, f.Band = bandText(30), buffer.Position{Line: cursor}, band
 		f.TabStop = 4
 		f.LineNumbers = LineNumbers{Show: true, MinWidth: 4}
-		return r, r.Render(f)
+		return r.Render(f)
 	}
-	_, s := render(5, &Frame{})
+	s := render(5, &Frame{})
 	got := rowTexts(s, 5)
 	want := []string{
 		"  1 func outer() {",
@@ -67,11 +67,11 @@ func TestRenderBand(t *testing.T) {
 	}
 
 	// カーソルが表示領域の 2 行目なら、帯は 2 行で、上の行から削る。最初の行なら描かない。
-	_, s = render(2, &Frame{})
+	s = render(2, &Frame{})
 	if got := rowTexts(s, 3); got[0] != "  2     if x {" || got[1] != "    for {" || got[2] != "  3 line 3" {
 		t.Errorf("2 行に削った帯 = %q", got)
 	}
-	_, s = render(0, &Frame{})
+	s = render(0, &Frame{})
 	if got := rowTexts(s, 1); got[0] != "  1 line 1" {
 		t.Errorf("カーソルが最初の行の帯 = %q", got)
 	}
@@ -86,6 +86,36 @@ func TestRenderBand(t *testing.T) {
 	want0 := "0123456789abcdefghijklmnopqrstuvwxyz0123456789"[r.Left():]
 	if got := rowTexts(s, 1)[0]; got != want0[:min(len(want0), 20)] {
 		t.Errorf("横にスクロールした帯 = %q, want %q（left %d）", got, want0, r.Left())
+	}
+}
+
+// 帯は、スクロールバーと進み具合の下に描き、ポップアップの窓の中の Frame には描かない（layers.go の表の 2.7）。
+//
+// req: FR-239
+func TestBandLayers(t *testing.T) {
+	theme := Theme{StyleBand: {Bg: Indexed(8)}, StyleScrollbar: {Reverse: true}}
+	band := &Band{Lines: []BandLine{{Text: "AAAA", Line: 0}, {Text: "BBBB", Line: 1}, {Text: "CCCC", Line: 2}}}
+	r := &Renderer{Width: 20, Height: 6, Theme: theme}
+	// 表示領域は 4 行で、カーソルは 4 行目なので帯は 3 行。進み具合は下から 2 行（3 行目と 4 行目）に出る。
+	s := r.Render(&Frame{
+		Text: bandText(100), Cursor: buffer.Position{Line: 3}, Band: band, Scrollbar: &Scrollbar{},
+		Progress: []Progress{{Title: "p1", Percentage: -1}, {Title: "p2", Percentage: -1}},
+	})
+	got := rowTexts(s, 4)
+	// 帯の 3 行目の右に、進み具合が重なる。
+	if !strings.HasPrefix(got[0], "AAAA") || !strings.HasPrefix(got[1], "BBBB") || got[2] != "CCCC         p1 ..." {
+		t.Errorf("進み具合との重なり = %q", got)
+	}
+	if a := s.Grid.At(0, 19).Attr; !a.Reverse {
+		t.Errorf("帯の上のスクロールバーのつまみの色 = %+v", a)
+	}
+	// ポップアップの窓の中の Frame の帯は描かない。
+	r = &Renderer{Width: 30, Height: 10, Theme: theme}
+	s = r.Render(&Frame{Text: bandText(5), Float: &Float{Center: true, View: &Frame{
+		Text: buffer.New("one\ntwo\nthree\n"), Cursor: buffer.Position{Line: 2}, Band: band,
+	}}})
+	if strings.Contains(s.Grid.String(), "AAAA") {
+		t.Errorf("ポップアップの中に帯を描いた:\n%s", s.Grid.String())
 	}
 }
 
