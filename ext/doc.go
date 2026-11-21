@@ -99,4 +99,7 @@ package ext
 // メッセージの形は変えていないが、settingsFileType（#277）と違って版を上げた。古い本体は startup を知らない契機として無視し、
 // この契機だけを持つ拡張機能を一度も起動しない。startup と他の契機を併せて書いた拡張機能は、古い本体では他の契機で起動するので、
 // initialize の apiVersion で、本体の起動では起動されないことを知れる。
-const APIVersion = "0.16.0"
+// 0.17.0 で、窓の見えている行の範囲とカーソルの変化を知らせる window/change と、それを受け取る宣言ファイルの windowEvents と、
+// 窓の上端に行を重ねて描く band/set を足した（window.go。#369。FR-235〜FR-239）。
+// 古い本体は windowEvents を未知の項目として警告にして window/change を送らず、band/set を知らない通知として捨てる。
+const APIVersion = "0.17.0"

@@ -697,6 +697,34 @@ func TestRequestsFromExtension(t *testing.T) {
 	if pr.Extension != "x" || pr.Params.Token != "t" || pr.Params.Title != "load" || pr.Params.Percentage == nil || *pr.Params.Percentage != 5 {
 		t.Fatalf("ProgressReport = %+v（識別子の無いものを捨てていない）", pr)
 	}
+	bs := hs.waitEvent("band", func(ev Event) bool { _, ok := ev.(*BandSet); return ok }).(*BandSet)
+	if bs.Extension != "x" || bs.Params.Window != "client/1" || len(bs.Params.Lines) != 1 || *bs.Params.Lines[0].Line != 2 {
+		t.Fatalf("BandSet = %+v（窓の無いものを捨てていない）", bs)
+	}
+}
+
+// window/change を受け取ると名乗った（宣言ファイルの windowEvents）稼働中の拡張機能だけを返す。未起動のものは起動しない（FR-235）。
+//
+// req: FR-235
+func TestWindowEventExtensions(t *testing.T) {
+	watch := fakeSpec(t, "watch", modeNormal, "")
+	watch.Manifest.WindowEvents = true
+	idle := fakeSpec(t, "idle", modeNormal, "")
+	idle.Manifest.WindowEvents = true
+	hs := newHarness(t, []Spec{watch, idle, fakeSpec(t, "plain", modeNormal, "")}, nil, true)
+	if got := hs.h.WindowEventExtensions(); len(got) != 0 {
+		t.Errorf("起動の前 = %q, want なし", got)
+	}
+	hs.h.Activate(ext.ActivationTextObject, "watch.obj")
+	hs.h.Activate(ext.ActivationTextObject, "plain.obj")
+	hs.waitState("watch", StateRunning)
+	hs.waitState("plain", StateRunning)
+	if got := hs.h.WindowEventExtensions(); !slices.Equal(got, []string{"watch"}) {
+		t.Errorf("WindowEventExtensions = %q, want [watch]", got)
+	}
+	if st, _ := hs.h.State("idle"); st != StateNotStarted {
+		t.Errorf("idle の状態 = %v, want 未起動のまま", st)
+	}
 }
 
 // 拡張機能の標準エラー出力を記録する。

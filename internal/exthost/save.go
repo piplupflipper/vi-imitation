@@ -34,6 +34,23 @@ func (h *Host) SaveHookExtensions() []string {
 	return ids
 }
 
+// WindowEventExtensions は、宣言ファイルの windowEvents が true で、稼働中の拡張機能の ID を、[New] に渡した順に返す
+// （ext.MethodWindowChange の doc。FR-235）。イベントループは、これらへ [Host.Notify] で window/change を送る。
+// 稼働中でない拡張機能は返さないので、窓の変化は起動の契機にならない。
+//
+// req: FR-235
+func (h *Host) WindowEventExtensions() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var ids []string
+	for _, e := range h.order {
+		if e.spec.Manifest.WindowEvents && e.state == StateRunning {
+			ids = append(ids, e.spec.Manifest.ID)
+		}
+	}
+	return ids
+}
+
 // SendWillSave は、拡張機能 id へ buffer/willSave を送り、応答を待たずに戻る。
 // 結果は、[Host.Send] と同じく [QueryResult] のイベントで受け取り、[ext.BufferWillSaveResult] へ読む。
 // opts.Timeout が 0 以下なら [Config.WillSaveTimeout] を使う。

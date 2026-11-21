@@ -67,11 +67,12 @@ const codeRequestCancelled = -32800
 //   - buffer/open、buffer/change、buffer/close: 複製を作る、更新する、捨てる
 //   - buffer/willSave: BufferWillSave で登録したハンドラーを呼ぶ。登録していなければ、編集無しを応答する
 //   - buffer/didSave: OnBufferDidSave で登録したフックを呼ぶ
+//   - window/change: OnWindowChange で登録したフックを呼ぶ
 //   - shutdown: OnShutdown で登録したフックを呼び、送信の列を書き出してから接続を閉じ、Serve から nil を返す
 //
 // # 本体へ送るメッセージ
 //
-// 通知（SetDecorations、ShowMessage、SetDiagnostics、SetSigns、ShowPopup、AppendOutput、ReportProgress）は、どこから呼んでもよい。
+// 通知（SetDecorations、ShowMessage、SetDiagnostics、SetSigns、ShowPopup、AppendOutput、ReportProgress、SetBand）は、どこから呼んでもよい。
 // リクエスト（Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice）と WaitBuffer は、
 // 本体の応答かループの処理を待つので、ループの上から呼んではならない（Edit の doc）。
 // ハンドラーかフックから使うときは、go で別の goroutine を起こし、Server が渡したのとは別の ctx で呼ぶ。
@@ -112,6 +113,8 @@ type Server struct {
 	onShutdown func(ctx context.Context, e *ShutdownEvent)
 	// onView は、ポップアップの利用者の操作の知らせ（view.go）のフックである。
 	onView func(ctx context.Context, e *ViewEvent)
+	// onWindow は、窓の変化の知らせ（window.go）のフックである。
+	onWindow func(ctx context.Context, e *WindowChangeEvent)
 	// willSave は、buffer/willSave のハンドラーである。登録は 1 つだけで、キーは空文字列である。
 	willSave map[string]entry[ext.BufferWillSaveParams, ext.BufferWillSaveResult]
 
@@ -443,6 +446,8 @@ func (s *Server) handleNotification(ctx context.Context, n *rpc.Notification) {
 			return
 		}
 		s.bufferDidSave(ctx, &p)
+	case ext.MethodWindowChange:
+		s.windowChange(ctx, n)
 	case ext.MethodShutdown:
 		// params は中身が無いので読まない。読めない params でも止める。
 		s.shutdown = true

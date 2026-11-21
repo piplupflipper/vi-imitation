@@ -49,5 +49,6 @@ func init() {
 		"TextObjectHandler":          reflect.ValueOf((*server.TextObjectHandler)(nil)),
 		"ViewEvent":                  reflect.ValueOf((*server.ViewEvent)(nil)),
 		"ViewEventKind":              reflect.ValueOf((*server.ViewEventKind)(nil)),
+		"WindowChangeEvent":          reflect.ValueOf((*server.WindowChangeEvent)(nil)),
 	}
 }

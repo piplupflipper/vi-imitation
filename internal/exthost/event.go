@@ -17,7 +17,7 @@ import (
 //     [BufferDisposeRequest]、[DiffStartRequest]、[PaneOpenRequest]、[EditorListRequest]、[EditorExecuteRequest]、
 //     [OptionSetRequest]、[OptionGetRequest]
 //   - 拡張機能からの通知: [DecorationSet]、[MessageShow]、[DiagnosticSet]、[SignSet]、[PopupShow]、[OutputAppend]、
-//     [ViewUpdate]、[ViewClose]
+//     [ViewUpdate]、[ViewClose]、[BandSet]
 //   - Host が作るもの: [StateChange]、[QueryResult]
 //
 // # 拡張機能からのリクエストの扱い
@@ -215,6 +215,13 @@ type ProgressReport struct {
 	Params    ext.ProgressReportParams
 }
 
+// BandSet は、拡張機能からの band/set の通知である（基本設計 6.7 の「窓の上端の帯」。FR-237）。
+// Params は ext.BandSetParams.Validate を通したものである。
+type BandSet struct {
+	Extension string
+	Params    ext.BandSetParams
+}
+
 // PopupOpenRequest は、拡張機能からの popup/open のリクエストである（基本設計 1.4、5.3。FR-68、FR-72）。
 // Params は ext.PopupOpenParams.Validate を通したものである。
 // イベントループは、ポップアップを開いて ID を [PopupOpenRequest.Reply] で返す。
@@ -405,6 +412,7 @@ func (*PopupShow) isEvent()             {}
 func (*OutputAppend) isEvent()          {}
 func (*StatusLineSet) isEvent()         {}
 func (*ProgressReport) isEvent()        {}
+func (*BandSet) isEvent()               {}
 func (*PopupOpenRequest) isEvent()      {}
 func (*BufferCreateRequest) isEvent()   {}
 func (*DiffStartRequest) isEvent()      {}

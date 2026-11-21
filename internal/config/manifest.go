@@ -92,6 +92,7 @@ func xdgDir(env, fallback string) (string, error) {
 // manifestKeys は、宣言ファイルの最上位の項目の名前である（ext.Manifest の json のタグ）。
 var manifestKeys = map[string]bool{
 	"id": true, "command": true, "args": true, "saveHook": true, "noBufferSync": true, "activation": true, "contributes": true, "provides": true,
+	"windowEvents": true,
 }
 
 // LoadManifest は、path の宣言ファイルを JSONC として読み、ext.Manifest.Validate で検査する。
