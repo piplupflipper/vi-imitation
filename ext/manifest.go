@@ -92,6 +92,12 @@ type ActivationKind string
 // 利用者が設定に書いたファイルの種類を、設定の extensions.activation にもう一度書かずに済ませるためのものである。
 // "*" が当たった項目の下にその先の値が無いか、文字列か文字列を含む配列でなければ、本体はその項目を設定の誤りとして知らせる（項目の名前の綴りの誤りのため）。
 // 例: tree-sitter の拡張機能の {"on": "settingsFileType", "pattern": "/parsers/*/fileTypes"}。
+//
+// ActivationStartup は、本体が起動して最初の画面を描き終えた後に成り立つ（API 0.16.0 で足した。基本設計 5.2。#367）。
+// ID と Pattern は使わない。利用者の操作もファイルを開くことも待たずに、起動している間は常に動かしておく拡張機能
+// （開いたバッファすべてに色を付けるものなど）が使う。最初の画面を描く前には起動しないので、本体の起動の速さ（NFR-05）を損なわない。
+// 利用者は、設定の extensions.disabled にその拡張機能の ID を書けば、起動させない（宣言ファイルを読まない）。
+// 古い本体（0.15.0 まで）は知らない契機として警告にして無視するので、この契機だけを持つ拡張機能は起動しない。
 const (
 	ActivationOperator         ActivationKind = "operator"
 	ActivationMotion           ActivationKind = "motion"
@@ -100,13 +106,14 @@ const (
 	ActivationFileType         ActivationKind = "filetype"
 	ActivationSocket           ActivationKind = "socket"
 	ActivationSettingsFileType ActivationKind = "settingsFileType"
+	ActivationStartup          ActivationKind = "startup"
 )
 
 // Known は、k がこの版の API の知っている契機の種類かどうかを返す。
 func (k ActivationKind) Known() bool {
 	switch k {
 	case ActivationOperator, ActivationMotion, ActivationTextObject, ActivationCommand, ActivationFileType, ActivationSocket,
-		ActivationSettingsFileType:
+		ActivationSettingsFileType, ActivationStartup:
 		return true
 	}
 	return false
@@ -335,7 +342,7 @@ func (m *Manifest) Validate() (warnings []error, err error) {
 			if !strings.HasPrefix(a.Pattern, "/") {
 				errs = append(errs, fmt.Errorf("%s.pattern %q が / で始まる JSON Pointer でない", path, a.Pattern))
 			}
-		case ActivationSocket:
+		case ActivationSocket, ActivationStartup:
 		default:
 			warnings = append(warnings, fmt.Errorf("%s.on %q は未知の契機なので無視する", path, a.On))
 		}

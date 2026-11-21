@@ -93,4 +93,7 @@ package ext
 // 古い本体は知らない通知として捨てる（ログに残すだけ）ので、進み具合は出ない。
 // 0.15.0 で、本体の設定の項目の値を拡張機能から変える option/set と、今の値を読む option/get を足した（option.go。#349。FR-190〜FR-192）。
 // 古い本体はどちらにも method not found で応答する。
-const APIVersion = "0.15.0"
+// 0.16.0 で、宣言ファイルの起動の契機の種類 startup（本体の起動で起動する。ActivationStartup）を足した（#367。FR-225）。
+// メッセージの形は変えていないが、版を上げた。settingsFileType（#277）と違い、古い本体はこの契機だけを持つ拡張機能を
+// 一度も起動しないので、拡張機能が initialize の apiVersion で古い本体を見分けられるようにするためである。
+const APIVersion = "0.16.0"

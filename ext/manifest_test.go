@@ -128,24 +128,24 @@ func TestManifestValidate(t *testing.T) {
 		},
 		{
 			name:   "未知の契機は警告にして誤りにしない",
-			modify: func(m *Manifest) { m.Activation = append(m.Activation, Activation{On: "startup"}) },
-			warn:   []string{`activation[2].on "startup" は未知の契機なので無視する`},
+			modify: func(m *Manifest) { m.Activation = append(m.Activation, Activation{On: "idle"}) },
+			warn:   []string{`activation[2].on "idle" は未知の契機なので無視する`},
 		},
 		{
 			name: "契機がすべて未知でも誤りにしない",
 			modify: func(m *Manifest) {
-				m.Activation = []Activation{{On: "startup"}, {On: "lsp", ID: "x"}}
+				m.Activation = []Activation{{On: "idle"}, {On: "lsp", ID: "x"}}
 			},
-			warn: []string{`activation[0].on "startup"`, `activation[1].on "lsp"`},
+			warn: []string{`activation[0].on "idle"`, `activation[1].on "lsp"`},
 		},
 		{
 			name: "未知の契機と誤りが両方ある",
 			modify: func(m *Manifest) {
 				m.Command = ""
-				m.Activation = append(m.Activation, Activation{On: "startup"})
+				m.Activation = append(m.Activation, Activation{On: "idle"})
 			},
 			want: []string{"command が空"},
-			warn: []string{`activation[2].on "startup"`},
+			warn: []string{`activation[2].on "idle"`},
 		},
 		{
 			name:   "契機の id が空",
@@ -242,18 +242,20 @@ func TestManifestValidate(t *testing.T) {
 func TestKnownActivation(t *testing.T) {
 	m := validManifest()
 	m.Activation = []Activation{
-		{On: "startup"},
+		{On: "idle"},
 		{On: ActivationOperator, ID: "surround.add"},
 		{On: "lsp"},
 		{On: ActivationFileType, Pattern: "markdown"},
 		{On: ActivationSocket},
 		{On: ActivationSettingsFileType, Pattern: "/parsers/*/fileTypes"},
+		{On: ActivationStartup},
 	}
 	want := []Activation{
 		{On: ActivationOperator, ID: "surround.add"},
 		{On: ActivationFileType, Pattern: "markdown"},
 		{On: ActivationSocket},
 		{On: ActivationSettingsFileType, Pattern: "/parsers/*/fileTypes"},
+		{On: ActivationStartup},
 	}
 	if _, err := m.Validate(); err != nil {
 		t.Errorf("Validate = %v", err)
@@ -262,12 +264,12 @@ func TestKnownActivation(t *testing.T) {
 		t.Errorf("KnownActivation = %#v, want %#v", got, want)
 	}
 
-	for _, k := range []ActivationKind{ActivationOperator, ActivationMotion, ActivationTextObject, ActivationCommand, ActivationFileType, ActivationSocket, ActivationSettingsFileType} {
+	for _, k := range []ActivationKind{ActivationOperator, ActivationMotion, ActivationTextObject, ActivationCommand, ActivationFileType, ActivationSocket, ActivationSettingsFileType, ActivationStartup} {
 		if !k.Known() {
 			t.Errorf("%q.Known() = false, want true", k)
 		}
 	}
-	for _, k := range []ActivationKind{"", "startup", "Operator"} {
+	for _, k := range []ActivationKind{"", "idle", "Operator"} {
 		if k.Known() {
 			t.Errorf("%q.Known() = true, want false", k)
 		}
@@ -326,12 +328,12 @@ func TestValidateManifests(t *testing.T) {
 
 	future := validManifest()
 	future.ID = "future"
-	future.Activation = append(future.Activation, Activation{On: "startup"})
+	future.Activation = append(future.Activation, Activation{On: "idle"})
 	ws, err := ValidateManifests([]Manifest{a, future})
 	if err != nil {
 		t.Errorf("ValidateManifests = %v, want nil", err)
 	}
-	if len(ws) != 1 || !strings.Contains(ws[0].Error(), `宣言ファイル[1]（id "future"）: activation[2].on "startup"`) {
+	if len(ws) != 1 || !strings.Contains(ws[0].Error(), `宣言ファイル[1]（id "future"）: activation[2].on "idle"`) {
 		t.Errorf("ValidateManifests の警告 = %q, want 1 件", ws)
 	}
 

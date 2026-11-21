@@ -59,7 +59,8 @@ import (
 //	    "willSaveTimeoutMs": 1000,
 //	    "memoryLimitMb": 0,
 //	    "settings": { "lsp": { "servers": [] } },
-//	    "activation": { "lsp": [{ "on": "filetype", "pattern": "python" }] }
+//	    "activation": { "lsp": [{ "on": "filetype", "pattern": "python" }] },
+//	    "disabled": ["memusage"]
 //	  },
 //	  "registers": { "historySize": 100, "maxEntryBytes": 1048576, "deleteToHistory": true, "clipboard": "osc52" },
 //	  "colorscheme": "iceberg",
@@ -130,6 +131,10 @@ type Config struct {
 	// ExtensionActivation は extensions.activation の値で、拡張機能の ID から、宣言ファイルの activation に足す契機への対応である
 	// （基本設計 6.7 の「拡張機能ごとの activation の追加」）。足せるのは filetype の契機だけである。
 	ExtensionActivation map[string][]ext.Activation
+	// ExtensionDisabled は extensions.disabled の値で、使わない拡張機能の ID の集合である（基本設計 5.2。FR-226）。
+	// LoadExtensions は、この ID の宣言ファイルを一覧に入れないので、本体はその拡張機能を起動せず、キーもコマンドも部品も足さない。
+	// 起動の契機 startup の拡張機能（本体の起動で起動する）を止めるのに使う。項目が無ければ nil である。
+	ExtensionDisabled map[string]bool
 	// ExtensionInstall は extensions.install の値で、取得する拡張機能の列である（基本設計 5.6）。
 	// 誤りのある項目は除いてある。呼び出し側が extmgr.Spec に写して extmgr.Sync に渡す。
 	ExtensionInstall []ExtensionInstall
@@ -591,6 +596,8 @@ func (s *source) extensions(v *hujson.Value, cfg *Config) {
 			cfg.ExtensionActivation = s.extensionActivation(m.value, cfg)
 		case "install":
 			cfg.ExtensionInstall, cfg.ExtensionInstallValid = s.extensionInstall(m.value)
+		case "disabled":
+			cfg.ExtensionDisabled = s.extensionDisabled(m.value, cfg)
 		default:
 			s.report(m.nameOff, "未知の項目 %s を無視する", path)
 		}
@@ -677,6 +684,31 @@ func (s *source) extensionSettings(v *hujson.Value, cfg *Config) map[string]json
 		}
 		out[e.name] = buf.Bytes()
 		s.notePos(cfg, e.name, e.nameOff, "extensions.settings")
+	}
+	return out
+}
+
+// extensionDisabled は、extensions.disabled の値（拡張機能の ID の文字列の配列）を読む（FR-226）。
+// 文字列でない要素と空の文字列は誤りとして知らせて除く。同じ ID を 2 回書いても誤りにしない。
+func (s *source) extensionDisabled(v *hujson.Value, cfg *Config) map[string]bool {
+	const path = "extensions.disabled"
+	arr, ok := s.array(v, path)
+	if !ok {
+		return nil
+	}
+	out := map[string]bool{}
+	for i := range arr.Elements {
+		el := &arr.Elements[i]
+		id, ok := s.str(el, path+" の要素")
+		if !ok {
+			continue
+		}
+		if id == "" {
+			s.report(el.StartOffset, "%s に空の ID は書けない", path)
+			continue
+		}
+		out[id] = true
+		s.notePos(cfg, id, el.StartOffset, path)
 	}
 	return out
 }

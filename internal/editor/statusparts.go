@@ -2,6 +2,8 @@ package editor
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/exthost"
@@ -46,11 +48,12 @@ func layoutExtParts(status, tab *ui.StatusLine) []string {
 	return out
 }
 
-// startStatusExtensions は、設定の並びに部品を書いた拡張機能を、起動の契機を待たずに起動する。
-// 部品の中身は拡張機能が送るまで無いので、並べた部品を出すために起動時に動かす（lualine の部品が描くたびに評価されるのに当たる）。
+// collectStatusExtensions は、設定の並びに部品を書いた拡張機能の ID を statusExts に集める。
+// 部品の中身は拡張機能が送るまで無いので、並べた部品を出すために、起動の契機を待たずに起動時に動かす
+// （lualine の部品が描くたびに評価されるのに当たる）。起動するのは最初の画面を描いた後（startResidentExtensions）である。
 // 並べた ID を足す拡張機能が無ければ、誤りとして返す（部品は出さない）。
-// 起動した拡張機能の ID は statusExts に覚え、:ext sync の入れ替えの後に起動し直す（restartStatusExtension）。
-func (e *Editor) startStatusExtensions() []error {
+// statusExts の拡張機能は、:ext sync の入れ替えの後にも起動し直す（restartStatusExtension）。
+func (e *Editor) collectStatusExtensions() []error {
 	var errs []error
 	e.statusExts = map[string]bool{}
 	for _, id := range layoutExtParts(e.cfg.StatusLine, e.cfg.TabLineParts) {
@@ -59,15 +62,24 @@ func (e *Editor) startStatusExtensions() []error {
 			errs = append(errs, fmt.Errorf("statusline か tabline の部品 %s は、本体の部品でも拡張機能の部品（contributes.statusline）でもないので出さない", id))
 			continue
 		}
-		if e.statusExts[owner] {
-			continue
-		}
 		e.statusExts[owner] = true
-		if err := e.host.Start(owner); err != nil {
-			errs = append(errs, fmt.Errorf("部品 %s の拡張機能 %s を起動できない: %w", id, owner, err))
-		}
 	}
 	return errs
+}
+
+// startResidentExtensions は、最初の画面を描き終えた後に、本体の起動で起動する拡張機能を起動する。
+// 設定の並びに部品を置いた拡張機能（collectStatusExtensions）と、起動の契機 startup の拡張機能（exthost.Host.ActivateStartup）である。
+// 最初の画面を描く前に子プロセスを起動しないので、本体の起動の速さ（NFR-05）を損なわない（#367）。
+// 起動は非同期で、待たずに戻る（NFR-04）。
+//
+// req: FR-225
+func (e *Editor) startResidentExtensions() {
+	for _, owner := range slices.Sorted(maps.Keys(e.statusExts)) {
+		if err := e.host.Start(owner); err != nil {
+			e.log.Warn("部品の拡張機能を起動できない", "extension", owner, "err", err)
+		}
+	}
+	e.host.ActivateStartup()
 }
 
 // restartStatusExtension は、未起動へ戻った拡張機能 extID（:ext sync の入れ替え。exthost.Host.Reload）が、

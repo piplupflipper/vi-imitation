@@ -189,6 +189,36 @@ func TestExtensionStatusLineParts(t *testing.T) {
 	})
 }
 
+// 起動の契機 startup の拡張機能は、Run が最初の画面を描いた後に、キーもファイルの種類も待たずに起動する。
+// Run の前（New とファイルを開いた後）は起動せず、他の契機の拡張機能は起動しない。
+//
+// req: FR-225
+func TestStartupExtensionAfterFirstRender(t *testing.T) {
+	specs := fakeSpecs(t)
+	specs[1].Manifest.Activation = append(specs[1].Manifest.Activation, ext.Activation{On: ext.ActivationStartup})
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\n"})
+	var before exthost.State
+	h := startWith(t, Config{WorkDir: dir, Extensions: specs}, func(e *Editor) error {
+		if err := e.Open("a.txt"); err != nil {
+			return err
+		}
+		before, _ = e.host.State("ftx")
+		return nil
+	})
+	if before != exthost.StateNotStarted {
+		t.Fatalf("Run の前の ftx の状態 = %s, want not-started", before)
+	}
+	h.eventually("startup の拡張機能が稼働中", func() bool { return h.state("ftx") == exthost.StateRunning })
+	if !strings.Contains(h.term.screen(), "abc") {
+		t.Errorf("startup の拡張機能が動いた時点で最初の画面が無い: %q", h.term.screen())
+	}
+	for _, id := range []string{"fake", "slow"} {
+		if st := h.state(id); st != exthost.StateNotStarted {
+			t.Errorf("%s の状態 = %s, want not-started", id, st)
+		}
+	}
+}
+
 // 設定の並びに書いた "." を含む ID を、どの拡張機能も足していなければ、設定の誤りとして知らせて出さない。
 //
 // req: FR-92

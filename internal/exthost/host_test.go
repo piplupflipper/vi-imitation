@@ -281,6 +281,44 @@ func TestStartOnActivation(t *testing.T) {
 	}
 }
 
+// 起動の契機 startup の拡張機能は、New でもバッファを開いても起動せず、ActivateStartup で起動する。
+// 他の契機の拡張機能は ActivateStartup で起動しない。:ext sync の入れ替え（Reload）で未起動へ戻ると、すぐに起動し直す。
+//
+// req: FR-225
+func TestStartupActivation(t *testing.T) {
+	res := fakeSpec(t, "res", modeNormal, "")
+	res.Manifest.Activation = append(res.Manifest.Activation, ext.Activation{On: ext.ActivationStartup})
+	hs := newHarness(t, []Spec{fakeSpec(t, "op", modeNormal, "go"), res}, nil, true)
+
+	if err := hs.h.OpenBuffer(snapshot(1, "markdown", buffer.New("x"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := hs.h.Activate(ext.ActivationStartup, "x"); len(got) != 0 {
+		t.Fatalf("Activate(startup) started %v", got)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if st := hs.state("res"); st != StateNotStarted {
+		t.Fatalf("res: state %s before ActivateStartup, want not-started", st)
+	}
+
+	if got := hs.h.ActivateStartup(); !slices.Equal(got, []string{"res"}) {
+		t.Fatalf("ActivateStartup = %v, want [res]", got)
+	}
+	hs.waitState("res", StateRunning)
+	if st := hs.state("op"); st != StateNotStarted {
+		t.Errorf("op: state %s after ActivateStartup, want not-started", st)
+	}
+	if got := hs.h.ActivateStartup(); len(got) != 0 {
+		t.Errorf("second ActivateStartup started %v", got)
+	}
+
+	if err := hs.h.Reload("res"); err != nil {
+		t.Fatal(err)
+	}
+	hs.waitState("res", StateNotStarted)
+	hs.waitState("res", StateRunning)
+}
+
 // 起動は非同期で、初期化が終わらなくても呼び出し側は待たされない。
 //
 // req: NFR-04
