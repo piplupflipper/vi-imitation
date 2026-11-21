@@ -62,22 +62,23 @@ type mouseLocator struct {
 	bs *bufferState
 }
 
-// hit は、読み込んでいる client が最後に受けたマウスの出来事の位置にあるものを返す。drag なら、ボタンを押した部品の中へ寄せて解く。
-func (m mouseLocator) hit(drag bool) (ui.Hit, bool) {
+// hit は、読み込んでいる client が最後に受けたマウスの出来事の位置にあるものと、それを解いた画面の描画の部品を返す。
+// drag なら、ボタンを押した部品（テキスト、ポップアップの窓、スクロールバー）の中へ寄せて解く。
+func (m mouseLocator) hit(drag bool) (ui.Hit, *ui.Renderer, bool) {
 	e := m.e
 	c := e.view
 	if c == nil || c.detached || !c.mouse.ok {
-		return ui.Hit{}, false
+		return ui.Hit{}, nil, false
 	}
 	r, down := e.mouseScreen(c)
 	clamp := ui.HitNone
 	if drag {
-		if *down != ui.HitText && *down != ui.HitFloat {
-			return ui.Hit{}, false
+		if *down != ui.HitText && *down != ui.HitFloat && *down != ui.HitScrollbar {
+			return ui.Hit{}, nil, false
 		}
 		clamp = *down
 	}
-	return r.HitTest(c.mouse.row, c.mouse.col, clamp), true
+	return r.HitTest(c.mouse.row, c.mouse.col, clamp), r, true
 }
 
 // mouseComp は、読み込んでいる client が最後に受けたマウスの出来事の部品の client を返す。client 自身の端末で受けたなら nil である。
@@ -107,14 +108,15 @@ func (e *Editor) mouseFloat() *floatState {
 //     テキストでない部分（MouseWindow。ホイールでその表示領域を送る）である。画面に窓は 1 つなので、Neovim のステータス行
 //     （その上の窓）とコマンドラインの行（今の窓）の決め方は、どちらもこの窓になる
 //   - 表示領域の右端のスクロールバー（FR-186）のつまみと印のセル（ui.HitScrollbar）は、キーを受けるバッファがタブのバッファなら、
-//     その窓のテキストでない部分（MouseWindow）である。押してもカーソルは動かず、ホイールで表示領域を送る（FR-189）。
-//     同じ列でも、つまみも印も描いていないセルは HitText なので、本文である
+//     そのスクロールバー（MouseScrollbar）である。押した行、つまみの最初の行、つまみの上か、描いた印の種類の行の一覧を入れる
+//     （FR-189、FR-210、FR-211）。ホイールはその表示領域を送る。同じ列でも、つまみも印も描いていないセルは HitText なので、本文である。
+//     スクロールバーで押したボタンのドラッグは、列に依らずスクロールバーの行として解く（つまみのドラッグ）
 //   - ほか（枠線、ファインダー、閉じた窓の跡など）は MouseNone である
 //
-// req: FR-189
+// req: FR-189, FR-210, FR-211
 func (m mouseLocator) Target(drag bool) command.MouseTarget {
 	none := command.MouseTarget{Kind: command.MouseNone}
-	h, ok := m.hit(drag)
+	h, r, ok := m.hit(drag)
 	if !ok {
 		return none
 	}
@@ -148,14 +150,50 @@ func (m mouseLocator) Target(drag bool) command.MouseTarget {
 			return command.MouseTarget{Kind: command.MouseElsewhere}
 		}
 	case ui.HitScrollbar:
-		// 右端のスクロールバー（FR-186）のつまみと印のセルは、タブのバッファの窓のテキストでない部分である（FR-189）。押してもカーソルを動かさず、
-		// ホイールはステータス行の上と同じくその表示領域を送る。つまみのドラッグと印を押す操作は、まだ無い。
-		if e.tab() == m.bs && e.cur == m.bs && e.mouseComp() == nil && !drag {
-			return command.MouseTarget{Kind: command.MouseWindow}
+		// 右端のスクロールバー（FR-186）のつまみと印のセルは、タブのバッファの表示領域のスクロールバーである（FR-189）。
+		// 押したらつまみのドラッグを始めるか印の行へ移り（FR-210、FR-211）、ホイールはステータス行の上と同じくその表示領域を送る。
+		if e.tab() == m.bs && e.cur == m.bs && e.mouseComp() == nil {
+			return command.MouseTarget{
+				Kind: command.MouseScrollbar, Row: h.Row, ThumbRow: h.ThumbRow, Thumb: h.Thumb,
+				Marks: r.ScrollbarMarkLines(h.Row),
+			}
 		}
 	case ui.HitNone:
 	}
 	return none
+}
+
+// ScrollbarTop は、command.Mouse の ScrollbarTop である（FR-210）。読み込んでいる client が最後に受けたマウスの出来事の画面の、
+// 直前の描画が描いたスクロールバーのつまみの最初の行を row 行目（表示領域の中の行）へ動かすときの、寄せた行と表示領域の最初の行を返す
+// （ui.Renderer.ScrollbarTop）。
+//
+// req: FR-210
+func (m mouseLocator) ScrollbarTop(row int) (at, line int, ok bool) {
+	r := m.barRenderer()
+	if r == nil {
+		return 0, 0, false
+	}
+	return r.ScrollbarTop(row)
+}
+
+// HoldScrollbarThumb は、command.Mouse の HoldScrollbarThumb である（FR-210。ui.Renderer.HoldScrollbarThumb）。
+//
+// req: FR-210
+func (m mouseLocator) HoldScrollbarThumb(row, line int) {
+	if r := m.barRenderer(); r != nil {
+		r.HoldScrollbarThumb(row, line)
+	}
+}
+
+// barRenderer は、読み込んでいる client が最後に受けたマウスの出来事の画面の描画の部品を返す。スクロールバーを出さない画面
+// （部品の client の画面）と、出来事の無いときは nil である。
+func (m mouseLocator) barRenderer() *ui.Renderer {
+	c := m.e.view
+	if c == nil || c.detached || !c.mouse.ok || c.mouse.comp != nil {
+		return nil
+	}
+	r, _ := m.e.mouseScreen(c)
+	return r
 }
 
 // Activate は、command.Mouse の Activate である（FR-181）。
@@ -165,7 +203,7 @@ func (m mouseLocator) Target(drag bool) command.MouseTarget {
 //
 // req: FR-181
 func (m mouseLocator) Activate() error {
-	h, ok := m.hit(false)
+	h, _, ok := m.hit(false)
 	if !ok {
 		return nil
 	}

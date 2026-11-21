@@ -178,9 +178,9 @@ LSP と DAP の操作（`hover`、`debug.continue` など）は、その操作�
 | `diff-prev` | 操作 | normal | `[c` | 見比べで、前の差分へ |
 | `search-word-forward` | 操作 | normal、visual | `*` | カーソルの単語を前方への検索のパターンにする（移らない） |
 | `search-word-backward` | 操作 | normal、visual | `#` | カーソルの単語を後方への検索のパターンにする（移らない） |
-| `mouse.click` | 操作 | normal、visual、insert | `<LeftMouse>` `<4-LeftMouse>` | マウスの位置へ移る（タブの行ならそのタブへ移る） |
-| `mouse.drag` | 操作 | normal、visual、insert | `<LeftDrag>` | ボタンを押した位置からマウスの位置までを選ぶ |
-| `mouse.release` | 操作 | normal、visual、insert | `<LeftRelease>` | ドラッグを終える |
+| `mouse.click` | 操作 | normal、visual、insert | `<LeftMouse>` `<4-LeftMouse>` | マウスの位置へ移る（タブの行ならそのタブへ、スクロールバーの印ならその行へ移り、つまみならドラッグを始める） |
+| `mouse.drag` | 操作 | normal、visual、insert | `<LeftDrag>` | ボタンを押した位置からマウスの位置までを選ぶ（スクロールバーのつまみなら表示領域を動かす） |
+| `mouse.release` | 操作 | normal、visual、insert | `<LeftRelease>` | ドラッグを終える（つまみの上の印を動かさずに離したら、その行へ移る） |
 | `mouse.select-word` | 操作 | normal、visual、insert | `<2-LeftMouse>` | マウスの位置の単語を選ぶ |
 | `mouse.select-line` | 操作 | normal、visual、insert | `<3-LeftMouse>` | マウスの位置の行を選ぶ |
 | `mouse.scroll-down` | 操作 | normal、visual、insert | `<ScrollWheelDown>` | 表示領域を mouse.scrollLines の行だけ下へ送る |

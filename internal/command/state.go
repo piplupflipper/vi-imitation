@@ -180,6 +180,8 @@ type State struct {
 	mouseAnchor *buffer.Position
 	// mouseDragging は、ボタンを押した後にドラッグで選び始め、まだ離していないことを表す（MouseDragging）。
 	mouseDragging bool
+	// mouseBar は、スクロールバーのつまみを押してから離すまでの、つまみのドラッグの状態である。押していなければ nil である（mouse.go）。
+	mouseBar *mouseBarDrag
 
 	parser    KeyParser
 	registers Registers
@@ -391,6 +393,10 @@ func (s *State) FeedUnrecorded(k editcmd.Key) Result {
 // feed は、キーを 1 個解釈する。マクロの再生もここを通るので、記録はしない。
 func (s *State) feed(k editcmd.Key) {
 	s.keysFed++
+	if s.mouseBar != nil && !k.IsMouse() {
+		// スクロールバーのつまみのドラッグの途中でマウスでないキーを受けたら、ドラッグを終える（FR-210。mouse.go の mouseBarMove）。
+		s.mouseBar = nil
+	}
 	if h := s.KeyHook; h != nil && (s.mode == ModeInsert || (s.mode == ModeNormal && !s.parser.Pending())) {
 		done, held, err := h(k, s.mode == ModeInsert)
 		if done {

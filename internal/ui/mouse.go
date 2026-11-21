@@ -45,8 +45,14 @@ type Hit struct {
 	Mark int
 	// MarkFirst と MarkLast は、Mark の種類の行（ScrollbarMarks.Lines）のうち、そのセルに割り付けた範囲 [Line, LineEnd) に入る
 	// 最初の行と最後の行である（印を押して、その行へ移るときに使う）。印が無ければどちらも -1 である。
-	// Hit を == で比べられるように、行の一覧そのものは持たない。
+	// Hit を == で比べられるように、行の一覧そのものは持たない（一覧は Renderer.ScrollbarMarkLines で引く）。
 	MarkFirst, MarkLast int
+	// Row は、Area が HitScrollbar のときの、位置の表示領域の中の行（0 から数える）である。
+	// HitTest の clamp が HitScrollbar（つまみのドラッグの間）なら、表示領域の上（負）か下（表示領域の行数以上）へはみ出した行もそのまま数える。
+	Row int
+	// ThumbRow は、Area が HitScrollbar のときの、直前の Render が描いたつまみの最初の行（表示領域の中の行）である。
+	// つまみを押した位置とつまみの最初の行の差を、ドラッグの間に保つために使う（FR-210）。
+	ThumbRow int
 	// Col は、Area が HitText か HitFloat のときの、行の表示の列（0 から数える）である。
 	// 行を折り返さないときは行の先頭からの列（横のスクロールの位置を足したもの）、折り返すときは WrapLines の列
 	// （見た目の行の番号 × 本文の幅 + 見た目の行の中の列）で、どちらも望みの列（internal/command の State の want）と同じ数え方である。
@@ -83,9 +89,14 @@ type hitState struct {
 	tabs []tabSpan
 	// bar は、描いたスクロールバーの列の場所（幅は 1 列）である。barOK が false なら描いていない。
 	// barCells は、bar の行ごとのセルに割り付けたものと描いたもの（drawScrollbar が残す）である。
+	// barThumb は描いたつまみの最初の行（表示領域の中の行）、barLines はスクロールバーを描いたバッファの行の数である。
 	bar      rect
 	barOK    bool
 	barCells []scrollbarCell
+	barThumb int
+	barLines int
+	// pin は、つまみのドラッグの間に、つまみを描く行（Renderer.HoldScrollbarThumb）である。Render の始めに空にしない。
+	pin scrollbarPin
 }
 
 // reset は、h を空にする。
@@ -108,15 +119,16 @@ func (h *hitState) cover(row, x, n, w int) {
 // （PR #346 のレビューの推奨 2）。その部品を描いていなければ HitNone を返す。clamp が HitNone なら寄せずに、位置にある部品を返す。
 // まだ描いていなければ HitNone を返す。
 // 直前の Render が右端のスクロールバー（FR-186）のつまみか印を描いたセルは、浮かべた窓の下でなければ HitScrollbar にする（FR-189）。
-// clamp が HitScrollbar のときは寄せない（スクロールバーのドラッグは、まだ無い）。
+// clamp が HitScrollbar なら（つまみのドラッグの間。FR-210）、位置を画面の中へ寄せてから、列に依らずスクロールバーの行として解き、
+// 表示領域の外の行もそのまま Hit.Row に入れる。スクロールバーを描いていなければ HitNone を返す。
 //
-// req: FR-181, FR-182, FR-185, FR-189
+// req: FR-181, FR-182, FR-185, FR-189, FR-210
 func (r *Renderer) HitTest(row, col int, clamp HitArea) Hit {
 	none := Hit{Area: HitNone, Tab: -1}
 	if !r.rendered || r.Width <= 0 || r.Height <= 0 {
 		return none
 	}
-	if clamp == HitText || clamp == HitFloat {
+	if clamp == HitText || clamp == HitFloat || clamp == HitScrollbar {
 		row, col = min(max(row, 0), r.Height-1), min(max(col, 0), r.Width-1)
 	}
 	if r.tabRows > 0 && row >= 0 && row < r.tabRows && clamp == HitNone {
@@ -131,7 +143,12 @@ func (r *Renderer) HitTest(row, col int, clamp HitArea) Hit {
 			return h
 		}
 		return none
-	case HitNone, HitTabLine, HitStatusLine, HitCommandLine, HitScrollbar:
+	case HitScrollbar:
+		if !r.hits.barOK {
+			return none
+		}
+		return Hit{Area: HitScrollbar, Tab: -1, Mark: -1, MarkFirst: -1, MarkLast: -1, Row: row - r.hits.bar.top, ThumbRow: r.hits.barThumb}
+	case HitNone, HitTabLine, HitStatusLine, HitCommandLine:
 	}
 	if h, ok := r.hitFloat(row, col, false); ok {
 		return h
@@ -172,7 +189,7 @@ func (r *Renderer) hitScrollbar(i int) (Hit, bool) {
 	if !c.thumb && c.mark < 0 {
 		return Hit{}, false
 	}
-	h := Hit{Area: HitScrollbar, Tab: -1, Line: c.lo, LineEnd: c.hi, Thumb: c.thumb, Mark: c.mark, MarkFirst: -1, MarkLast: -1}
+	h := Hit{Area: HitScrollbar, Tab: -1, Line: c.lo, LineEnd: c.hi, Thumb: c.thumb, Mark: c.mark, MarkFirst: -1, MarkLast: -1, Row: i, ThumbRow: r.hits.barThumb}
 	if len(c.lines) > 0 {
 		h.MarkFirst, h.MarkLast = c.lines[0], c.lines[len(c.lines)-1]
 	}

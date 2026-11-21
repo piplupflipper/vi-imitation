@@ -271,11 +271,13 @@ var (
 		// どのモードでも「マウスの位置へ移る」などの同じ操作で、モードごとの違いは実装の側が持つ。internal/command の mouse.go）。
 		// オペレーターの後には置かない（d<LeftMouse> は誤りになる）。<4-LeftMouse> は、矩形のビジュアルモードが無いので 1 回目と同じにした。
 		// 中と右のボタンの出来事（<MiddleMouse>、<RightMouse> など）と、修飾キーの付いた出来事は、既定では割り当てない。
+		// 右端のスクロールバーのつまみのドラッグと印のクリック（FR-210、FR-211）は、別の ID にせず、mouse.click、mouse.drag、mouse.release が
+		// 位置で分ける（Neovim の <LeftMouse> が、押した位置で窓、ステータス行、タブの行の働きを分けるのと同じ）。
 		// req: FR-181, FR-182, FR-183, FR-184
-		{keys: "<LeftMouse>", id: "mouse.click", modes: MapNormal | MapVisual | MapInsert, desc: "マウスの位置へ移る（タブの行ならそのタブへ移る）"},
-		{keys: "<4-LeftMouse>", id: "mouse.click", modes: MapNormal | MapVisual | MapInsert, desc: "マウスの位置へ移る（タブの行ならそのタブへ移る）"},
-		{keys: "<LeftDrag>", id: "mouse.drag", modes: MapNormal | MapVisual | MapInsert, desc: "ボタンを押した位置からマウスの位置までを選ぶ"},
-		{keys: "<LeftRelease>", id: "mouse.release", modes: MapNormal | MapVisual | MapInsert, desc: "ドラッグを終える"},
+		{keys: "<LeftMouse>", id: "mouse.click", modes: MapNormal | MapVisual | MapInsert, desc: "マウスの位置へ移る（タブの行ならそのタブへ、スクロールバーの印ならその行へ移り、つまみならドラッグを始める）"},
+		{keys: "<4-LeftMouse>", id: "mouse.click", modes: MapNormal | MapVisual | MapInsert, desc: "マウスの位置へ移る（タブの行ならそのタブへ、スクロールバーの印ならその行へ移り、つまみならドラッグを始める）"},
+		{keys: "<LeftDrag>", id: "mouse.drag", modes: MapNormal | MapVisual | MapInsert, desc: "ボタンを押した位置からマウスの位置までを選ぶ（スクロールバーのつまみなら表示領域を動かす）"},
+		{keys: "<LeftRelease>", id: "mouse.release", modes: MapNormal | MapVisual | MapInsert, desc: "ドラッグを終える（つまみの上の印を動かさずに離したら、その行へ移る）"},
 		{keys: "<2-LeftMouse>", id: "mouse.select-word", modes: MapNormal | MapVisual | MapInsert, desc: "マウスの位置の単語を選ぶ"},
 		{keys: "<3-LeftMouse>", id: "mouse.select-line", modes: MapNormal | MapVisual | MapInsert, desc: "マウスの位置の行を選ぶ"},
 		{keys: "<ScrollWheelDown>", id: "mouse.scroll-down", modes: MapNormal | MapVisual | MapInsert, desc: "表示領域を mouse.scrollLines の行だけ下へ送る"},
