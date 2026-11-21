@@ -59,9 +59,9 @@
     // 真ん中の区画は、同梱の iceberg の statusline（StatusLine の反転。明るい帯）を置き換える
     "statusline": { "fg": "#3e445e", "bg": "#0f1117" }, // p.normal.middle（col_base）
     "statuslinenc": { "fg": "#3e445e", "bg": "#0f1117" }, // p.inactive.middle（col_nc）
-    // 部品は、下の statusline の並び（左は mode、name、modified、readonly、右は recording、filetype、ruler、position）を
+    // 部品は、下の statusline の並び（左は mode、name、modified、readonly、右は recording、filetype、memusage.rss、ruler、position）を
     // lightline の区画に当てた。左の 1 つ目と右の端は col_normal と col_edge、その内側は col_gradient で、
-    // それより内側の部品（recording、filetype）は真ん中の区画の色のままにする
+    // それより内側の部品（recording、filetype、memusage.rss）は真ん中の区画の色のままにする
     "statusline.mode": { "bold": true }, // lightline に元の色は無い
     "statusline.mode.normal": { "fg": "#17171b", "bg": "#818596" }, // p.normal.left[0]（col_normal）
     "statusline.mode.insert": { "fg": "#161821", "bg": "#84a0c6" }, // p.insert.left[0]（col_insert）
@@ -123,10 +123,13 @@
   // アイコンの文字と色は、ファイルの種類ごとに "fileTypes": { "go": { "text": "…", "fg": "#00add8" } } のように書き換えられる
   "icons": { "show": true },
 
-  // ステータス行の並び
+  // ステータス行の並び。
+  // memusage.rss は標準の拡張機能 memusage の部品で、本体と、拡張機能と言語サーバーなどの RSS を "vi 18M · ext 410M" の形で
+  // 5 秒ごとに出す（nvim の lualine の lualine_y に置いた memusage.lua の部品に当たる）。内訳は :memusage.show で出す。
+  // 並べると本体の起動時に拡張機能を起動するので、要らなければ並びから外す（本体の既定の並びには無い）
   "statusline": {
     "left": ["mode", "name", "modified", "readonly"],
-    "right": ["recording", "filetype", "ruler", "position"],
+    "right": ["recording", "filetype", "memusage.rss", "ruler", "position"],
   },
 
   // 行番号の列を出す（:set number に当たる。本体の既定は Vim と同じく出さない）。

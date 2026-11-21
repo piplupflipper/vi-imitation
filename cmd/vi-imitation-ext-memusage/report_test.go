@@ -175,6 +175,7 @@ func TestProcSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"id": "probe", "command": "x"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	//nolint:gosec // 実行するのは PATH の sleep で、引数は定数である
 	cmd := exec.Command(sleep, "30")
 	cmd.Env = append(os.Environ(), ext.EnvExtensionDir+"="+dir)
 	if err := cmd.Start(); err != nil {

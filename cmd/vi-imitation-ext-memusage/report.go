@@ -172,9 +172,8 @@ func detailText(r *report) string {
 	var b strings.Builder
 	desc := r.descendantsKB()
 	fmt.Fprintf(&b, "合計 %s（本体 %s、拡張機能とその子 %s）\n\n", formatKB(r.selfKB+desc), formatKB(r.selfKB), formatKB(desc))
-	const nameWidth = 12
-	fmt.Fprintf(&b, "%s  %7s  %6s  %s\n", padRight("拡張機能", nameWidth), "PID", "RSS", "コマンド")
-	fmt.Fprintf(&b, "%s  %7d  %6s  %s\n", padRight("(本体)", nameWidth), r.selfPID, formatKB(r.selfKB), r.selfCmd)
+	fmt.Fprintf(&b, "%s  %7s  %6s  %s\n", padName("拡張機能"), "PID", "RSS", "コマンド")
+	fmt.Fprintf(&b, "%s  %7d  %6s  %s\n", padName("(本体)"), r.selfPID, formatKB(r.selfKB), r.selfCmd)
 	for _, g := range r.groups {
 		name := g.name
 		if !g.ext {
@@ -185,18 +184,22 @@ func detailText(r *report) string {
 			if i == 0 {
 				label = name
 			}
-			fmt.Fprintf(&b, "%s  %7d  %6s  %s%s\n", padRight(label, nameWidth), rw.pid, formatKB(rw.rssKB), strings.Repeat("  ", rw.depth), rw.cmd)
+			fmt.Fprintf(&b, "%s  %7d  %6s  %s%s\n", padName(label), rw.pid, formatKB(rw.rssKB), strings.Repeat("  ", rw.depth), rw.cmd)
 		}
 		if len(g.rows) > 1 {
-			fmt.Fprintf(&b, "%s  %7s  %6s  %s\n", padRight("", nameWidth), "", formatKB(g.rssKB), "（"+g.name+" の合計）")
+			fmt.Fprintf(&b, "%s  %7s  %6s  %s\n", padName(""), "", formatKB(g.rssKB), "（"+g.name+" の合計）")
 		}
 	}
 	b.WriteString("\nRSS は共有ライブラリを重ねて数えるので、PSS より少し大きい")
 	return b.String()
 }
 
-// padRight は、s の後ろに空白を足して、表示の幅を w にする。全角の文字（U+1100 以上）は幅 2 と数える（見出しの日本語のための近似）。
-func padRight(s string, w int) string {
+// nameWidth は、内訳の拡張機能の名前の列の表示の幅である（仮）。
+const nameWidth = 12
+
+// padName は、s の後ろに空白を足して、表示の幅を nameWidth にする。全角の文字（U+1100 以上）は幅 2 と数える（見出しの日本語のための近似）。
+func padName(s string) string {
+	const w = nameWidth
 	n := 0
 	for _, c := range s {
 		if c >= 0x1100 {

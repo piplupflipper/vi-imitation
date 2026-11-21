@@ -94,6 +94,7 @@ package ext
 // 0.15.0 で、本体の設定の項目の値を拡張機能から変える option/set と、今の値を読む option/get を足した（option.go。#349。FR-190〜FR-192）。
 // 古い本体はどちらにも method not found で応答する。
 // 0.16.0 で、宣言ファイルの起動の契機の種類 startup（本体の起動で起動する。ActivationStartup）を足した（#367。FR-225）。
-// メッセージの形は変えていないが、版を上げた。settingsFileType（#277）と違い、古い本体はこの契機だけを持つ拡張機能を
-// 一度も起動しないので、拡張機能が initialize の apiVersion で古い本体を見分けられるようにするためである。
+// メッセージの形は変えていないが、settingsFileType（#277）と違って版を上げた。古い本体は startup を知らない契機として無視し、
+// この契機だけを持つ拡張機能を一度も起動しない。startup と他の契機を併せて書いた拡張機能は、古い本体では他の契機で起動するので、
+// initialize の apiVersion で、本体の起動では起動されないことを知れる。
 const APIVersion = "0.16.0"

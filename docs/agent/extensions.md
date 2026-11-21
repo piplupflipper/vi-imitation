@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.15.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.16.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -179,6 +179,12 @@ Pattern は、設定の中の値を指す JSON Pointer（RFC 6901）で、参照
 "*" が当たった項目の下にその先の値が無いか、文字列か文字列を含む配列でなければ、本体はその項目を設定の誤りとして知らせる（項目の名前の綴りの誤りのため）。
 例: tree-sitter の拡張機能の {"on": "settingsFileType", "pattern": "/parsers/*/fileTypes"}。
 
+ActivationStartup（startup） は、本体が起動して最初の画面を描き終えた後に成り立つ（API 0.16.0 で足した）。
+ID と Pattern は使わない。利用者の操作もファイルを開くことも待たずに、起動している間は常に動かしておく拡張機能
+（開いたバッファすべてに色を付けるものなど）が使う。最初の画面を描く前には起動しないので、本体の起動の速さを損なわない。
+利用者は、設定の extensions.disabled にその拡張機能の ID を書けば、起動させない（宣言ファイルを読まない）。
+古い本体（0.15.0 まで）は知らない契機として警告にして無視するので、この契機だけを持つ拡張機能は起動しない。
+
 - `"operator"`（ActivationOperator）
 - `"motion"`（ActivationMotion）
 - `"textObject"`（ActivationTextObject）
@@ -186,6 +192,7 @@ Pattern は、設定の中の値を指す JSON Pointer（RFC 6901）で、参照
 - `"filetype"`（ActivationFileType）
 - `"socket"`（ActivationSocket）
 - `"settingsFileType"`（ActivationSettingsFileType）
+- `"startup"`（ActivationStartup）
 
 #### `Contributes`
 

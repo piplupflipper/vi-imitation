@@ -92,7 +92,10 @@ func connect(t *testing.T, x *extension, settings string) *host {
 	t.Cleanup(func() {
 		_ = h.conn.Close()
 		select {
-		case <-served:
+		case err := <-served:
+			if err != nil {
+				t.Errorf("Serve = %v, want nil", err)
+			}
 		case <-time.After(testTimeout):
 			t.Error("Serve did not return after the host closed")
 		}

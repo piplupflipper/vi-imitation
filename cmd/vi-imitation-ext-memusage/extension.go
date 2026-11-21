@@ -64,6 +64,9 @@ func parseSettings(raw json.RawMessage) (interval time.Duration, warn error) {
 // extension は、メモリの使用量の拡張機能である。
 type extension struct {
 	server *server.Server
+	// ctx は、ハンドラーから起こした goroutine が本体へリクエスト（popup/open）を送るときの ctx である。
+	// ハンドラーの ctx は応答で終わり、それで本体へ送ると ErrEditInHandler になる（ext/server の Edit の doc）。
+	ctx context.Context
 	// root は、集計の根（本体の server のプロセス ID）を返す。拡張機能は本体の子なので、既定は os.Getppid である。
 	root func() int
 	// newSource は、1 回の集計に使う source を作る。
@@ -82,7 +85,7 @@ type extension struct {
 // newExtension は、コマンドとフックを登録した拡張機能を作る。
 func newExtension() *extension {
 	x := &extension{
-		server: server.New(), root: os.Getppid, newSource: defaultSource, ids: manifestIDs{},
+		server: server.New(), ctx: context.Background(), root: os.Getppid, newSource: defaultSource, ids: manifestIDs{},
 	}
 	x.server.OnInitialize(x.initialize)
 	x.server.OnShutdown(func(context.Context, *server.ShutdownEvent) { x.stop() })
@@ -175,7 +178,7 @@ func (x *extension) collect(ctx context.Context) (report, error) {
 //
 // req: FR-228
 func (x *extension) show(_ context.Context, _ *server.Buffer, _ *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
-	go x.showDetail(context.Background())
+	go x.showDetail(x.ctx)
 	return ext.CommandExecuteResult{OK: true}, nil
 }
 
