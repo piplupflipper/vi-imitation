@@ -655,6 +655,13 @@ func TestManifest(t *testing.T) {
 	if !slices.Equal(ids, wantIDs) {
 		t.Errorf("contributes.textObjects = %v, want %v", ids, wantIDs)
 	}
+	// 見出しの帯は、窓の変化の知らせを受け取り、切り替えのコマンドを持つ（FR-245、FR-248）。
+	if !m.WindowEvents {
+		t.Error("windowEvents = false, want true")
+	}
+	if len(m.Contributes.Commands) != 1 || m.Contributes.Commands[0].ID != stickyToggleCommand {
+		t.Errorf("contributes.commands = %+v, want only %s", m.Contributes.Commands, stickyToggleCommand)
+	}
 }
 
 // pointAt は、src の中のバイト位置 off の行と列を、document を使わずに数える（検証用の参照実装）。

@@ -29,26 +29,7 @@ type capture struct {
 //
 // req: FR-35
 func (d *document) decorations() []ext.Decoration {
-	caps := d.captures()
-	if len(caps) == 0 {
-		return []ext.Decoration{}
-	}
-	// 外側の範囲を先に、内側の範囲を後に塗る。
-	slices.SortFunc(caps, func(a, b capture) int {
-		if a.start != b.start {
-			return a.start - b.start
-		}
-		return b.end - a.end
-	})
-	paint := make([]styleID, len(d.src))
-	for _, c := range caps {
-		if c.style == noStyle {
-			continue
-		}
-		for i := c.start; i < c.end; i++ {
-			paint[i] = c.style
-		}
-	}
+	paint := d.paint(0, len(d.src))
 	decs := []ext.Decoration{}
 	for i := 0; i < len(paint); {
 		j := i + 1
@@ -66,21 +47,49 @@ func (d *document) decorations() []ext.Decoration {
 	return decs
 }
 
-// captures は、ハイライトのクエリのキャプチャを、同じ範囲については先に書かれたパターンの 1 つだけにして返す。
-// 幅が 0 の範囲（構文の誤りを補った MISSING のノードなど）は除く。
+// paint は、全文の中のバイト位置の範囲 [from, to) の 1 バイトごとの色を、decorations の doc の規則で決めて返す。
+// 返す列の添字 i は、バイト位置 from+i の色である。
+// 範囲に掛かるキャプチャだけを使うが、範囲に掛かるキャプチャの重なりの決め方は全文と同じなので、全文で決めた色と同じになる。
+// 見出しの帯（sticky.go）の行に、本文と同じ色を付けるのに使う。
+func (d *document) paint(from, to int) []styleID {
+	caps := d.captures(from, to)
+	paint := make([]styleID, max(to-from, 0))
+	// 外側の範囲を先に、内側の範囲を後に塗る。
+	slices.SortFunc(caps, func(a, b capture) int {
+		if a.start != b.start {
+			return a.start - b.start
+		}
+		return b.end - a.end
+	})
+	for _, c := range caps {
+		if c.style == noStyle {
+			continue
+		}
+		for i := max(c.start, from); i < min(c.end, to); i++ {
+			paint[i-from] = c.style
+		}
+	}
+	return paint
+}
+
+// captures は、ハイライトのクエリのキャプチャのうち、範囲 [from, to) に掛かるものを、同じ範囲については先に書かれたパターンの 1 つだけにして返す。
+// 範囲が全文なら、すべてのキャプチャである。幅が 0 の範囲（構文の誤りを補った MISSING のノードなど）は除く。
 //
 // QueryCursor.Captures ではなく Matches を使うのは、go-tree-sitter v0.25.0 の QueryCaptures.Next が
 // 1 つのキャプチャごとに C.malloc した領域を解放しないためである。
-func (d *document) captures() []capture {
+func (d *document) captures(from, to int) []capture {
 	qc := sitter.NewQueryCursor()
 	defer qc.Close()
+	if from > 0 || to < len(d.src) {
+		qc.SetByteRange(uint(from), uint(to))
+	}
 	type span struct{ start, end int }
 	best := map[span]capture{}
 	matches := qc.Matches(d.lang.query, d.tree.RootNode(), d.src)
 	for m := matches.Next(); m != nil; m = matches.Next() {
 		for _, c := range m.Captures {
 			s := span{int(c.Node.StartByte()), int(c.Node.EndByte())}
-			if s.start >= s.end {
+			if s.start >= s.end || s.end <= from || s.start >= to {
 				continue
 			}
 			if prev, ok := best[s]; ok && prev.pattern <= m.PatternIndex {

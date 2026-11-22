@@ -89,20 +89,38 @@ type storedTree struct {
 	version ext.Version
 	lang    *language
 	tree    *sitter.Tree
+	// src と lineStarts は、tree を作ったもとの全文と行の先頭の表である（document の同じ名前の項目）。
+	// document は編集のたびに新しいスライスを作り、作ったものを書き換えないので、写さずに共有する。
+	src        []byte
+	lineStarts []int
 }
 
 func newTreeStore() *treeStore {
 	return &treeStore{trees: map[ext.BufferID]storedTree{}}
 }
 
-// put は、バッファ id のバージョン version の構文木として tree を持つ。tree の持ち主は treeStore に移る。
-func (s *treeStore) put(id ext.BufferID, version ext.Version, lang *language, tree *sitter.Tree) {
+// put は、バッファ id のバージョン version の構文木として、d の構文木の複製と全文を持つ。
+func (s *treeStore) put(id ext.BufferID, version ext.Version, d *document) {
+	tree := d.tree.Clone()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.trees[id]; ok {
 		old.tree.Close()
 	}
-	s.trees[id] = storedTree{version: version, lang: lang, tree: tree}
+	s.trees[id] = storedTree{version: version, lang: d.lang, tree: tree, src: d.src, lineStarts: d.lineStarts}
+}
+
+// latest は、バッファ id の最後に解析した構文木の複製と全文を document にして、そのバージョン番号と一緒に返す。
+// 無ければ nil である。返した document は、呼び出し側が close する。
+// 見出しの帯（sticky.go）が、窓の知らせのバージョン番号を待たずに、手元の最新の構文木で帯を作るのに使う。
+func (s *treeStore) latest(id ext.BufferID) (*document, ext.Version) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.trees[id]
+	if !ok {
+		return nil, 0
+	}
+	return &document{lang: t.lang, tree: t.tree.Clone(), src: t.src, lineStarts: t.lineStarts}, t.version
 }
 
 // take は、バッファ id のバージョン version を lang で解析した構文木があれば、その複製を返す。無ければ nil である。
