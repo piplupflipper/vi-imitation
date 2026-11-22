@@ -251,6 +251,20 @@ func TestBlockObjectGo(t *testing.T) {
 	})
 }
 
+// TestBlockObjectOwnLine は、同じ位置で終わる親でも、行の最初から始まるノードからは広げないこと（block.go の joins の 2）を確かめる。
+// 字下げで本体を書く言語（Python）で入れ子の本体をまとめないための規則で、Go では行を改めて書いた式に当たる。
+//
+// req: FR-11, FR-240
+func TestBlockObjectOwnLine(t *testing.T) {
+	h := newTestHighlighter(t)
+	d := parse(t, h, "go", "package main\n\nvar x = map[string]int{\n\t\"a\": 1,\n}\n\nfunc g() {\n\ty :=\n\t\t[]int{\n\t\t\t1,\n\t\t}\n\t_ = y\n}")
+	runBlockCases(t, d, []blockCase{
+		{name: "an: 行を改めた式は式だけ", around: true, marker: "1,\n\t\t}", count: 1, ok: true, want: "\t\t[]int{\n\t\t\t1,\n\t\t}", linewise: true},
+		{name: "2an: 外は関数", around: true, marker: "1,\n\t\t}", count: 2, ok: true, want: "func g() {\n\ty :=\n\t\t[]int{\n\t\t\t1,\n\t\t}\n\t_ = y\n}", linewise: true},
+		{name: "an: 同じ行で始まる式は宣言ごと", around: true, marker: `"a"`, count: 1, ok: true, want: "var x = map[string]int{\n\t\"a\": 1,\n}", linewise: true},
+	})
+}
+
 // TestBlockObjectJSON は、テキストオブジェクトのクエリを持たない JSON でも、構文のまとまりを選べることを確かめる。
 //
 // req: FR-11, FR-240

@@ -278,7 +278,7 @@ func (d *document) blockObject(around bool, cursor ext.Position, sel *ext.Range,
 
 // blockAtCursor は、バイト位置 off を含むまとまりのうち、内側から count 番目のものの全体か中身を返す（blockObject の doc）。
 func (d *document) blockAtCursor(around bool, off, count int) (span, bool) {
-	blocks := blocksAt(d.tree, span{off, min(off+1, len(d.src))})
+	blocks := blocksAt(d.tree, d.src, span{off, min(off+1, len(d.src))})
 	if count > len(blocks) {
 		return span{}, false
 	}
@@ -310,7 +310,7 @@ func (d *document) blockAroundSelection(around bool, sel span, count int) (span,
 		q = sel
 	}
 	n := 0
-	for _, b := range blocksAt(d.tree, q) {
+	for _, b := range blocksAt(d.tree, d.src, q) {
 		var cands []span
 		if around {
 			cands = []span{b.outer()}
