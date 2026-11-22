@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
@@ -97,6 +98,7 @@ func TestWindowChangeThrottle(t *testing.T) {
 	want := ext.WindowChangeParams{
 		Window: "client/0", Buffer: 1, Version: got[0].Version, Top: 0, Bottom: 9, Rows: 9, Columns: 40,
 		Cursor: ext.Position{Line: 1}, Mode: ext.ModeNormal,
+		Seq: 2, // 通し番号は、最初の知らせ（startWindows）の次の 2
 	}
 	if got[0] != want {
 		t.Fatalf("1 回目 = %+v, want %+v", got[0], want)
@@ -274,14 +276,15 @@ func TestBandClick(t *testing.T) {
 }
 
 // windowSpecs は、window/change を受けて帯を置く拡張機能（ファイルの種類 go で起動する）を返す。
-func windowSpecs(t *testing.T) []exthost.Spec {
+// mode は fakeWindow か fakeSlowWindow である。
+func windowSpecs(t *testing.T, mode string) []exthost.Spec {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := ext.Manifest{
-		ID: "win", Command: exe, Args: []string{fakeExtFlag, fakeWindow}, WindowEvents: true,
+		ID: "win", Command: exe, Args: []string{fakeExtFlag, mode}, WindowEvents: true,
 		Activation: []ext.Activation{{On: ext.ActivationFileType, Pattern: "go"}},
 	}
 	if _, err := ext.ValidateManifests([]ext.Manifest{m}); err != nil {
@@ -303,7 +306,7 @@ func TestBandFromExtension(t *testing.T) {
 	dir := writeFiles(t, map[string]string{"main.go": b.String()})
 	term := newFakeTerm()
 	term.w, term.h = 40, 12
-	h := startTerm(t, term, Config{WorkDir: dir, Extensions: windowSpecs(t)}, "main.go")
+	h := startTerm(t, term, Config{WorkDir: dir, Extensions: windowSpecs(t, fakeWindow)}, "main.go")
 	h.eventually("拡張機能の起動", func() bool { return h.e.host != nil && len(h.e.host.WindowEventExtensions()) == 1 })
 	h.keys("40G")
 	h.settle()
@@ -311,9 +314,97 @@ func TestBandFromExtension(t *testing.T) {
 	// 最初の行が見える位置へ戻ると、拡張機能が帯を消す。
 	h.keys("gg")
 	h.settle()
-	h.eventually("帯を消す", func() bool { return len(h.e.bands) == 0 })
+	h.eventually("帯を消す", func() bool { return h.e.uiBand(h.e.tab()) == nil })
 	if row := h.screenRow(2); !strings.HasPrefix(row, "\tx0()") && !strings.HasPrefix(row, "        x0()") {
 		t.Errorf("帯を消した後の 2 行目 = %q", row)
+	}
+}
+
+// 知らせのたびに 400 ミリ秒ループを止める拡張機能に、0.1 秒ごとに j を送り続けても、ext/server が同じ窓の古い知らせを捨てるので、
+// 生存確認（ping）の応答が期限を超えず、拡張機能は強制終了されない。最後には、最後の位置の帯が出る。
+// 生存確認の間隔と期限を短くして（200 ミリ秒ごと、1 秒）、溜まったときにすぐ分かるようにした。
+//
+// req: FR-236
+func TestWindowChangeSlowExtension(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("func main() {\n")
+	for i := range 80 {
+		fmt.Fprintf(&b, "\tx%d()\n", i)
+	}
+	b.WriteString("}\n")
+	dir := writeFiles(t, map[string]string{"main.go": b.String()})
+	term := newFakeTerm()
+	term.w, term.h = 40, 12
+	cfg := Config{
+		WorkDir: dir, Extensions: windowSpecs(t, fakeSlowWindow),
+		Host: exthost.Config{PingInterval: 200 * time.Millisecond, PingTimeout: time.Second},
+	}
+	h := startTerm(t, term, cfg, "main.go")
+	h.eventually("拡張機能の起動", func() bool { return len(h.e.host.WindowEventExtensions()) == 1 })
+	for range 30 {
+		h.keys("j")
+		time.Sleep(100 * time.Millisecond)
+		if st := h.state("win"); st != exthost.StateRunning {
+			t.Fatalf("拡張機能の状態 = %v（ping の期限切れで止められた）", st)
+		}
+	}
+	h.settle()
+	h.eventually("最後の位置の帯", func() bool {
+		return strings.HasPrefix(h.screenRow(1), "func main() {") && h.e.renderer.Top() > 0
+	})
+	if st := h.state("win"); st != exthost.StateRunning {
+		t.Fatalf("拡張機能の状態 = %v", st)
+	}
+}
+
+// 古い知らせから作った帯（Seq が今の帯より小さい）は捨て、消した後に届いた古い帯も描かない。
+// 行を折り返さない窓の横のスクロールの位置（left）が変われば、カーソルが動かなくても知らせる。
+//
+// req: FR-235, FR-237
+func TestBandSeqAndLeft(t *testing.T) {
+	h, sends, ft := startWindows(t)
+	h.keys("20G")
+	h.settle()
+	ft.fireLast(h)
+	sends.take()
+	set := func(seq uint64, lines ...ext.BandLine) {
+		h.e.do(func() {
+			h.e.setBand("w", ext.BandSetParams{
+				Window: windowIDOf(h.e.view), Buffer: h.e.cur.id,
+				Version: ext.Version(h.e.cur.buf.Version()), Seq: seq, Lines: lines,
+			})
+			h.e.render()
+		})
+	}
+	set(5, ext.BandLine{Text: "NEW"})
+	set(3, ext.BandLine{Text: "OLD"})
+	if row := h.screenRow(1); !strings.HasPrefix(row, "NEW") {
+		t.Fatalf("古い帯の後の 1 行目 = %q", row)
+	}
+	set(6)
+	set(4, ext.BandLine{Text: "OLD"})
+	if row := h.screenRow(1); strings.HasPrefix(row, "OLD") || strings.HasPrefix(row, "NEW") {
+		t.Fatalf("消した後に古い帯が届いた後の 1 行目 = %q", row)
+	}
+
+	// 長い行で、カーソルを動かさずにホイールで横に送る。
+	ft.fireLast(h)
+	h.keys(":option.set lineWrap.enabled false<CR>")
+	h.keys("gg200ix<Esc>")
+	h.keys("0050l")
+	h.settle()
+	ft.fireLast(h)
+	sends.take()
+	h.mouse("<ScrollWheelRight>", 1, 0)
+	ft.fireLast(h)
+	h.eventually("横のスクロールの知らせ", func() bool { return sends.count() > 0 })
+	got := sends.take()
+	last := got[len(got)-1]
+	if last.Left == 0 || last.Cursor.Line != 0 {
+		t.Fatalf("横に送った後の知らせ = %+v", got)
+	}
+	if last.Seq == 0 {
+		t.Errorf("通し番号が無い: %+v", last)
 	}
 }
 

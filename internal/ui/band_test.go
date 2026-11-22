@@ -89,6 +89,35 @@ func TestRenderBand(t *testing.T) {
 	}
 }
 
+// band と band.linenr は、既定の対応にも配色にも無ければ、popup と linenr の今の色を引き継ぐ（nvim-treesitter-context の
+// TreesitterContext と TreesitterContextLineNumber のリンクと同じ）。配色が popup と linenr だけを変えても、帯の色が付いてくる。
+// 本体の既定の対応でも、帯の本文の列は本文と見分けられる背景を持つ。
+//
+// req: FR-237
+func TestBandColorLinks(t *testing.T) {
+	def := DefaultTheme()
+	if _, ok := def[StyleBand]; ok {
+		t.Fatal("既定の対応に band がある（popup を引き継がない）")
+	}
+	if got := def.attr(StyleBand); got != def[StylePopup] || got.Bg == ColorDefault {
+		t.Errorf("既定の band = %+v, want popup の %+v（背景あり）", got, def[StylePopup])
+	}
+	if got := def.attr(StyleBandLineNr); got != def[StyleLineNr] {
+		t.Errorf("既定の band.linenr = %+v, want linenr の %+v", got, def[StyleLineNr])
+	}
+	scheme := def.WithColors(map[string]Attr{StylePopup: {Bg: RGB(0x3d, 0x42, 0x5b)}, StyleLineNr: {Fg: RGB(0x44, 0x4b, 0x71)}})
+	if got := scheme.attr(StyleBand); got != (Attr{Bg: RGB(0x3d, 0x42, 0x5b)}) {
+		t.Errorf("配色の popup を引き継いだ band = %+v", got)
+	}
+	if got := scheme.attr(StyleBandLineNr); got != (Attr{Fg: RGB(0x44, 0x4b, 0x71)}) {
+		t.Errorf("配色の linenr を引き継いだ band.linenr = %+v", got)
+	}
+	// band を書けば、引き継がずにその色を使う。
+	if got := scheme.WithColors(map[string]Attr{StyleBand: {}}).attr(StyleBand); got != (Attr{}) {
+		t.Errorf("書いた band = %+v", got)
+	}
+}
+
 // 帯は、スクロールバーと進み具合の下に描き、ポップアップの窓の中の Frame には描かない（layers.go の表の 2.7）。
 //
 // req: FR-239

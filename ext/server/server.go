@@ -115,6 +115,8 @@ type Server struct {
 	onView func(ctx context.Context, e *ViewEvent)
 	// onWindow は、窓の変化の知らせ（window.go）のフックである。
 	onWindow func(ctx context.Context, e *WindowChangeEvent)
+	// windows は、窓ごとに最後に届いた window/change の番号である（window.go の windowArrived）。読み取りの goroutine とループが触る。
+	windows windowLatest
 	// willSave は、buffer/willSave のハンドラーである。登録は 1 つだけで、キーは空文字列である。
 	willSave map[string]entry[ext.BufferWillSaveParams, ext.BufferWillSaveResult]
 
@@ -189,7 +191,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			q.push(inbound{ctx: ctx, req: req, reply: reply})
 		},
 		Notification: func(ctx context.Context, n *rpc.Notification) {
-			q.push(inbound{ctx: ctx, note: n})
+			q.push(inbound{ctx: ctx, note: n, winSeq: s.windowArrived(n)})
 		},
 	}, rpc.WithCancelMethod(ext.MethodCancel))
 	s.conn.Store(conn)
@@ -308,6 +310,10 @@ func (s *Server) dispatch(m inbound) {
 	ctx, leave := s.enter(m.ctx)
 	defer leave()
 	if m.note != nil {
+		if m.note.Method == ext.MethodWindowChange {
+			s.windowChange(ctx, m.note, m.winSeq)
+			return
+		}
 		s.handleNotification(ctx, m.note)
 		return
 	}
@@ -446,8 +452,6 @@ func (s *Server) handleNotification(ctx context.Context, n *rpc.Notification) {
 			return
 		}
 		s.bufferDidSave(ctx, &p)
-	case ext.MethodWindowChange:
-		s.windowChange(ctx, n)
 	case ext.MethodShutdown:
 		// params は中身が無いので読まない。読めない params でも止める。
 		s.shutdown = true
@@ -549,6 +553,8 @@ type inbound struct {
 	reply rpc.Replier
 	note  *rpc.Notification
 	fn    func()
+	// winSeq は、note が window/change のときの、届いた順の番号である（windowArrived）。ほかの通知では 0 である。
+	winSeq uint64
 }
 
 // queue は、接続の読み取りの goroutine から、ループへメッセージを渡す、上限の無い列である。

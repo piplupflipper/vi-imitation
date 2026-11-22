@@ -631,8 +631,8 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 | `scrollbar.diagnostic.error`、`scrollbar.diagnostic.warning`、`scrollbar.diagnostic.info`、`scrollbar.diagnostic.hint` | スクロールバーの診断の印。つまみの上では `scrollbar` の上に重ねる（既定では反転で、印の色の地に記号が出る） | 印の列の `sign.diagnostic.*` と同じ、端末の 16 色の 9、11、12、8 |
 | `scrollbar.search` | スクロールバーの検索の一致の印 | 端末の 16 色の 14（情報の印の 12 と色で見分けられるようにした）。同梱の iceberg では iceberg.vim の `Normal` の文字の色 |
 | `scrollbar.<種類>` | 拡張機能が後から足すスクロールバーの印の種類の色。`scrollbar.` の後に、`scrollbar.marks` に書ける形の名前（空でなく、コンマと空白を含まない）を書く。本体の表に無い名前でも誤りにしない。ただし、本体の種類（`diagnostic`、`search`）と同じか似た名前（`scrollbar.diagnostics.error`、`scrollbar.serch` など。点までの部分の編集距離が 2 以下）で本体の表に無いものは、書き間違いとして設定の誤りにする | なし |
-| `band` | 拡張機能が窓の上端に重ねる帯（[窓の上端の帯](#窓の上端の帯)）の本文の列。帯の行の範囲の色はこの上に重ねる | `popup` と同じ（文字は白、背景は灰色。nvim-treesitter-context の既定の `TreesitterContext` のリンク先の `NormalFloat` に当たる） |
-| `band.linenr` | 帯の行の、印の列と行番号の列 | `linenr` と同じ（nvim-treesitter-context の既定の `TreesitterContextLineNumber` のリンク先の `LineNr`） |
+| `band` | 拡張機能が窓の上端に重ねる帯（[窓の上端の帯](#窓の上端の帯)）の本文の列。帯の行の範囲の色はこの上に重ねる | 書かなければ `popup` の今の色を引き継ぐ（nvim-treesitter-context の既定の `TreesitterContext` は浮かべた窓の `NormalFloat` へのリンク）。同梱の iceberg では iceberg.vim の `Pmenu` の色（`popup` と同じ） |
+| `band.linenr` | 帯の行の、印の列と行番号の列 | 書かなければ `linenr` の今の色を引き継ぐ（nvim-treesitter-context の既定の `TreesitterContextLineNumber` は `LineNr` へのリンク）。同梱の iceberg では iceberg.vim の `LineNr` の色 |
 | `band.bottom` | 帯の最後の行の全体に重ねる色（帯と本文の境目に下線を引くときに書く。nvim-treesitter-context の `TreesitterContextBottom`） | なし |
 | `sign.executionPoint`、`sign.breakpoint`、`sign.breakpointUnverified` | 印の列のデバッガーの印 | 順に黄色、赤、灰色 |
 | `sign.diagnostic.error`、`sign.diagnostic.warning`、`sign.diagnostic.info`、`sign.diagnostic.hint` | 印の列の診断の印 | 順に赤、黄色、青、灰色 |

@@ -118,11 +118,11 @@ const (
 	StyleScrollbarDiagnosticHint    = "scrollbar.diagnostic.hint"
 	StyleScrollbarSearch            = "scrollbar.search"
 	// StyleBand は、表示領域の上の端の帯（Frame.Band。FR-237）の本文の列である（nvim-treesitter-context の TreesitterContext）。
-	// 帯の行の範囲の色（拡張機能が送った色の名前）は、この上に重ねる。既定の対応は、nvim-treesitter-context の既定
-	// （TreesitterContext は浮かべた窓の NormalFloat へのリンク）に合わせ、浮かべた窓の popup と同じ番号にした。
+	// 帯の行の範囲の色（拡張機能が送った色の名前）は、この上に重ねる。既定の対応には無く、書いていなければ浮かべた窓の
+	// StylePopup の色を引き継ぐ（styleLinks。TreesitterContext は浮かべた窓の NormalFloat へのリンク）。
 	StyleBand = "band"
 	// StyleBandLineNr は、帯の行の、印の列と行番号の列である（nvim-treesitter-context の TreesitterContextLineNumber）。
-	// 既定の対応は、nvim-treesitter-context の既定（TreesitterContextLineNumber は LineNr へのリンク）に合わせ、linenr と同じ番号にした。
+	// 既定の対応には無く、書いていなければ StyleLineNr の色を引き継ぐ（styleLinks。TreesitterContextLineNumber は LineNr へのリンク）。
 	StyleBandLineNr = "band.linenr"
 	// StyleBandBottom は、帯の最後の行に、列の全体に重ねる色である（nvim-treesitter-context の TreesitterContextBottom）。
 	// 帯と本文の境目に下線を引くときに使う。既定の対応には無い（TreesitterContextBottom の既定のリンク先は NONE）。
@@ -354,8 +354,6 @@ func DefaultTheme() Theme {
 		StyleScrollbarDiagnosticInfo:    {Fg: Indexed(12)},
 		StyleScrollbarDiagnosticHint:    {Fg: Indexed(8)},
 		StyleScrollbarSearch:            {Fg: Indexed(14)},
-		StyleBand:                       {Fg: Indexed(15), Bg: Indexed(8)},
-		StyleBandLineNr:                 {Fg: Indexed(11)},
 		StyleSignBreakpoint:             {Fg: Indexed(9), Bold: true},
 		StyleSignBreakpointUnverified:   {Fg: Indexed(8)},
 		StyleSignExecutionPoint:         {Fg: Indexed(11), Bold: true},
@@ -376,7 +374,25 @@ func DefaultTheme() Theme {
 	}
 }
 
-// attr は、名前 name の属性を返す。表に無い名前ならゼロ値（飾りなし）を返す。
+// styleLinks は、表に無ければ別の名前の属性を引き継ぐ名前と、その引き継ぐ先の名前である（Neovim の :hi default link に当たる）。
+// 既定の対応、配色（FR-125）、設定の colors（FR-91）のどれにも書いていなければ、引き継ぐ先の今の属性を使う。
+// 配色が引き継ぐ先の色だけを変えても、引き継ぐ名前の色が付いてくる。
+//
+//   - StyleBand は StylePopup（nvim-treesitter-context の TreesitterContext は浮かべた窓の NormalFloat へのリンクで、
+//     本体の浮かべた窓（ホバーなど）の色の名前は StylePopup である）
+//   - StyleBandLineNr は StyleLineNr（TreesitterContextLineNumber は LineNr へのリンク）
+var styleLinks = map[string]string{
+	StyleBand:       StylePopup,
+	StyleBandLineNr: StyleLineNr,
+}
+
+// attr は、名前 name の属性を返す。表に無い名前なら、引き継ぐ先（styleLinks）があればその属性を、無ければゼロ値（飾りなし）を返す。
 func (t Theme) attr(name string) Attr {
-	return t[name]
+	if a, ok := t[name]; ok {
+		return a
+	}
+	if to, ok := styleLinks[name]; ok {
+		return t[to]
+	}
+	return Attr{}
 }

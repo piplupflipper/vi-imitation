@@ -53,6 +53,8 @@ type windowNotifier struct {
 	armed, dirty bool
 	// gen は、間引きのタイマーの世代である。止めた後に来たタイマーを捨てる。
 	gen uint64
+	// seq は、最後に送った知らせの通し番号（ext.WindowChangeParams.Seq）である。sent の中身は Seq を 0 にして持つ（中身だけを比べる）。
+	seq uint64
 	// exts と send は、送る相手の一覧と送り方である。nil なら exthost の WindowEventExtensions と Notify を使う。
 	// テストが、拡張機能のプロセスを起動せずに送ったものを確かめるために差し替える。
 	exts func() []string
@@ -72,8 +74,10 @@ func (e *Editor) windowExtensions() []string {
 	return e.host.WindowEventExtensions()
 }
 
-// sendWindow は、拡張機能 extID へ window/change の p を送る。
+// sendWindow は、拡張機能 extID へ window/change の p を、次の通し番号を付けて送る。
 func (e *Editor) sendWindow(extID string, p ext.WindowChangeParams) {
+	e.windows.seq++
+	p.Seq = e.windows.seq
 	send := e.windows.send
 	if send == nil {
 		send = func(id string, p ext.WindowChangeParams) error { return e.host.Notify(id, ext.MethodWindowChange, p) }
@@ -187,9 +191,13 @@ func (e *Editor) windowSnapshots() map[ext.WindowID]ext.WindowChangeParams {
 		bs := e.tab()
 		s, _ := e.diffOf(bs)
 		id := windowIDOf(c)
+		left := 0
+		if !e.lineWrap() {
+			left = r.Left()
+		}
 		out[id] = ext.WindowChangeParams{
 			Window: id, Buffer: bs.id, Version: ext.Version(bs.buf.Version()),
-			Top: r.Top(), Bottom: r.Botline(), Rows: r.TextRows(), Columns: r.TextWidth(),
+			Top: r.Top(), Bottom: r.Botline(), Rows: r.TextRows(), Columns: r.TextWidth(), Left: left,
 			Cursor: toExtPos(bs.state.Cursor()), Mode: modeName(e.cur.state.Mode()), Diff: s != nil,
 		}
 	})
@@ -203,10 +211,16 @@ func (e *Editor) forgetWindows(extID string) {
 
 // setBand は、拡張機能 extID が band/set で送った帯を、窓と拡張機能の組の帯にする。行が空なら、その組の帯を消す。
 // 繋いでいる client の窓でなければ捨てる（終わった client の窓への遅れた知らせ）。
+// 今の帯より古い知らせから作った帯（Seq が小さい）は捨てる。行の空の帯も、Seq を書いていれば行の無い帯として持ち、
+// 消した後に古い帯が届いても描かない。
 //
 // req: FR-237
 func (e *Editor) setBand(extID string, p ext.BandSetParams) {
-	if len(p.Lines) == 0 {
+	if old, ok := e.bands[p.Window][extID]; ok && p.Seq != 0 && p.Seq < old.Seq {
+		// 作り終える順で入れ替わって届いた帯である（ext.BandSetParams.Seq）。
+		return
+	}
+	if len(p.Lines) == 0 && p.Seq == 0 {
 		if m := e.bands[p.Window]; m != nil {
 			delete(m, extID)
 			if len(m) == 0 {

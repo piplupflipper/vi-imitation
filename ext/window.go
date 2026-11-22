@@ -18,10 +18,12 @@ import (
 // 前に送ってから WindowNotifyIntervalMs のミリ秒が経っていなければ、その間は送らずに、時間が来た時点の最後の中身を 1 回だけ送る
 // （nvim-treesitter-context の throttle_by_id と同じく、続けて変わっても、その時間のうちに 2 回までにする）。
 // このため、拡張機能が受け取る中身は、途中の中身を飛ばすことがある。
+// ext/server は、さらに、フックが前の知らせを処理している間に同じ窓の知らせが続けて届いたら、最後の 1 件だけをフックへ渡す
+// （拡張機能の処理が間隔より遅くても、知らせが溜まって ping の応答が遅れないようにする）。
 //
 // 窓が無くなった（client が終わった）ときは、Closed を true にした知らせを 1 回送る。その WindowID は使い回さない。
 //
-// 古い本体（0.17.0 まで）は送らない。
+// 古い本体（0.16.0 まで）は送らない。
 const MethodWindowChange = "window/change"
 
 // WindowNotifyIntervalMs は、本体が window/change を同じ拡張機能へ続けて送るときの、送る間隔の下限のミリ秒である（仮）。
@@ -58,12 +60,19 @@ type WindowChangeParams struct {
 	// Rows と Columns は、表示領域の行数と、本文の列数（印の列と行番号の列を除く）である。
 	Rows    int `json:"rows"`
 	Columns int `json:"columns"`
+	// Left は、行を折り返さない窓の、表示領域の左の端に当たる表示の列（横のスクロールの位置。0 から数える。Vim の leftcol）である。
+	// 行を折り返す窓では 0 である。窓の列で位置を決める拡張機能（ブロックの罫線など）が、行の表示の列から引いて窓の列にする。
+	// 横のスクロール（ホイールの横の送り、カーソルが左右の端から出たときの送り）だけで変わったときも知らせる。
+	Left int `json:"left"`
 	// Cursor は、窓のバッファのカーソル位置である。
 	Cursor Position `json:"cursor"`
 	// Mode は、窓の client のモードである（ポップアップにフォーカスがあれば、ポップアップのバッファのモード）。
 	Mode Mode `json:"mode,omitempty"`
 	// Diff は、窓のバッファが見比べ（diff/start、:diffsplit）の片側であることを表す。
 	Diff bool `json:"diff,omitempty"`
+	// Seq は、知らせの通し番号である。本体が window/change を送るたびに 1 から増やす（窓と拡張機能をまたいで 1 つの数え方）。
+	// 拡張機能は、この知らせを元に作った帯の BandSetParams.Seq に書く。
+	Seq uint64 `json:"seq"`
 }
 
 // MethodBandSet は、拡張機能から本体への通知である。params は BandSetParams。
@@ -78,7 +87,7 @@ type WindowChangeParams struct {
 // 帯の上の行から削って、カーソルの行より上に収める（nvim-treesitter-context の calc_max_lines と trim_scope の既定の outer と同じ）。
 // 帯の下に隠れた本文の行のために、スクロールの余白は足さない（nvim-treesitter-context と同じ）。
 //
-// 古い本体（0.17.0 まで）は、知らない通知として捨てる（ログに残すだけ）。
+// 古い本体（0.16.0 まで）は、知らない通知として捨てる（ログに残すだけ）。
 const MethodBandSet = "band/set"
 
 // MaxBandLines は、band/set の 1 つの帯に書ける行の数の上限である（仮）。超えた帯は、本体がログに残して捨てる。
@@ -93,6 +102,10 @@ type BandSetParams struct {
 	// Version は、帯を作ったときのバッファのバージョン番号である。本体は、今のバージョン番号がこれと違う間も帯を描くが、
 	// 帯を押してもその行へ移らない（下の本文を押したことにする。nvim-treesitter-context の get_source_line と同じ）。
 	Version Version `json:"version"`
+	// Seq は、帯を作る元にした window/change の Seq である。本体は、同じ拡張機能と窓の組の今の帯の Seq より小さい帯を、
+	// 古い知らせから作ったものとして捨てる（別の goroutine で作った帯が、作り終える順で入れ替わって届いても、新しい帯を上書きしない）。
+	// 0（省く）なら比べずに置き換える。
+	Seq uint64 `json:"seq,omitempty"`
 	// Lines は、帯の行を上から並べたものである。空なら帯を消す。MaxBandLines を超えられない。
 	Lines []BandLine `json:"lines"`
 }
