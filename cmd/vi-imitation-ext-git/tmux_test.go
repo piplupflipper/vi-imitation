@@ -355,6 +355,80 @@ func TestChangesInTmux(t *testing.T) {
 	ts.waitPanes(1)
 }
 
+// TestChangesLastClientInTmux は、見比べの左のペインを未保存のまま閉じ、比べる元の版のペインしか残っていないときに一覧から選んでも、
+// エディタが終わらず（本体は最後の窓を名前の無い空のバッファに替える）、未保存の変更が残ることを確かめる（PR #382 の再レビューの必須）。
+//
+// req: FR-251
+func TestChangesLastClientInTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short では実物の tmux を使うテストを飛ばす")
+	}
+	isolateGit(t)
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux が無い")
+	}
+	editor := buildDist(t)
+	repo := newRepo(t, map[string]string{"a.txt": "aaa\n", "b.txt": "bbb\n"})
+	runGit(t, repo, "checkout", "-q", "-b", "feature")
+	writeTestFiles(t, repo, map[string]string{"a.txt": "AAA\n", "b.txt": "BBB\n"})
+	runGit(t, repo, "commit", "-q", "-am", "feature")
+
+	ts := &testTmux{t: t, bin: tmuxBin, name: fmt.Sprintf("vi-imitation-git-test-%d-%d", os.Getpid(), time.Now().UnixNano()), env: testEnv(t)}
+	t.Cleanup(func() {
+		k := exec.Command(tmuxBin, "-L", ts.name, "kill-server") //nolint:gosec // テスト用の tmux
+		k.Env = ts.env
+		_ = k.Run()
+	})
+	p0 := ts.run("new-session", "-d", "-s", "t", "-x", "200", "-y", "30", "-c", repo, "-P", "-F", "#{pane_id}", "sleep 600")
+	p1 := ts.run("split-window", "-h", "-t", p0, "-c", repo, "-P", "-F", "#{pane_id}", fmt.Sprintf("'%s' a.txt", editor))
+	ts.waitPane(p1, "a.txt を開いた画面", func(s string) bool { return strings.Contains(s, "AAA") })
+	ts.run("send-keys", "-t", p1, "-l", " gV")
+	ts.waitPane(p1, "差分の一覧", func(s string) bool { return strings.Contains(s, "git の差分 main...HEAD  2/2") })
+	ts.run("send-keys", "-t", p1, "-l", "a.t")
+	ts.waitPane(p1, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/2") })
+	ts.run("send-keys", "-t", p1, "Enter")
+	var p2 string
+	deadline := time.Now().Add(15 * time.Second)
+	for p2 == "" {
+		for _, p := range ts.panes() {
+			if p != p0 && p != p1 {
+				p2 = p
+			}
+		}
+		if p2 == "" && time.Now().After(deadline) {
+			t.Fatalf("比べる元の版のペインが開かない: %v", ts.panes())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	ts.waitPane(p2, "a.txt の比べる元の版", func(s string) bool {
+		return strings.Contains(s, "main...HEAD:a.txt") && strings.Contains(s, "（client 1）を")
+	})
+
+	// 左のペインで保存せずに変え、ペインごと閉じる。
+	ts.run("send-keys", "-t", p1, "-l", "Ounsaved")
+	ts.run("send-keys", "-t", p1, "Escape")
+	ts.waitPane(p1, "変えた画面", func(s string) bool { return strings.Contains(s, "unsaved") })
+	ts.run("kill-pane", "-t", p1)
+	ts.waitPanes(2)
+
+	// 残った比べる元の版のペインから b.txt を選ぶ。エディタは終わらず、b.txt がこのペインに開き、その右に比べる元の版が開く。
+	ts.run("send-keys", "-t", p2, "-l", " gV")
+	ts.waitPane(p2, "差分の一覧", func(s string) bool { return strings.Contains(s, "git の差分 main...HEAD  2/2") })
+	ts.run("send-keys", "-t", p2, "-l", "b.t")
+	ts.waitPane(p2, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/2") })
+	ts.run("send-keys", "-t", p2, "Enter")
+	ts.waitPane(p2, "b.txt のタブ", func(s string) bool { return strings.Contains(s, "BBB") })
+	ts.waitPanes(3)
+	ts.run("send-keys", "-t", p2, ":ls", "Enter")
+	ls := ts.waitPane(p2, ":ls の一覧", func(s string) bool { return strings.Contains(s, `"a.txt"`) })
+	for l := range strings.Lines(ls) {
+		if strings.Contains(l, `"a.txt"`) && !strings.Contains(l, "+") {
+			t.Errorf("a.txt の未保存の変更が残っていない: %q", l)
+		}
+	}
+}
+
 // TestChangesNoDiffInTmux は、HEAD との差分の無い作業ツリーで <Leader>gv（git.changesHead）を打つと、一覧を開かずに差分が無いことを知らせ、
 // 引数を付けて打つと断ることと、使えない比べる元の書き方と端末多重化ソフトの外では一覧を開かずに理由を出すことを確かめる。
 //
