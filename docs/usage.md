@@ -3011,7 +3011,7 @@ func insert(_ context.Context, _ *server.Buffer, p *ext.CommandExecuteParams) (e
 
 ### 色と仮想テキストを出す
 
-範囲に色を付けるのは `SetDecorations`、本文に無い文字列（仮想テキスト）を出すのは `SetVirtualTexts` である（拡張機能 API の 0.17.0 から）。
+範囲に色を付けるのは `SetDecorations`、本文に無い文字列（仮想テキスト）を出すのは `SetVirtualTexts` である（拡張機能 API の 0.19.0 から）。
 どちらもバッファ全体の一覧を毎回送り、同じ拡張機能とバッファの前の一覧を置き換える。空の一覧で消える。
 色は、色を付ける対象の名前（`Style`。「見た目の設定」の表の名前）と、直に付ける色（`Attr`。`ext.TextAttr` の `Fg`、`Bg`、`Sp` の `"#rrggbb"` と、`Bold` などの飾り）のどちらか、または両方で付ける。両方なら名前の色の上に直の色を重ねる。
 
