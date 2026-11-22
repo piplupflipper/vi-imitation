@@ -89,6 +89,8 @@ type highlighter struct {
 	objects *textObjects
 	// sticky は、見出しの帯（sticky.go）を作って送る。trees の構文木を使う。
 	sticky *sticky
+	// chunk は、ブロックの範囲の罫線（chunk.go）を作って送る。trees の構文木を使う。
+	chunk *chunker
 
 	// 以下は解析の goroutine だけが触る。
 	docs map[ext.BufferID]*document
@@ -142,6 +144,7 @@ func newHighlighter() (*highlighter, error) {
 		return l
 	})
 	h.sticky = newSticky(h.trees, h.log)
+	h.chunk = newChunker(h.trees, h.log)
 	return h, nil
 }
 
@@ -161,9 +164,12 @@ func (h *highlighter) close() {
 	if h.objects != nil {
 		h.objects.close()
 	}
-	// 帯を作る goroutine は trees の構文木を使うので、trees より先に止める。
+	// 帯と罫線を作る goroutine は trees の構文木を使うので、trees より先に止める。
 	if h.sticky != nil {
 		h.sticky.close()
+	}
+	if h.chunk != nil {
+		h.chunk.close()
 	}
 	if h.trees != nil {
 		h.trees.close()
@@ -199,6 +205,12 @@ func (h *highlighter) server() *server.Server {
 	s.OnBufferClose(func(_ context.Context, e *server.BufferCloseEvent) { h.closeBuffer(e.Buffer) })
 	h.objects.register(s)
 	h.sticky.register(s)
+	h.chunk.register(s)
+	// Server の window/change のフックは 1 つなので、見出しの帯と罫線の両方へ渡す。どちらもループの上で知らせを覚えるだけである。
+	s.OnWindowChange(func(_ context.Context, e *server.WindowChangeEvent) {
+		h.sticky.windowChanged(e.Params)
+		h.chunk.windowChanged(e.Params)
+	})
 	h.send = s.SetDecorations
 	h.notify = s.ShowMessage
 	h.report = s.ReportProgress
@@ -389,6 +401,7 @@ func (h *highlighter) process(id ext.BufferID, j *job) {
 		delete(h.warned, id)
 		h.trees.drop(id)
 		h.sticky.parsed(id)
+		h.chunk.parsed(id)
 		if j.clear {
 			h.publish(id, j.version, []ext.Decoration{})
 		}
@@ -418,6 +431,7 @@ func (h *highlighter) process(id ext.BufferID, j *job) {
 	}
 	h.trees.put(id, j.version, d)
 	h.sticky.parsed(id)
+	h.chunk.parsed(id)
 	decs := d.decorations()
 	if h.superseded(id) {
 		return

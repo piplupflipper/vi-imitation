@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/piplupflipper/vi-imitation/internal/extmgr"
 )
@@ -34,7 +36,9 @@ import (
 //	        }
 //	      },
 //	      // 見出しの帯の設定（contextSettings）
-//	      "context": { "maxLines": 4, "multilineThreshold": 1 }
+//	      "context": { "maxLines": 4, "multilineThreshold": 1 },
+//	      // ブロックの範囲の罫線の設定（chunkSettings）
+//	      "chunk": { "enable": true }
 //	    }
 //	  }
 //	}
@@ -64,6 +68,135 @@ type treesitterSettings struct {
 	listed map[string]bool
 	// context は、見出しの帯（sticky.go）の設定である。
 	context contextSettings
+	// chunk は、ブロックの範囲の罫線（chunk.go）の設定である。
+	chunk chunkSettings
+}
+
+// chunkSettings は、設定の extensions.settings.treesitter.chunk の値である（FR-267。項目の名前は仮）。
+// 既定は、hlchunk.nvim（コミット 4ddc056e4ca45f1c7dc6aa21935df710b263b1aa）の lua/hlchunk/mods/chunk/chunk_conf.lua の既定と、
+// lua/hlchunk/mods/base_mod/base_conf.lua の enable の既定（false）に合わせた。
+//
+//	"chunk": {
+//	  // 罫線を出すか。既定は出さない（hlchunk.nvim は setup で enable を書かないと出さない）
+//	  "enable": true,
+//	  // カーソルが止まってから描き直すまでのミリ秒（hlchunk.nvim の delay。既定は 300）
+//	  "delay": 100,
+//	  // 罫線を描く動きのミリ秒（hlchunk.nvim の duration。既定は 200）。0 なら一度に描く
+//	  "duration": 100,
+//	  // 構文の誤りを含むまとまりを chunk.error の色で描くか（hlchunk.nvim の error_sign。既定は描く）
+//	  "errorSign": true,
+//	  // 罫線の記号（hlchunk.nvim の chars）。どれも表示幅が 1 の文字 1 つ
+//	  "symbols": { "horizontalLine": "═", "verticalLine": "║", "leftTop": "╔", "leftBottom": "╚", "leftArrow": "─", "rightArrow": "▶" }
+//	}
+type chunkSettings struct {
+	enable bool
+	// delay と duration は、ミリ秒である。
+	delay, duration int
+	errorSign       bool
+	symbols         chunkSymbols
+}
+
+// chunkSymbols は、罫線の記号である（hlchunk.nvim の chars）。どれも表示幅が 1 の文字 1 つである。
+type chunkSymbols struct {
+	// horizontalLine は、始まりと終わりの行の横線、verticalLine は間の行の縦線である。
+	horizontalLine, verticalLine string
+	// leftTop と leftBottom は、始まりと終わりの行の角である。
+	leftTop, leftBottom string
+	// leftArrow は始まりの行の、rightArrow は終わりの行の、本文の側の端の記号である。
+	leftArrow, rightArrow string
+}
+
+// defaultChunkSettings は、設定に chunk が無いときの値である（chunkSettings の doc）。
+var defaultChunkSettings = chunkSettings{
+	enable:    false,
+	delay:     300,
+	duration:  200,
+	errorSign: true,
+	symbols: chunkSymbols{
+		horizontalLine: "─",
+		verticalLine:   "│",
+		leftTop:        "╭",
+		leftBottom:     "╰",
+		leftArrow:      "─",
+		rightArrow:     ">",
+	},
+}
+
+// chunkJSON は、chunk の JSON の形である。省いた項目は nil で、既定の値を使う。
+type chunkJSON struct {
+	Enable    *bool             `json:"enable"`
+	Delay     *int              `json:"delay"`
+	Duration  *int              `json:"duration"`
+	ErrorSign *bool             `json:"errorSign"`
+	Symbols   map[string]string `json:"symbols"`
+}
+
+// maxChunkMs は、chunk の delay と duration の上限のミリ秒である（仮。誤って大きな値を書いて、罫線が出ないように見えるのを防ぐ）。
+const maxChunkMs = 10000
+
+// parseChunk は、chunk の値を読む。誤りのある項目は既定の値のままにし、誤りを返す。
+//
+// req: FR-267
+func parseChunk(raw json.RawMessage) (chunkSettings, []string) {
+	out := defaultChunkSettings
+	var j chunkJSON
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&j); err != nil {
+		return out, []string{fmt.Sprintf("設定の extensions.settings.treesitter.chunk を読めない: %v", err)}
+	}
+	var problems []string
+	if j.Enable != nil {
+		out.enable = *j.Enable
+	}
+	if j.ErrorSign != nil {
+		out.errorSign = *j.ErrorSign
+	}
+	for _, f := range []struct {
+		name string
+		v    *int
+		to   *int
+	}{{"delay", j.Delay, &out.delay}, {"duration", j.Duration, &out.duration}} {
+		if f.v == nil {
+			continue
+		}
+		if *f.v < 0 || *f.v > maxChunkMs {
+			problems = append(problems, fmt.Sprintf("設定の extensions.settings.treesitter.chunk.%s は 0 から %d の整数にする", f.name, maxChunkMs))
+			continue
+		}
+		*f.to = *f.v
+	}
+	fields := map[string]*string{
+		"horizontalLine": &out.symbols.horizontalLine,
+		"verticalLine":   &out.symbols.verticalLine,
+		"leftTop":        &out.symbols.leftTop,
+		"leftBottom":     &out.symbols.leftBottom,
+		"leftArrow":      &out.symbols.leftArrow,
+		"rightArrow":     &out.symbols.rightArrow,
+	}
+	for _, name := range sortedKeys(j.Symbols) {
+		to, ok := fields[name]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("設定の extensions.settings.treesitter.chunk.symbols に知らない項目 %s がある", name))
+			continue
+		}
+		if !isChunkSymbol(j.Symbols[name]) {
+			problems = append(problems, fmt.Sprintf("設定の extensions.settings.treesitter.chunk.symbols.%s は表示幅が 1 の文字 1 つにする", name))
+			continue
+		}
+		*to = j.Symbols[name]
+	}
+	return out, problems
+}
+
+// isChunkSymbol は、s を罫線の記号に使えるか（文字 1 つで、タブ、制御文字、空白、結合文字でないか）を返す。
+// 本体の表示幅の表を持たないので、全角の文字は断れない（書いた全角の文字は、本体が 2 列で描くので罫線がずれる）。
+func isChunkSymbol(s string) bool {
+	r, size := utf8.DecodeRuneInString(s)
+	if s == "" || size != len(s) || r == utf8.RuneError {
+		return false
+	}
+	return unicode.IsGraphic(r) && !unicode.IsSpace(r) && !unicode.Is(unicode.Mn, r) && !unicode.Is(unicode.Me, r)
 }
 
 // contextSettings は、設定の extensions.settings.treesitter.context の値である（FR-247。項目の名前は仮）。
@@ -145,7 +278,7 @@ var parserName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 //
 // req: FR-142
 func parseSettings(settings json.RawMessage) (treesitterSettings, []string) {
-	out := treesitterSettings{compiler: defaultCompiler, listed: map[string]bool{}, context: defaultContextSettings}
+	out := treesitterSettings{compiler: defaultCompiler, listed: map[string]bool{}, context: defaultContextSettings, chunk: defaultChunkSettings}
 	if len(bytes.TrimSpace(settings)) == 0 || bytes.Equal(bytes.TrimSpace(settings), []byte("null")) {
 		return out, nil
 	}
@@ -167,6 +300,10 @@ func parseSettings(settings json.RawMessage) (treesitterSettings, []string) {
 		case "context":
 			c, ps := parseContext(top[k])
 			out.context = c
+			problems = append(problems, ps...)
+		case "chunk":
+			c, ps := parseChunk(top[k])
+			out.chunk = c
 			problems = append(problems, ps...)
 		case "parsers":
 		default:

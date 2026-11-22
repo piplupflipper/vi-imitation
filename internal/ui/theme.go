@@ -130,6 +130,10 @@ const (
 	// StyleInlayHint は、LSP の拡張機能が仮想テキスト（virtualText/set）で出すインレイヒントの文字列である（FR-258。Neovim の LspInlayHint）。
 	// 既定の対応には無く、書いていなければ StyleNonText の色を引き継ぐ（styleLinks。Neovim 0.12.5 の LspInlayHint は NonText へのリンク）。
 	StyleInlayHint = "inlayHint"
+	// StyleChunk は、tree-sitter の拡張機能が、カーソルを含む構文のまとまりの範囲を示す罫線（FR-265。仮想テキストの style）の色である
+	// （hlchunk.nvim の HLChunk1）。StyleChunkError は、構文の誤りを含むまとまりの罫線の色である（hlchunk.nvim の HLChunk2）。
+	StyleChunk      = "chunk"
+	StyleChunkError = "chunk.error"
 	// StyleStatusLineMode などは、ステータス行の部品ごとの色である。名前は "statusline." と部品の ID（StatusPart...）をつないだもの。
 	// 部品は StyleStatusLine の上に重ねて描く（Attr.Over）ので、文字の色だけを変えることもできる。既定の対応には無い。
 	StyleStatusLineMode      = "statusline.mode"
@@ -170,6 +174,7 @@ var styleNames = []string{
 	StyleScrollbarSearch,
 	StyleBand, StyleBandLineNr, StyleBandBottom,
 	StyleInlayHint,
+	StyleChunk, StyleChunkError,
 	StyleSignBreakpoint, StyleSignBreakpointUnverified, StyleSignExecutionPoint,
 	StyleSignDiagnosticError, StyleSignDiagnosticWarning, StyleSignDiagnosticInfo, StyleSignDiagnosticHint,
 	StyleStatusLineMode, StyleStatusLineName, StyleStatusLineModified, StyleStatusLineReadOnly, StyleStatusLineFileType,
@@ -375,6 +380,11 @@ func DefaultTheme() Theme {
 		StyleDiffChange: {Bg: Indexed(5)},
 		StyleDiffDelete: {Fg: Indexed(12), Bg: Indexed(6)},
 		StyleDiffText:   {Bg: Indexed(9), Bold: true},
+
+		// ブロックの範囲の罫線は、hlchunk.nvim（コミット 4ddc056e4ca45f1c7dc6aa21935df710b263b1aa）の chunk の style の既定
+		// （{ fg = "#806d9c" }、{ fg = "#c21f30" }）と同じ 24 ビットの色にした。hlchunk.nvim は配色によらずこの色で描く。
+		StyleChunk:      {Fg: RGB(0x80, 0x6d, 0x9c)},
+		StyleChunkError: {Fg: RGB(0xc2, 0x1f, 0x30)},
 	}
 }
 
