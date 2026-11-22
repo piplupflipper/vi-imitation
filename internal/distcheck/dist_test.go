@@ -101,6 +101,8 @@ func TestDistLicenses(t *testing.T) {
 		// 本体の既定のアイコンの表は、nvim-web-devicons と neo-tree.nvim から写した（FR-152。internal/ui の icons_default.go）。
 		"licenses/github.com/nvim-tree/nvim-web-devicons/LICENSE",
 		"licenses/github.com/nvim-neo-tree/neo-tree.nvim/LICENSE",
+		// 色コードの着色の拡張機能の色の名前の表は、Neovim から写した（FR-260。cmd/vi-imitation-ext-colorizer の names.go）。
+		"licenses/github.com/neovim/neovim/LICENSE.txt",
 	} {
 		info, err := os.Stat(filepath.Join(dir, rel))
 		if err != nil {
