@@ -2266,6 +2266,7 @@ Go が無ければ、その旨をメッセージに出して止める。
 | ACP | エージェントの起動、プロンプトの送信、返答の表示、権限の確認、エディタの内容を通したファイルの読み書き | バッファの同期、`command/execute`、`buffer/edit`、`message/show` | `editor/open`、`buffer/save`、`output/append`、`choice/ask` | 6.5 |
 | スクリプト | スクリプトの拡張機能が、モーション、テキストオブジェクト、オペレーター、コマンドを追加する | 5.3 の既存のメソッドすべて | 無し。宣言ファイルに項目を足す | 6.6 |
 | 整形ツール | 外部の整形ツールによる、保存の前の整形と、本体の操作 `format`（#339）。整形ツールの設定からのインデント（#349） | バッファの同期、`buffer/willSave`、`buffer/didSave`、`provider/invoke`、`buffer/edit`、`message/show`、`option/set` | 無し | 6.10 |
+| 色コードの着色 | 色コードの範囲を、その色で塗る（#388） | バッファの同期、`decoration/set`（直の色）、`message/show` | 無し | 6.12 |
 
 表の「バッファの同期」は、`buffer/open`、`buffer/change`、`buffer/close`、`buffer/resync` の 4 つを指す。
 拡張機能の側で始める処理（言語サーバーへの問い合わせなど）は、キー入力ごとの問い合わせの期限（5.4）より長くかかることがある。
@@ -4174,6 +4175,44 @@ ruff の `--range` や clang-format の `--offset` のように範囲を受け�
 | 起動の契機 | コマンドの契機だけにした。部品を `statusline` か `tabline` に並べれば、本体が最初の画面を描いた後に起動する（5.2、7.1）。`startup` の契機（5.2）にしなかったのは、部品を並べていない利用者（本体の既定）の本体でも常に動いて、使わないメモリを使うためである |
 | マクロの再生 | `memusage.show` は、`sync` が true でも受け付けたことだけを応答する。バッファのテキストとカーソルを変えないので、再生の結果は変わらない |
 | RSS の数え方 | `/proc/<pid>/status` の `VmRSS`（ps では `rss`）で、共有ライブラリを重ねて数えるので、PSS より少し大きい。内訳の末尾にそのことを書く |
+
+### 6.12 色コードの着色
+
+#388 で、バッファの本文の色コードの範囲を、その色で塗る拡張機能を `cmd/vi-imitation-ext-colorizer`（ID は `colorizer`）として作った（FR-260〜FR-262）。
+オーナーの nvim の nvim-colorizer.lua（catgoose/nvim-colorizer.lua。`~/.config/nvim/lazy-lock.json` のコミット `72a05f62c52241bc7441c820eb53946f92b2e6a4`）に当たる。
+色は、#368 で足した範囲に直に付ける色（6.1 の「範囲に直に付ける色」。`ext.Decoration.Attr`）で付け、色の種類の名前は付けない。
+どれも仮である。
+
+| 項目 | 決めたこと |
+|---|---|
+| 起動の契機 | 設定のファイルの種類の契機（`settingsFileType`。6.7）の `/fileTypes` だけにした。設定 `extensions.settings.colorizer.fileTypes` に書いたファイルの種類のバッファを開いたときに起動し、何も書かなければ起動しない。nvim-colorizer.lua の既定（すべてのファイルの種類）にしなかったのは、オーナーの nvim の設定が、大きなファイルでも走るのを避けて種類を絞っているためである（#388）。本体はすべてのバッファを送ってくるので、拡張機能も `fileTypes` の種類のバッファだけを数える。`:set filetype=` で対象の外の種類に変わったら（`buffer/open` の送り直し）、空の一覧を送って色を消す |
+| 認識する形 | 既定は、nvim-colorizer.lua の既定（オーナーの nvim は `filetypes` だけを渡すので、`lua/colorizer/config.lua` の `plugin_user_default_options`）と同じく、色の名前、`#RGB`、`#RGBA`、`#RRGGBB` である。設定で `#RRGGBBAA`、`0xRGB` と `0xRRGGBB` と `0xAARRGGBB`、`rgb()` と `rgba()`（`rgb(RRGGBB)` と `rgba(RRGGBBAA)` も）、`hsl()` と `hsla()`、色の名前の大文字の綴りを足し、既定の形を外せる。項目の名前は nvim-colorizer.lua の `parsers` に寄せた（`hex.rrggbbaa`、`rgb`、`hsl`、`names.uppercase` など）。`oklch()`、`hwb()`、Tailwind の名前、Sass の変数、CSS の変数は作っていない |
+| 範囲の区切り方 | nvim-colorizer.lua の `buffer.lua` の `parse_lines` と同じく、行の先頭から 1 バイトずつ、`#` の形、`0x` の形、関数の形、色の名前の順に試し、認めた形の分だけ進む（`scan.go` の `scanner`）。`#` と `0x` の前後と、色の名前の前後に英字か数字（色の名前を認識するときは `-` も）があれば認めない。色の名前は、その位置から続く英字と数字の並びの全体が名前のときだけ認める（`redish` の `red`、`text-red-500` の `red` を塗らない）。`#RGBA` と `#RRGGBBAA` と `0xAARRGGBB` は不透明度を各成分に掛けて切り捨て、`rgb()` と `hsl()` の不透明度は色に掛けない（どれも nvim-colorizer.lua と同じ） |
+| nvim-colorizer.lua との突き合わせ | nvim-colorizer.lua は GPL-3.0 なので、コードは写さず、実物に同じ行を与えて出した範囲と色が一致するように書いた。2026-11-22 に、Neovim 0.12.5 で `parse_lines` に、色コードらしい断片を乱数でつないだ行と、関数の形を乱数で組んだ行の 40,076 行を与え、既定の形と、すべての形（大文字の綴りを除く）の 2 つの設定で比べて、どちらも全部の行で一致した。すべての形では、nvim-colorizer.lua の側が Lua の誤りで止まった 8 行（`hsl(` の彩度が `1.2.3` のように数として読めないものなど）を除いた。この実装は、それらの行のその形を認めない。代表の行は `scan_test.go` の表にある |
+| 色の名前の表 | nvim-colorizer.lua の色の名前は `nvim_get_color_map()` の表（Neovim の `src/nvim/highlight_group.c` の `color_name_table`。X11 の `rgb.txt` の色と、Neovim の既定の配色の `NvimDarkGrey1` などの 707 個）を使う。同じ表を、Neovim 0.12.5（タグ v0.12.5、コミット `fe8b746b8b0bab97b9ff14d1224fa929a1092cd6`）の `nvim --clean --headless` に書き出させて写した（`names_table.go`。`go generate` で作り直す `internal/namegen`）。Neovim は Apache License 2.0 なので、ライセンスの文面を `cmd/vi-imitation-ext-colorizer/licenses/` に置き、配布物の `licenses/` に入れる（Makefile の `DIST_DATA_LICENSES`）。小文字にした綴り（`lightblue`）と表のままの綴り（`LightBlue`）を既定で認める |
+| 塗り方 | 設定 `mode` で、`background`（既定。背景をその色にし、文字を、色の明るさ（ITU-R BT.601 の重みの加重平均を 255 で割ったもの）が 0.5 を超えれば `background.brightFg`（既定 `#000000`）に、そうでなければ `background.darkFg`（既定 `#ffffff`）にする）、`foreground`（文字をその色にする）、`underline`（その色の下線を引く）を選ぶ。どれも nvim-colorizer.lua の `display.mode` と同じ塗り方である。nvim-colorizer.lua の `virtualtext`（色コードの後ろに `■` を出す）は作っていない |
+| 数え直し | 拡張機能は、バッファごとに行ごとの範囲を持つ。`buffer/change` の編集を先頭から順に、編集の範囲の行を、入れたテキストの行の数の「数え直していない行」に置き換え、全部の編集の後に、数え直していない行だけをバッファの複製から数える（`extension.go` の `change`）。置き換わった行に前も後も範囲が無く、行の数も変わらなければ送らない（本体は前の一覧のまま描く。6.1）。行の数が変わったら、範囲のある行がずれるので、範囲が 1 つでもあれば送る。nvim-colorizer.lua は見えている行だけを数えるが、`decoration/set` はバッファ全体の一覧を送る取り決め（6.1）なので、全体を持ち、変わった行だけを数え直す形にした |
+| 送り方 | 一覧の組み立てと符号化は、メッセージを処理する goroutine ではなく、送る goroutine で行う（`extension.go` の `sendLoop`）。メッセージを処理する goroutine は、行ごとの範囲を数え直して、送り直しの要るバッファに印を付けるだけにする。送る goroutine が送っている間に続いた編集は、送り終えた後に最新の状態で 1 回だけ送る。一覧の符号化は範囲の数に比例し（下の表で 2 万の範囲に 16 ms ほど）、メッセージを処理する goroutine の上で編集のたびに符号化すると、編集が続いたとき（マクロの再生、キーの連打）に処理が溜まり、ping の応答が本体の期限（2 秒。5.2）を超えうるためである（2.2 の規約） |
+| 大きさの上限 | 一覧の本文が 10 MiB（tree-sitter の拡張機能の上限と同じ。6.1）を超えたら、空の一覧を送り、`message/show` で 1 回だけ知らせる |
+| 古い本体 | `initialize` の `apiVersion` が 0.19.0（直の色を足した版。5.3）より古ければ、一覧を送らず、対象のバッファを初めて開いたときに `message/show` で 1 回だけ知らせる |
+| 設定の誤り | 知らない項目、`mode` の綴りの誤り、`#rrggbb` でない文字の色は、`initialize` を誤りで断る（整形ツールの拡張機能と同じ。6.10） |
+
+2026-11-22 に、手元の 1 台（16 スレッド、Go 1.27.4。他のワーカーのビルドと重なり、load average は 4〜5）で、`cmd/vi-imitation-ext-colorizer` の `BenchmarkChange` を 200 回ずつ 3 組測った値は次のとおりである（3 組の値の幅を書く）。
+バッファは、10 行に 1 行が 2 つの色コード（64 色を使い回す `#rrggbb` と、色の名前 `white`）を持つ CSS で、中ほどの行の先頭に 1 文字を入れる。
+「数え直しまで」は、本体の役が編集を送ってから、その後に送った ping の応答が届くまでで、ping の応答の遅れに当たる。
+「送り終えるまで」は、さらに送る goroutine が一覧を組み立てて符号化し、本体の役が復号し終えるまでである。
+
+| 行数（色コードの数） | 入れる行 | 数え直しまで | 送り終えるまで |
+|---|---|---|---|
+| 1,000（200） | 色コードのある行 | 0.18〜0.27 ms | 0.48〜0.62 ms |
+| 1,000（200） | 色コードの無い行（送らない） | 0.040〜0.045 ms | 0.060〜0.070 ms |
+| 100,000（20,000） | 色コードのある行 | 0.44〜0.61 ms | 15.9〜16.4 ms |
+| 100,000（20,000） | 色コードの無い行（送らない） | 0.16〜0.19 ms | 0.18〜0.20 ms |
+
+10 万行で数え直しまでが 0.2〜0.6 ms かかるのは、数え直していない行を探すのに全部の行の印をなめるためで、行の数に比例する。
+送り終えるまでの時間のほとんどは、`decoration/set` の符号化と、本体の役の復号である（CPU のプロファイルで 6 割ほど）。
+本体の側の復号と描画の表づくりは、イベントループの外で行う（6.1）ので、キー入力の処理を止めない。
+同じ #388 で、200 回の編集を続けて送ったときに、ping の応答が 1 秒より前に届き、送った一覧が最後のバージョン番号のものになることを、`TestBurstOfChanges`（5 万行の CSS、5 万の範囲）で確かめている。
 
 ## 7. 設定
 

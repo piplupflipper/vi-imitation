@@ -2272,6 +2272,7 @@ vi-imitation --docs --headings usage                 # 話題の文書の見出�
 | `filer` | ツリー型のファイラ | コマンドを呼んだとき | `<Leader>e`、`<Leader>E`、[ファイラ](#ファイラ) | gitignore されたものを隠すには PATH の `git`。分割したペインに出すには端末多重化ソフト（tmux、herdr） |
 | `formatter` | 外部の整形ツールで、保存の前と `gq`、`:format` で整形する | 設定に整形ツールを書いたファイルの種類のファイルを開いたとき | `:w`、`gq`、`:format`（[整形ツール](#整形ツール)） | 設定に書いた整形ツール（biome、ruff など） |
 | `memusage` | 本体と、拡張機能と言語サーバーなどのメモリの使用量（RSS）をステータス行に出す | 部品 `memusage.rss` を `statusline` か `tabline` に並べたとき（本体の起動時）か、コマンドを呼んだとき | `:memusage.show`（[メモリの使用量](#メモリの使用量)） | Linux 以外では PATH の `ps` |
+| `colorizer` | 色コード（`#ff0000`、`red` など）の範囲を、その色で塗る | 設定に書いたファイルの種類のファイルを開いたとき | なし（[色コードの着色](#色コードの着色)） | なし |
 
 ### tree-sitter による構文ハイライト
 
@@ -3135,6 +3136,66 @@ RSS は共有ライブラリを重ねて数えるので、PSS より少し大き
 この拡張機能は、開いているバッファの中身を受け取らない（宣言ファイルの `noBufferSync`）ので、大きなファイルを開いても、この拡張機能の RSS は増えない。
 Linux では `/proc` から本体の子孫だけを読む。
 Linux 以外（`/proc` から子のプロセスを辿れない環境）では、間隔ごとに `ps` を起動して数える。
+
+### 色コードの着色
+
+バッファの本文の色コードの範囲を、その色で塗る（nvim の nvim-colorizer.lua に当たる）。
+塗るファイルの種類を `fileTypes` に書くと、その種類のファイルを開いたときに起動する。
+何も書かなければ起動しない。
+
+```jsonc
+{
+  // 本体の既定の表に無い種類は、fileTypes で拡張子かファイル名から決める（ファイルの種類の判定）
+  "fileTypes": { ".css": "css", ".lua": "lua" },
+  "extensions": {
+    "settings": {
+      "colorizer": {
+        "fileTypes": ["css", "lua", "toml", "yaml"],
+        // 塗り方。background（既定）、foreground、underline
+        "mode": "background",
+      },
+    },
+  },
+}
+```
+
+認識する形の既定は、nvim-colorizer.lua の既定と同じで、次のとおりである。
+
+| 形 | 例 | 既定 | 設定の項目 |
+|---|---|---|---|
+| `#RGB` | `#f80` | 塗る | `hex.rgb` |
+| `#RGBA` | `#f808` | 塗る | `hex.rgba` |
+| `#RRGGBB` | `#ff8800` | 塗る | `hex.rrggbb` |
+| `#RRGGBBAA` | `#ff880080` | 塗らない | `hex.rrggbbaa` |
+| `0xRGB`、`0xRRGGBB`、`0xAARRGGBB` | `0x80ff8800` | 塗らない | `hex.aarrggbb` |
+| `rgb()`、`rgba()` | `rgb(255, 136, 0)`、`rgb(255 136 0 / 50%)`、`rgb(ff8800)` | 塗らない | `rgb` |
+| `hsl()`、`hsla()` | `hsl(32, 100%, 50%)`、`hsl(32deg 100% 50%)` | 塗らない | `hsl` |
+| 色の名前（小文字） | `red`、`lightblue` | 塗る | `names.lowercase` |
+| 色の名前（表のままの綴り） | `Red`、`LightBlue` | 塗る | `names.camelcase` |
+| 色の名前（大文字） | `RED`、`LIGHTBLUE` | 塗らない | `names.uppercase` |
+
+`rgb()` と `hsl()` も塗るなら、`"rgb": true` と `"hsl": true` を書く。
+`#RRGGBBAA` を塗るなら `"hex": { "rrggbbaa": true }` を書く。
+色の名前をまったく塗らないなら `"names": { "enable": false }` を書く。
+色の名前は Neovim の `nvim_get_color_map()` の 707 個（X11 の色の名前と、`NvimDarkGrey1` などの Neovim の色）である。
+`#RGBA`、`#RRGGBBAA`、`0xAARRGGBB` は、不透明度を掛けて黒に寄せた色で塗る（`#ff000080` は `#800000`）。
+`rgb()` と `hsl()` に書いた不透明度は、色に掛けない。
+
+次のものは塗らない（nvim-colorizer.lua と同じ）。
+
+- 前か後ろに英字、数字、`-` が続く色コード（`a#fff`、`#fffg`、`-#fff`）
+- 語の一部の色の名前（`redish`、`text-red-500` の `red`）。`_` や `.` の前後の名前は塗る（`red_x` の `red`）
+- 既定で `#ff000080` の全体（`#RRGGBBAA` を塗らない設定では、`#ff0000` の後に `8` が続くので、どの形にも当たらない）
+
+塗り方の `background` は、背景をその色にし、文字を、明るい色の上では `background.brightFg`（既定 `#000000`）、暗い色の上では `background.darkFg`（既定 `#ffffff`）にする。
+`foreground` は文字をその色に、`underline` はその色の下線を引く。
+nvim-colorizer.lua の `virtualtext`（色コードの後ろに `■` を出す）は無い。
+
+色は、本体の配色の名前で変えられない直の色で付ける。
+構文の色（tree-sitter）の上に重ねて描く。
+24 ビットの色を出せる端末で使う。
+大きなファイルでも、編集のたびに数え直すのは変わった行だけである。
+`fileTypes` に書いていない種類のファイルは、開いても数えない。
 
 ## 拡張機能の取得（`:ext sync`）
 
