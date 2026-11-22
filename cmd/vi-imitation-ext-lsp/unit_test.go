@@ -327,6 +327,14 @@ func TestConfigExample(t *testing.T) {
 	if c.servers["go"] == nil {
 		t.Error("the default go server is dropped")
 	}
+	// オーナーの nvim と同じく、インレイヒントを出す。gopls にはヒントの種類を有効にする設定を渡す（#387）。
+	if gocfg := c.servers["go"]; gocfg == nil || gocfg.Command != "gopls" || !gocfg.inlayHints() || len(gocfg.Settings["gopls"]) == 0 ||
+		!slices.Contains(gocfg.RootMarkers, "go.mod") {
+		t.Errorf("go = %+v, want gopls with inlay hints and the gopls hints settings", gocfg)
+	}
+	if !py.inlayHints() {
+		t.Error("python: inlayHints = false, want true from the top-level value")
+	}
 	if !slices.Contains(cfg.ExtensionActivation["lsp"], ext.Activation{On: ext.ActivationFileType, Pattern: "python"}) {
 		t.Errorf("activation.lsp = %+v, want filetype python", cfg.ExtensionActivation["lsp"])
 	}
@@ -470,8 +478,9 @@ func TestManifest(t *testing.T) {
 		t.Errorf("manifest = %+v", m)
 	}
 	// 段階 2 のコマンド（lsp.definition など）は、provides で名乗る本体の操作に置き換えた（#203）。
-	if len(m.Contributes.Commands) != 0 {
-		t.Errorf("commands = %v, want none", m.Contributes.Commands)
+	// コマンドは、本体の操作に無いインレイヒントの切り替え（FR-257）だけである。
+	if len(m.Contributes.Commands) != 1 || m.Contributes.Commands[0].ID != cmdInlayHintsToggle {
+		t.Errorf("commands = %v, want only %s", m.Contributes.Commands, cmdInlayHintsToggle)
 	}
 	if !slices.Equal(m.Provides, providedOps) {
 		t.Errorf("provides = %v, want %v", m.Provides, providedOps)

@@ -2786,6 +2786,7 @@ DAP の拡張機能（6.4）が dlv に SIGTERM を受け取らせてデバッ�
 | 保存の前の整形 | 保存 | `textDocument/formatting` | `buffer/willSave` |
 | 保存の通知 | 保存の後 | `textDocument/didSave` | `buffer/didSave` |
 | 進み具合の表示（#340。FR-179） | 言語サーバーからの通知 | `window/workDoneProgress/create`、`$/progress` | `progress/report` |
+| インレイヒント（#387。FR-255〜FR-257） | 文書の同期、言語サーバーの知らせ、コマンド `lsp.inlayHints.toggle` | `textDocument/inlayHint`、`workspace/inlayHint/refresh` | `virtualText/set`、`command/execute` |
 
 #340 で、`initialize` の能力に `window.workDoneProgress` を足し、言語サーバーの進み具合（LSP 3.17 の `WorkDoneProgress`）を本体の `progress/report`（6.7 の「進み具合の表示」）に写すようにした（`cmd/vi-imitation-ext-lsp` の `progress.go`）。
 
@@ -2796,6 +2797,25 @@ DAP の拡張機能（6.4）が dlv に SIGTERM を受け取らせてデバッ�
 | 百分率 | 小数も受け、四捨五入した整数にする（LSP 3.17 では `uinteger`） |
 | 捨てるもの | 稼働中の言語サーバーでないもの（再起動の前のもの）、`value` に `kind` が無いもの（部分の結果の `$/progress`）、begin の無い識別子の report と end |
 | 言語サーバーが終わったとき | 異常終了と、拡張機能が止めたときのどちらも、終わっていない進み具合を、`failed` を付け本文を「言語サーバー gopls が終了した」にした end で終える（`client.watch`。読み込み中の本文のまま終わった印が付かないように。PR #345 のレビューの推奨 2）。拡張機能が動き続けるので、本体が拡張機能の終わりで消すのを待てないためである |
+
+#### インレイヒント
+
+#387 で、言語サーバーのインレイヒント（LSP 3.17 の `InlayHint`）を、本体の仮想テキスト（6.1 の「仮想テキスト」）の `inline` で出すようにした（`cmd/vi-imitation-ext-lsp` の `inlay.go`。FR-255〜FR-257）。
+`initialize` の能力に `textDocument.inlayHint`（動的な登録なし）と `workspace.inlayHint.refreshSupport` を足した。
+`inlayHint/resolve` は使わないので `resolveSupport` は申し出ない。
+2026-11-22 に gopls v0.21.0 で、`inlayHintProvider` が `{}` で静的に返ること（動的な登録を待たなくてよい）と、`settings.gopls.hints` で有効にした種類のヒントが返ることを確かめた。
+表に無い点は、どれも仮である。
+
+| 点 | 決めたこと |
+|---|---|
+| 出すかどうか | LSP の拡張機能の設定の `inlayHints`（真偽。最上位の値が全体の既定で、`servers` の言語サーバーごとの値が上書きする。どちらも省くと出さない）と、言語サーバーの能力の `inlayHintProvider` で決める。Neovim 0.12.5 の `vim.lsp.inlay_hint` の既定（`globalstate.enabled = false`）と同じく既定は出さず、オーナーの値（出す）は同梱の `config.example.jsonc` に書いた。gopls のように、言語サーバーの側でヒントの種類を有効にする設定が要るものは、言語サーバーの `settings`（`workspace/configuration` の答え）に書く |
+| 問い合わせる範囲 | 文書の全体（最初の行の先頭から最後の行の行末まで）。Neovim 0.12.5 の `runtime/lua/vim/lsp/inlay_hint.lua` の `refresh` と同じである。窓の変化の知らせ（6.7 の `window/change`）で見えている行だけを問い合わせる形は採らなかった。本体が編集のたびに仮想テキストの位置をずらすので、見えていない行のヒントも、スクロールしたときに問い合わせを待たずに出せるためである |
+| 契機 | 文書を言語サーバーへ開いたとき（`didOpen`。起動と再起動の後の送り直しを含む）、変えたとき（`didChange`。`buffer/open` の送り直しの全文の `didChange` を含む）、言語サーバーの `workspace/inlayHint/refresh`（`null` で答え、開いているすべての文書を問い合わせ直す）、`lsp.inlayHints.toggle` で出すことにしたとき |
+| 間引き | 文書ごとに、前に送ってから 150 ミリ秒（`inlayInterval`）の間は送らず、間に来た契機は、その時間が経った時点で 1 回だけ送る。Neovim 0.12.5 の `didChange` の間引き（`_changetracking.lua` の `next_debounce`。`debounce_text_changes` の既定は 150）と同じ間隔で、Neovim はその `didChange` のたびに `textDocument/inlayHint` を送る。応答を待っている問い合わせは文書ごとに 1 つまでで、待っている間に来た契機は、応答が届いた後に 1 回だけ問い合わせ直す。遅い言語サーバーに問い合わせを溜めず、前の問い合わせを取り消し続けて一度も出ないこともないようにするためである |
+| 版 | 結果は、問い合わせた版の番号で `virtualText/set` に送る。その後の編集は本体が位置をずらすので、問い合わせた後に利用者が編集していても捨てない（Neovim は版の違う結果を捨てる）。`RequestCancelled` と `ContentModified` の誤りの応答は、ログに書かずに捨てる |
+| 描き方 | 1 つのヒントを 1 つの `inline` の仮想テキストにし、言語サーバーが返した順に並べる。ラベルは文字列か `InlayHintLabelPart` の `value` をつないだもの。`paddingLeft` と `paddingRight` は、色の名前を付けない空白 1 つの文字列にする（LSP 3.17 は空白をヒントの背景の色でなく文書の背景の色で描くよう求めている。Neovim 0.12.5 も同じ）。文字列には色の名前 `inlayHint`（7.1。FR-258）を付ける。`kind`（型と引数）では描き分けない。LSP 3.17 は `kind` を省けるとし、Neovim 0.12.5 も描き分けずにどれも `LspInlayHint` で描くためである。`tooltip`、`textEdits`、ラベルの部品の `location` と `command` は、仮想テキストの上で押せないので使わない。位置が言語サーバーへ送った末尾の改行の後ろを指すときは、最後の行の行末に置く |
+| 消すとき | 出さないことに切り替えたとき、言語サーバーが異常終了したとき（診断と同じ。再起動した言語サーバーに問い合わせ直す）、ファイルの種類かパスを変えて言語サーバーから外したとき（`client.detach`。診断と同じく、本体は送り直したバッファの仮想テキストを自分では消さない）に、空の一覧を送る。`buffer/close` のときは、本体がバッファごと消すので送らない。一覧が本体の受信の上限（6.1。60 万個ほど）を超えて送れないときは、前の一覧が残らないように空の一覧を送り、拡張機能のログに書く |
+| 切り替え | コマンド `lsp.inlayHints.toggle`（宣言ファイルの `contributes.commands`）。Neovim の `vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled())` に当たる。呼んだバッファの言語サーバーで出していれば、どの言語サーバーでも出さないことに、出していなければ出すことに切り替える。言語サーバーの無いバッファで呼んだときは、どれか 1 つで出していれば出さないことにする。切り替えた値は設定より優先し、拡張機能が動いている間、後から開く文書にも当てる（拡張機能が起動し直すと設定の値に戻る）。結果を `message/show` で「インレイヒントを出す」「インレイヒントを出さない」と知らせ、出すことにしたバッファの言語サーバーが稼働していないか対応しなければ、そのことを添える。キーは既定で割り当てない |
 
 段階 2 では、コマンドの既定のキーは決めず、利用者の設定で割り当てる。
 Vim の `gd` と `K` は Vim の標準の操作であり、本体の標準の操作の一覧（FR-03）と重なりうるためである。
@@ -4360,6 +4380,7 @@ nvim-scrollview の既定のリンク先は、`ScrollView` が `Visual`、診断
 拡張機能の種類の名前は、本体の種類の名前と似ないもの（`git`、`todo`、`mark`。`search` との距離は 4 以上）にする。拡張機能が起動した後に、どの種類にも使われていない名前を知らせる形は、拡張機能が種類を足す口（#317 の第 3 弾）と一緒に考える。
 #350 で、コマンドラインの補完の候補の一覧（7.4）の色の名前 `popup.match`（打った語に当たる文字。`popup` か `popup.selected` の上に重ねる。Neovim 0.12.5 の `PmenuMatch`）、`popup.scrollbar`、`popup.thumb`（スクロールバーの溝とつまみ。Vim の `PmenuSbar` と `PmenuThumb`）を足した。項目と選んでいる項目は、`:registers` の一覧と同じ `popup` と `popup.selected` で描く（Vim の `Pmenu` と `PmenuSel` に当たる）。既定の色は 7.4 の「一覧の描き方」にある。同梱の iceberg には、iceberg.vim（コミット 23835d5ed696436f716cbfdb56a93a7850fe3b18）の dark の側の `PmenuSbar` と `PmenuThumb` の背景の色を写した。iceberg.vim に `PmenuMatch` は無いので、`popup.match` は本体の既定（太字）のままにした。
 #359 で、画面の上のポップアップのコマンドライン（7.4 の「画面の上のポップアップ」）の色の名前 `commandLine.popup`（枠の中と、その下の一覧の項目。noice.nvim の `NoiceCmdlinePopup`）、`commandLine.popup.border`（コマンドラインの枠と一覧の枠の、枠線と題。`NoiceCmdlinePopupBorder`）、`commandLine.popup.border.search`（検索の枠の、枠線と題。`NoiceCmdlinePopupBorderSearch`）を足した。既定は noice.nvim（コミット 7bfd942445fb63089b59f97ca487d605e715f155）の `lua/noice/config/highlights.lua` の既定のリンク先（`Normal`、`DiagnosticSignInfo`、`DiagnosticSignWarn`）に当て、`commandLine.popup` は既定の対応に置かず（`progress` と同じく端末の既定の色）、枠線と題は `sign.diagnostic.info` と `sign.diagnostic.warning` と同じ番号にした。同梱の iceberg には、iceberg.vim の dark の側の `DiagnosticSignInfo` と `DiagnosticSignWarn` の文字の色を写した。名前を `popup.` の下に置かないのは、浮かべる窓の色（`popup`）と別に選べるようにするためである。
+#387 で、LSP のインレイヒント（6.3 の「インレイヒント」）の文字列の色の名前 `inlayHint` を足した（Neovim の `LspInlayHint`。FR-258）。既定の対応には置かず、`band` と同じく、書いていなければ `nontext` の今の色を引き継ぐ（`internal/ui` の `styleLinks`。Neovim 0.12.5 の `LspInlayHint` は `NonText` へのリンクで、2026-11-22 に `nvim --clean` の `:hi LspInlayHint` で確かめた）。同梱の iceberg には、iceberg.vim の `NonText`（`#242940`）が `Normal` の背景（`#161821`）とのコントラスト比 1.24 で読めないので、オーナーの nvim の設定の `LspInlayHint` の `#8b80a8`（比は 4.85。WCAG の相対輝度で計算した）を書いた。`kind`（型と引数）ごとの名前は置いていない（6.3 の「インレイヒント」の描き方）。
 
 ```jsonc
 {

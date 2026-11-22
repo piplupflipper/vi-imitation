@@ -22,6 +22,9 @@
 //   - 診断: textDocument/publishDiagnostics を diagnostic/set にする
 //   - 保存の前の整形: buffer/willSave（宣言ファイルの saveHook）。textDocument/formatting の結果をトランザクションにする
 //   - 保存の通知: buffer/didSave を textDocument/didSave にする
+//   - インレイヒント: 設定の inlayHints で出すことにした言語サーバーで、textDocument/inlayHint の結果を virtualText/set の inline の
+//     仮想テキストにする。文書を開いたとき、変えたとき（150 ミリ秒ごとに間引く）、workspace/inlayHint/refresh のときに問い合わせる。
+//     コマンド lsp.inlayHints.toggle で出し入れを切り替える（inlay.go。FR-255〜FR-257）
 //
 // 次の本体の操作を、宣言ファイルの provides で引き受ける（基本設計 5.5。FR-94）。本体は provider/invoke で問い合わせる。
 // キーは本体の既定のキー（<leader>lh、K、gq、<C-]> など。要件定義 4.11）で、この拡張機能はキーを宣言しない。

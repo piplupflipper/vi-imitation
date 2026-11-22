@@ -73,6 +73,8 @@ type client struct {
 	mise string
 	// installTimeout は、mise に言語サーバーを入れさせるときに待つ時間の上限である（FR-143）。
 	installTimeout time.Duration
+	// inlayInterval は、1 つの文書の textDocument/inlayHint を続けて送るときの間隔の下限である（inlay.go。FR-256）。
+	inlayInterval time.Duration
 	// ctx は、client の寿命の ctx で、stop で取り消す。mise に入れさせている途中で拡張機能が終わるときに、mise を終わらせる。
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -106,6 +108,7 @@ func newClient(x *extension, fileType string, cfg *serverConfig, maxRestarts int
 		resetAfter:     defaultResetAfter,
 		mise:           "mise",
 		installTimeout: defaultInstallTimeout,
+		inlayInterval:  inlayInterval,
 		ctx:            ctx,
 		cancel:         cancel,
 		docs:           make(map[ext.BufferID]*document),
@@ -125,8 +128,9 @@ func (c *client) readyProc() *proc {
 
 // open は、バッファ b の写しを作るか（reopen が false）、全文で置き換える（reopen が true）。
 // ループから呼ぶ。言語サーバーが起動していなければ起動を始める。
+// 言語サーバーが稼働中なら、送った文書のインレイヒントの問い合わせを予約する（inlay.go）。
 //
-// req: FR-30
+// req: FR-30, FR-256
 func (c *client) open(b *server.Buffer, reopen bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -138,6 +142,7 @@ func (c *client) open(b *server.Buffer, reopen bool) {
 				TextDocument:   versionedTextDocumentIdentifier{URI: d.uri, Version: lspVersion(b.Version())},
 				ContentChanges: []contentChange{{Text: d.lspText()}},
 			})
+			c.scheduleInlay(p, d)
 		}
 		return
 	}
@@ -145,6 +150,7 @@ func (c *client) open(b *server.Buffer, reopen bool) {
 	c.docs[b.ID()] = d
 	if p := c.readyProc(); p != nil {
 		c.didOpen(p, d)
+		c.scheduleInlay(p, d)
 		return
 	}
 	if c.proc == nil && !c.starting && !c.failed && !c.stopped {
@@ -169,8 +175,9 @@ func (c *client) didOpen(p *proc, d *document) {
 
 // change は、buffer/change の編集を写しに適用し、言語サーバーへ textDocument/didChange を送る。ループから呼ぶ。
 // 言語サーバーが増分の同期に対応していれば編集ごとの範囲を、そうでなければ全文を送る。
+// 送ったら、インレイヒントの問い合わせを予約する（inlay.go）。
 //
-// req: FR-30
+// req: FR-30, FR-256
 func (c *client) change(e *server.BufferChangeEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -200,6 +207,7 @@ func (c *client) change(e *server.BufferChangeEvent) {
 		TextDocument:   versionedTextDocumentIdentifier{URI: d.uri, Version: lspVersion(e.ToVersion)},
 		ContentChanges: changes,
 	})
+	c.scheduleInlay(p, d)
 }
 
 // close は、バッファ id の写しを捨て、言語サーバーへ textDocument/didClose を送る。ループから呼ぶ。
@@ -211,11 +219,13 @@ func (c *client) close(id ext.BufferID) {
 }
 
 // closeLocked は、mu を持った状態で、バッファ id の写しを捨てて textDocument/didClose を送る。写しを持っていたかを返す。
+// インレイヒントの予約と、応答を待っている問い合わせも取り消す。ヒントを消す一覧は送らない（呼ぶ側が決める）。
 func (c *client) closeLocked(id ext.BufferID) bool {
 	d, ok := c.docs[id]
 	if !ok {
 		return false
 	}
+	c.resetInlay(d, false)
 	delete(c.docs, id)
 	if p := c.readyProc(); p != nil && p.sync.OpenClose {
 		c.notify(p, lspDidClose, didCloseParams{TextDocument: textDocumentIdentifier{URI: d.uri}})
@@ -230,8 +240,9 @@ func (c *client) closeLocked(id ext.BufferID) bool {
 // 空の一覧を送らないと、言語サーバーの無いファイルの種類に変えた後も、古い診断の印と下線が残り続ける（#267）。
 // 空の一覧は mu を持ったまま送るので、それより前に接続の読み取りの goroutine が送った診断（publishDiagnostics）の後に届く。
 // 写しを捨てた後に届く診断は、docByPath で文書が見つからないので捨てる。
+// インレイヒントも、同じ理由で空の virtualText/set を送って消す（本体は送り直したバッファの仮想テキストを自分では消さない）。
 //
-// req: FR-30
+// req: FR-30, FR-255
 func (c *client) detach(b *server.Buffer) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -239,6 +250,9 @@ func (c *client) detach(b *server.Buffer) {
 		return
 	}
 	c.x.setDiagnostics(ext.DiagnosticSetParams{Buffer: b.ID(), Version: b.Version(), Diagnostics: []ext.Diagnostic{}})
+	if err := c.x.srv.SetVirtualTexts(ext.VirtualTextSetParams{Buffer: b.ID(), Version: b.Version(), VirtualTexts: []ext.VirtualText{}}); err != nil {
+		c.x.logf("virtualText/set: %v", err)
+	}
 }
 
 // syncs は、バッファ id をパス path の文書として同期しているかを返す。ループから呼ぶ。
@@ -363,6 +377,7 @@ func (c *client) start() {
 	c.notify(p, lspInitialized, struct{}{})
 	for _, d := range c.docs {
 		c.didOpen(p, d)
+		c.scheduleInlay(p, d)
 	}
 }
 
@@ -411,9 +426,10 @@ func (c *client) spawn(root string, l command) (*proc, error) {
 // watch は、言語サーバーのプロセスが終了するまで待ち、終了したら接続を閉じる。
 // 拡張機能が止めたのでなければ異常終了として扱い、回数の上限までは待ってから再起動する。
 // 回数は、短い間に失敗を繰り返す言語サーバーだけを止めるためのもので、resetAfter より長く稼働した後の異常終了では数え直す。
-// 異常終了した言語サーバーの診断は古くなるので、開いている文書の診断を消す。
+// 異常終了した言語サーバーの診断は古くなるので、開いている文書の診断を消す。インレイヒントも消す。
+// 再起動した言語サーバーには、開いている文書を送り直した後に、インレイヒントを問い合わせ直す（start）。
 //
-// req: FR-30
+// req: FR-30, FR-255
 func (c *client) watch(p *proc) {
 	err := p.cmd.Wait()
 	_ = p.conn.Close()
@@ -432,6 +448,7 @@ func (c *client) watch(p *proc) {
 	}
 	for _, d := range c.docs {
 		c.x.setDiagnostics(ext.DiagnosticSetParams{Buffer: d.buffer, Version: d.current().version, Diagnostics: []ext.Diagnostic{}})
+		c.resetInlay(d, true)
 	}
 	if !p.readySince.IsZero() && time.Since(p.readySince) >= c.resetAfter {
 		c.restarts = 0
@@ -537,6 +554,9 @@ func (c *client) serverRequest(req *rpc.Request, reply rpc.Replier) {
 		root := c.root
 		c.mu.Unlock()
 		result = []workspaceFolder{{URI: pathToURI(root), Name: filepath.Base(root)}}
+	case lspInlayHintRefresh:
+		// 開いている文書のインレイヒントを問い合わせ直す。予約するだけなので、応答を遅らせない（inlay.go。FR-256）。
+		c.refreshInlay()
 	default:
 		rerr = &rpc.Error{Code: rpc.CodeMethodNotFound, Message: "method not found: " + req.Method}
 	}

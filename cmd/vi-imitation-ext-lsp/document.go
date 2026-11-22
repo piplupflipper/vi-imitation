@@ -45,6 +45,8 @@ type document struct {
 	finalNewline bool
 	// history は、覚えている版の行で、古い順に並ぶ。最後が現在の版である。長さは 1 以上 maxHistory 以下である。
 	history []snapshot
+	// inlay は、インレイヒントの問い合わせの状態である（inlay.go）。
+	inlay inlayState
 }
 
 // newDocument は、本体のバッファの複製 b から document を作る。

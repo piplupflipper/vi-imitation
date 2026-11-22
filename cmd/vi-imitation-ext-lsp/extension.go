@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
@@ -51,6 +52,8 @@ type extension struct {
 
 	// byBuffer は、バッファの番号から、そのバッファを同期している client への対応である。ループだけが触る。
 	byBuffer map[ext.BufferID]*client
+	// inlayOverride は、lsp.inlayHints.toggle で切り替えたインレイヒントの出し入れである（0 なら設定に従う。inlayOn、inlayOff。inlay.go）。
+	inlayOverride atomic.Int32
 }
 
 // newExtension は、ハンドラーを登録した extension を作る。ctx は、拡張機能の寿命の ctx である。
@@ -91,6 +94,7 @@ func newExtension(ctx context.Context) *extension {
 	x.srv.ProviderAsync(ext.OpFormat, x.format)
 	x.srv.ProviderAsync(ext.OpRename, x.rename)
 	x.srv.BufferWillSaveAsync(x.willSave)
+	x.srv.Command(cmdInlayHintsToggle, x.toggleInlayHints)
 	x.srv.OnShutdown(func(context.Context, *server.ShutdownEvent) { x.stop() })
 	return x
 }

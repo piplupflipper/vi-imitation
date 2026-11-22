@@ -346,6 +346,50 @@ func TestVirtualTextAttr(t *testing.T) {
 	}
 }
 
+// TestInlayHintColor は、インレイヒントの色の名前 inlayHint が、既定の対応にも配色にも無ければ nontext の今の色を引き継ぎ
+// （Neovim 0.12.5 の LspInlayHint は NonText へのリンク）、書けばその色で描くことを、inline の仮想テキストの描画で確かめる。
+// 前後の空白（paddingLeft と paddingRight）の文字列には色の名前を付けないので、本文の背景のまま描く。
+//
+// req: FR-258
+func TestInlayHintColor(t *testing.T) {
+	def := DefaultTheme()
+	if _, ok := def[StyleInlayHint]; ok {
+		t.Fatal("既定の対応に inlayHint がある（nontext を引き継がない）")
+	}
+	if got := def.attr(StyleInlayHint); got != def[StyleNonText] {
+		t.Errorf("既定の inlayHint = %+v, want nontext の %+v", got, def[StyleNonText])
+	}
+	if !IsStyleName(StyleInlayHint) {
+		t.Error("inlayHint が設定の colors に書ける名前でない")
+	}
+	b := buffer.New("x := f(1)\n")
+	v := NewVirtualTexts([]VirtualText{{Position: pos(0, 1), Placement: VirtualInline, Chunks: []VirtualChunk{
+		{Text: " "}, {Text: "int", Style: StyleInlayHint},
+	}}}, 1)
+	for _, tc := range []struct {
+		name  string
+		theme Theme
+		want  Attr
+	}{
+		{"nontext を引き継ぐ", testTheme(), Attr{Fg: Indexed(5)}},
+		{"書いた inlayHint", testTheme().WithColors(map[string]Attr{StyleInlayHint: {Fg: RGB(0x8b, 0x80, 0xa8)}}), Attr{Fg: RGB(0x8b, 0x80, 0xa8)}},
+	} {
+		r := &Renderer{Width: 20, Height: 3, Theme: tc.theme}
+		s := r.Render(&Frame{Text: b, LineLayout: LineLayout{Virtual: v}, Cursor: pos(0, 0)})
+		if got := s.Grid.RowText(0); !strings.HasPrefix(got, "x int := f(1)") {
+			t.Fatalf("%s: row = %q", tc.name, got)
+		}
+		if got := s.Grid.At(0, 1).Attr; got != (Attr{}) {
+			t.Errorf("%s: padding attr = %+v, want none", tc.name, got)
+		}
+		for col := 2; col < 5; col++ {
+			if got := s.Grid.At(0, col).Attr; got != tc.want {
+				t.Errorf("%s: col %d attr = %+v, want %+v", tc.name, col, got, tc.want)
+			}
+		}
+	}
+}
+
 // TestDecorationAttr は、範囲に直に付けた色（Highlight.Attr。FR-230）を、名前の色の上に重ねて描くことと、名前の無い範囲も直の色で描くことを
 // 確かめる。直の色の違う同じ名前の範囲は、別の組として描く。
 //

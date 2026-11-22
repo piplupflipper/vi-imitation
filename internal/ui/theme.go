@@ -127,6 +127,9 @@ const (
 	// StyleBandBottom は、帯の最後の行に、列の全体に重ねる色である（nvim-treesitter-context の TreesitterContextBottom）。
 	// 帯と本文の境目に下線を引くときに使う。既定の対応には無い（TreesitterContextBottom の既定のリンク先は NONE）。
 	StyleBandBottom = "band.bottom"
+	// StyleInlayHint は、LSP の拡張機能が仮想テキスト（virtualText/set）で出すインレイヒントの文字列である（FR-258。Neovim の LspInlayHint）。
+	// 既定の対応には無く、書いていなければ StyleNonText の色を引き継ぐ（styleLinks。Neovim 0.12.5 の LspInlayHint は NonText へのリンク）。
+	StyleInlayHint = "inlayHint"
 	// StyleStatusLineMode などは、ステータス行の部品ごとの色である。名前は "statusline." と部品の ID（StatusPart...）をつないだもの。
 	// 部品は StyleStatusLine の上に重ねて描く（Attr.Over）ので、文字の色だけを変えることもできる。既定の対応には無い。
 	StyleStatusLineMode      = "statusline.mode"
@@ -166,6 +169,7 @@ var styleNames = []string{
 	StyleScrollbar, StyleScrollbarDiagnosticError, StyleScrollbarDiagnosticWarning, StyleScrollbarDiagnosticInfo, StyleScrollbarDiagnosticHint,
 	StyleScrollbarSearch,
 	StyleBand, StyleBandLineNr, StyleBandBottom,
+	StyleInlayHint,
 	StyleSignBreakpoint, StyleSignBreakpointUnverified, StyleSignExecutionPoint,
 	StyleSignDiagnosticError, StyleSignDiagnosticWarning, StyleSignDiagnosticInfo, StyleSignDiagnosticHint,
 	StyleStatusLineMode, StyleStatusLineName, StyleStatusLineModified, StyleStatusLineReadOnly, StyleStatusLineFileType,
@@ -381,9 +385,13 @@ func DefaultTheme() Theme {
 //   - StyleBand は StylePopup（nvim-treesitter-context の TreesitterContext は浮かべた窓の NormalFloat へのリンクで、
 //     本体の浮かべた窓（ホバーなど）の色の名前は StylePopup である）
 //   - StyleBandLineNr は StyleLineNr（TreesitterContextLineNumber は LineNr へのリンク）
+//   - StyleInlayHint は StyleNonText（Neovim 0.12.5 の LspInlayHint は NonText へのリンク。2026-11-22 に nvim --clean の :hi LspInlayHint で確かめた）
+//
+// req: FR-258
 var styleLinks = map[string]string{
 	StyleBand:       StylePopup,
 	StyleBandLineNr: StyleLineNr,
+	StyleInlayHint:  StyleNonText,
 }
 
 // attr は、名前 name の属性を返す。表に無い名前なら、引き継ぐ先（styleLinks）があればその属性を、無ければゼロ値（飾りなし）を返す。

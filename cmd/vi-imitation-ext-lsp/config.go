@@ -64,6 +64,10 @@ type serverConfig struct {
 	// LSP 3.17 ではどちらも省けない項目なので、省いたときは TabSize を 4、InsertSpaces を false にする。
 	TabSize      int  `json:"tabSize,omitempty"`
 	InsertSpaces bool `json:"insertSpaces,omitempty"`
+	// InlayHints は、言語サーバーが textDocument/inlayHint に対応していれば、インレイヒントを仮想テキストで出すかどうかである
+	// （inlay.go。FR-255）。省くと、settings の inlayHints に従う。
+	// 言語サーバーの側でもヒントを有効にする設定が要ることがある（gopls は Settings の gopls.hints）。
+	InlayHints *bool `json:"inlayHints,omitempty"`
 }
 
 // formatOnSave は、保存の前に整形するかどうかを返す。
@@ -75,6 +79,12 @@ func (c *serverConfig) formatOnSave() bool {
 // parseSettings が、省いた AutoInstall を settings の autoInstall で埋める。
 func (c *serverConfig) autoInstall() bool {
 	return c.Mise != "" && c.AutoInstall != nil && *c.AutoInstall
+}
+
+// inlayHints は、設定でインレイヒントを出すことにしているかを返す。parseSettings が、省いた InlayHints を settings の inlayHints で埋める。
+// 実行中の切り替え（lsp.inlayHints.toggle）は、この値より優先する（client.inlayEnabled）。
+func (c *serverConfig) inlayHints() bool {
+	return c.InlayHints != nil && *c.InlayHints
 }
 
 // tabSize は、FormattingOptions の tabSize を返す。
@@ -96,6 +106,9 @@ type settings struct {
 	MaxRestarts *int `json:"maxRestarts,omitempty"`
 	// AutoInstall は、servers の autoInstall を省いた言語サーバーに使う値である。省くと false（入れ方を案内するだけ）である。
 	AutoInstall bool `json:"autoInstall,omitempty"`
+	// InlayHints は、servers の inlayHints を省いた言語サーバーに使う値である。省くと false（出さない。Neovim 0.12.5 の
+	// vim.lsp.inlay_hint の既定と同じ）である（FR-255）。
+	InlayHints bool `json:"inlayHints,omitempty"`
 }
 
 // defaultServers は、既定の言語サーバーの表である。最初は Go（gopls）だけを持つ。
@@ -151,6 +164,9 @@ func parseSettings(raw json.RawMessage) (*config, error) {
 		}
 		if sc.AutoInstall == nil {
 			sc.AutoInstall = &s.AutoInstall
+		}
+		if sc.InlayHints == nil {
+			sc.InlayHints = &s.InlayHints
 		}
 	}
 	if s.MaxRestarts != nil {
