@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -309,6 +310,36 @@ func TestBufferDidSave(t *testing.T) {
 		if g := <-got; g != want {
 			t.Errorf("did save hook got %q, want %q", g, want)
 		}
+	}
+}
+
+// 本体がバッファの同期を送らない（initialize の NoBufferSync。宣言ファイルの noBufferSync）拡張機能では、
+// WaitBuffer は ctx の期限まで待たずに、すぐ ErrNoBufferSync を返す（PR #375 の再レビューの推奨）。InitializeEvent にも同じ値を渡す。
+//
+// req: FR-229
+func TestWaitBufferNoBufferSync(t *testing.T) {
+	s := server.New()
+	var got atomic.Bool
+	s.OnInitialize(func(_ context.Context, e *server.InitializeEvent) error {
+		got.Store(e.NoBufferSync)
+		return nil
+	})
+	h := start(t, s)
+	var res ext.InitializeResult
+	if err := h.call(t, ext.MethodInitialize, ext.InitializeParams{APIVersion: ext.APIVersion, NoBufferSync: true}, &res); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Load() {
+		t.Error("InitializeEvent.NoBufferSync = false, want true")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	begin := time.Now()
+	if _, err := s.WaitBuffer(ctx, 1, 1); !errors.Is(err, server.ErrNoBufferSync) {
+		t.Errorf("WaitBuffer = %v, want ErrNoBufferSync", err)
+	}
+	if d := time.Since(begin); d > time.Second {
+		t.Errorf("WaitBuffer が %s 待った", d)
 	}
 }
 

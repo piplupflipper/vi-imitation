@@ -15,6 +15,10 @@ import (
 // 本体は、不正な UTF-8 を含むバッファを拡張機能へ送らず、editor/open で開いたときは buffer/open の代わりに buffer/close を送る（ext.BufferCloseParams）。
 var ErrBufferClosed = errors.New("server: buffer closed while waiting")
 
+// ErrNoBufferSync は、本体がこの拡張機能へバッファの同期を送らない（宣言ファイルの noBufferSync。ext.InitializeParams の NoBufferSync）ので、
+// WaitBuffer がバッファの複製を待たなかったことを表す。待っても buffer/open は届かず、ctx の期限まで戻らなくなるためである（#367）。
+var ErrNoBufferSync = errors.New("server: the host does not sync buffers to this extension (noBufferSync)")
+
 // call は、本体へリクエスト method を送り、応答を待つ。ループの上から呼ぶと送らずに ErrEditInHandler を返す。
 func call[R any](ctx context.Context, s *Server, method string, params any) (R, error) {
 	var res R
@@ -172,10 +176,16 @@ func (s *Server) bufferDidSave(ctx context.Context, p *ext.BufferDidSaveParams) 
 //
 // ctx が終わったら ctx.Err() を、待つ間か待ち始める前にそのバッファの buffer/close が届いたら（その後に buffer/open が届いていなければ）ErrBufferClosed を、
 // 接続が終わったか Serve の前なら ErrNotRunning を返す。
+// 本体がこの拡張機能へバッファの同期を送らない（宣言ファイルの noBufferSync）なら、待たずに ErrNoBufferSync を返す。
 // Edit と同じく、ループの上から呼ぶと、ループが自分を待って止まるので、待たずに ErrEditInHandler を返す。
+//
+// req: FR-229
 func (s *Server) WaitBuffer(ctx context.Context, id ext.BufferID, version ext.Version) (*Buffer, error) {
 	if onLoop(ctx, s) {
 		return nil, ErrEditInHandler
+	}
+	if s.noBufferSync.Load() {
+		return nil, ErrNoBufferSync
 	}
 	conn, q := s.conn.Load(), s.loopq.Load()
 	if conn == nil || q == nil {

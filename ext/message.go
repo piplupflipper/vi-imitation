@@ -100,6 +100,9 @@ type InitializeParams struct {
 	// Settings は、利用者の設定ファイルのうち、この拡張機能に向けた部分である。
 	// 形は拡張機能ごとに決まるので、本体は解釈せずに JSON のまま渡す。設定が無ければ省く。
 	Settings json.RawMessage `json:"settings,omitempty"`
+	// NoBufferSync は、宣言ファイルの noBufferSync（Manifest.NoBufferSync）のとおり、本体がこの拡張機能へバッファの同期を送らないことを表す
+	// （API 0.16.0 で足した。#367）。ext/server は、true なら WaitBuffer をすぐ誤りで返す（待っても buffer/open が届かないため）。
+	NoBufferSync bool `json:"noBufferSync,omitempty"`
 }
 
 // InitializeResult は、initialize の result である。

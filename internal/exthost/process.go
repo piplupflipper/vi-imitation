@@ -268,7 +268,9 @@ func (h *Host) terminate(id string, r *run, p *process) {
 
 // initialize は、initialize を送って応答を待ち、届いたら稼働中にして、開いているバッファの全文を送る。
 func (h *Host) initialize(e *extension, r *run, p *process, stop <-chan struct{}) error {
-	f, err := r.conn.Go(ext.MethodInitialize, ext.InitializeParams{APIVersion: ext.APIVersion, Settings: e.spec.Settings})
+	f, err := r.conn.Go(ext.MethodInitialize, ext.InitializeParams{
+		APIVersion: ext.APIVersion, Settings: e.spec.Settings, NoBufferSync: !e.syncsBuffers(),
+	})
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConnClosed, err)
 	}

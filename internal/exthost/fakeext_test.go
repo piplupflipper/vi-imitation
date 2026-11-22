@@ -190,6 +190,11 @@ func (f *fakeExt) request(ctx context.Context, req *rpc.Request, reply rpc.Repli
 	f.record("request:%s", req.Method)
 	switch req.Method {
 	case ext.MethodInitialize:
+		var p ext.InitializeParams
+		_ = json.Unmarshal(req.Params, &p)
+		if p.NoBufferSync {
+			f.record("initialize:noBufferSync")
+		}
 		if f.mode == modeNoInit {
 			return
 		}

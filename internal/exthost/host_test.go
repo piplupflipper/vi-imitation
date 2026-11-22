@@ -376,6 +376,9 @@ func TestNoBufferSync(t *testing.T) {
 	if !slices.Contains(nb.Log, "command:nb.cmd:withheld=true") {
 		t.Errorf("command/execute の Withheld が立っていない: %v", nb.Log)
 	}
+	if !slices.Contains(nb.Log, "initialize:noBufferSync") || slices.Contains(x.Log, "initialize:noBufferSync") {
+		t.Errorf("initialize の NoBufferSync: nb %v, x %v", nb.Log, x.Log)
+	}
 	if got := bufferMessages(x.Log); len(got) != 5 {
 		t.Errorf("他の拡張機能が受け取ったバッファの知らせ = %v, want 5 件", got)
 	}

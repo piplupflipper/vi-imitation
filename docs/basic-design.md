@@ -2044,6 +2044,7 @@ PR #375 のレビューで、メモリの使用量の拡張機能（6.11）が�
 | 稼働中になったとき、バッファを開いた・変えた・閉じた・保存したとき | `buffer/open`、`buffer/change`、`buffer/close`、`buffer/didSave` を送らない（`broadcastLocked`）。`buffer/resync` にも応じない |
 | `command/execute` と `provider/invoke` | params の `Withheld` を立てて送る（不正な UTF-8 のバッファと同じ。`ext/server` はハンドラーへバッファの代わりに nil を渡す） |
 | 拡張機能が `editor/open` でバッファを開いたとき | 不正な UTF-8 のバッファと同じく、応答の前に `buffer/close` を送り、`WaitBuffer` を誤りで終わらせる |
+| `initialize` | params の `noBufferSync` を true にする。`ext/server` は、それを受けた後の `WaitBuffer` を、待たずに `ErrNoBufferSync` で返す（PR #375 の再レビューの推奨。既に開いているバッファで待つと、`buffer/open` が届かずに ctx の期限まで戻らなかったため）。`InitializeEvent` の `NoBufferSync` にも渡す |
 | バッファの複製が要る操作（`operators`、`motions`、`textObjects`）と `saveHook` | 宣言ファイルの検査で、印と併せて書くと誤りにする |
 
 古い本体（0.15.0 まで）は、`noBufferSync` を未知の項目として無視し（`internal/config` の `LoadManifest` が警告にする）、バッファを送る。
