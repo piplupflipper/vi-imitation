@@ -13,6 +13,8 @@ import (
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
 	"github.com/piplupflipper/vi-imitation/internal/command"
 	"github.com/piplupflipper/vi-imitation/internal/exthost"
+	"github.com/piplupflipper/vi-imitation/internal/option"
+	"github.com/piplupflipper/vi-imitation/internal/ui"
 )
 
 // windowSends は、テストが差し替えた window/change の送り先が受け取ったものである。
@@ -272,6 +274,44 @@ func TestBandClick(t *testing.T) {
 	})
 	if row := h.screenRow(1); strings.HasPrefix(row, "BAND") {
 		t.Fatalf("止まった後の帯 = %q", row)
+	}
+}
+
+// 配色（iceberg）と設定の colors で popup と linenr を変えると、帯の本文の列と行番号の列の色も付いてくる
+// （帯の色は、書いていなければ popup と linenr から引き継ぐ。PR #376 の再レビューの推奨）。
+//
+// req: FR-237
+func TestBandFollowsColors(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": barLines(100)})
+	term := newFakeTerm()
+	term.w, term.h = 40, 12
+	scheme := map[string]ui.Attr{ui.StylePopup: {Bg: ui.RGB(0x3d, 0x42, 0x5b)}, ui.StyleLineNr: {Fg: ui.RGB(0x44, 0x4b, 0x71), Bg: ui.RGB(0x1e, 0x21, 0x32)}}
+	colors := map[string]ui.Attr{ui.StylePopup: {}, ui.StyleLineNr: {Fg: ui.Indexed(3)}}
+	h := startTerm(t, term, Config{
+		WorkDir: dir, ColorScheme: scheme, Colors: colors,
+		Options: map[string]option.Value{option.LineNumberShow: option.BoolValue(true)},
+	}, "a.txt")
+	h.keys("50Gzt5j")
+	h.settle()
+	h.e.do(func() {
+		h.e.setBand("w", ext.BandSetParams{
+			Window: windowIDOf(h.e.view), Buffer: h.e.cur.id,
+			Version: ext.Version(h.e.cur.buf.Version()), Lines: []ext.BandLine{{Text: "BAND", Line: ext.SourceLine(9)}},
+		})
+		h.e.render()
+	})
+	var gutter, text, body ui.Attr
+	h.e.do(func() {
+		term.mu.Lock()
+		defer term.mu.Unlock()
+		g := term.last.Grid
+		gutter, text, body = g.At(1, 1).Attr, g.At(1, 6).Attr, g.At(2, 1).Attr
+	})
+	if gutter != (ui.Attr{Fg: ui.Indexed(3)}) || gutter != body {
+		t.Errorf("帯の行番号の列 = %+v、本文の行番号の列 = %+v, want colors の linenr", gutter, body)
+	}
+	if text != (ui.Attr{}) {
+		t.Errorf("帯の本文の列 = %+v, want colors の popup（背景なし）", text)
 	}
 }
 

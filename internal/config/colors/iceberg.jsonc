@@ -9,6 +9,9 @@
 // colors/iceberg.vim に対応するハイライトグループが無い名前（message.info、popup.border、popup.match、statusline. で始まる部品の色、
 // sign.executionPoint、sign.breakpoint、sign.breakpointUnverified、progress、commandLine.popup、
 // band.bottom（nvim-treesitter-context の TreesitterContextBottom の既定のリンク先は NONE）は書いていない。書いていない名前は本体の既定の色になる。
+// 窓の上端の帯の band と band.linenr も書いていない。本体は、書いていなければ popup と linenr の今の色を引き継ぐ
+// （nvim-treesitter-context の TreesitterContext と TreesitterContextLineNumber は NormalFloat と LineNr へのリンク）ので、
+// 配色に値を書くと、設定の colors で popup や linenr を変えても帯が付いてこなくなる（PR #376 の再レビューの推奨）。
 {
   // 構文の色。本体の名前は tree-sitter の捕捉の名前に当たるので、Neovim の tree-sitter のグループ（TS...）から写した
   "comment": { "fg": "#6b7089" }, // TSComment → Comment
@@ -67,13 +70,6 @@
   // 枠の中（commandLine.popup）は、noice.nvim の既定のリンク先が Normal なので書いていない
   "commandLine.popup.border": { "fg": "#89b8c2" }, // DiagnosticSignInfo
   "commandLine.popup.border.search": { "fg": "#e2a478" }, // DiagnosticSignWarn
-  // 窓の上端の帯。iceberg.vim に専用のグループは無いので、nvim-treesitter-context の既定のリンク先の色を写した。
-  // 本文の列の TreesitterContext は浮かべた窓の NormalFloat へのリンクである。iceberg.vim は NormalFloat を定めないので、
-  // 本体の浮かべた窓（ホバーなど）の色の popup と同じ Pmenu の色にした。行番号の列の TreesitterContextLineNumber は LineNr へのリンクである。
-  // 書かなくても本体は popup と linenr の色を引き継ぐが、配色の中で帯の色が分かるように書いた。
-  // オーナーの nvim は NormalFloat の背景を消しているので、同じ見え方にするなら、個人の設定の colors で band の背景を消す
-  "band": { "fg": "#c6c8d1", "bg": "#3d425b" }, // TreesitterContext → NormalFloat（本体の popup。Pmenu）
-  "band.linenr": { "fg": "#444b71", "bg": "#1e2132" }, // TreesitterContextLineNumber → LineNr
 
   // ステータス行。どちらも反転（gui=reverse）なので、文字は guibg の色、背景は guifg の色で出る
   "statusline": { "fg": "#818596", "bg": "#17171b", "reverse": true }, // StatusLine
