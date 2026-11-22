@@ -70,8 +70,9 @@ func TestContextHeadingsGo(t *testing.T) {
 		{"見出しが見えていれば出さない", 0, ext.Position{Line: 9, Byte: 3}, def, [][2]int{}},
 		{"カーソルが最初の行なら出さない", 9, ext.Position{Line: 9, Byte: 3}, def, [][2]int{}},
 		{"カーソルの上の 1 行に収めるため外側から削る", 8, ext.Position{Line: 9, Byte: 3}, def, [][2]int{{7, 8}}},
-		{"else の中は if と else の節の行", 9, ext.Position{Line: 12, Byte: 3}, def, [][2]int{{6, 7}, {7, 8}, {10, 11}}},
-		{"1 行に切り詰めれば関数の見出しも入る", 8, ext.Position{Line: 12, Byte: 3}, one, [][2]int{{2, 3}, {6, 7}, {7, 8}, {10, 11}}},
+		// } else { は if の見出しにまとめ、別の見出しにしない（nvim-treesitter-context の Go のクエリと同じ）。関数の見出しの 4 行は、後ろから削る。
+		{"else の中は if の行", 9, ext.Position{Line: 12, Byte: 3}, def, [][2]int{{2, 3}, {6, 7}, {7, 8}}},
+		{"1 行に切り詰めた関数の見出し", 8, ext.Position{Line: 12, Byte: 3}, one, [][2]int{{2, 3}, {6, 7}, {7, 8}}},
 		{"複数行の見出しは閾値まで", 10, ext.Position{Line: 15, Byte: 1}, def, [][2]int{{2, 6}}},
 		{"複数行の見出しを 1 行に", 10, ext.Position{Line: 15, Byte: 1}, one, [][2]int{{2, 3}}},
 		// 関数、for、if を採った時点で、else の節の行（10）は帯の 2 行の下に見えるので採らない。
@@ -121,10 +122,37 @@ func TestContextHeadingsShapes(t *testing.T) {
 			want: [][2]int{{2, 3}, {3, 4}, {5, 6}},
 		},
 		{
-			name: "最後の else の中", fileType: "go",
+			// } else { は出さず、それを含む } else if a < 0 { の行を出す（nvim-treesitter-context と同じ）。
+			name: "最後の else の中は前の else if の行", fileType: "go",
 			src: "package p\n\nfunc f(a int) {\n\tif a > 0 {\n\t\ta++\n\t} else if a < 0 {\n\t\ta--\n\t\ta--\n\t} else {\n\t\ta = 0\n\t\ta = 1\n\t}\n}",
 			top: 7, cursor: ext.Position{Line: 10, Byte: 2},
-			want: [][2]int{{2, 3}, {3, 4}, {8, 9}},
+			want: [][2]int{{2, 3}, {3, 4}, {5, 6}},
+		},
+		{
+			name: "case と最初の文の間のコメントは見出しに入れない", fileType: "go",
+			src: "package p\n\nfunc f(a int) {\n\tswitch a {\n\tcase 1:\n\t\t// comment\n\t\ta++\n\t\ta++\n\t}\n}",
+			top: 5, cursor: ext.Position{Line: 7, Byte: 2},
+			want: [][2]int{{3, 4}, {4, 5}},
+		},
+		{
+			name: "テストの表の要素の { は出さない", fileType: "go",
+			src: "package p\n\nfunc f() {\n\ttests := []struct {\n\t\tname string\n\t}{\n\t\t{\n\t\t\tname: \"one\",\n\t\t},\n\t}\n\t_ = tests\n}",
+			// 複合リテラルの見出しは、本体の { の前の 3 行（tests := []struct {、name string、}{）で、上限の 2 行で後ろを削る。
+			// 要素の { の行（6）は出さない。
+			top: 5, cursor: ext.Position{Line: 7, Byte: 3},
+			want: [][2]int{{3, 5}},
+		},
+		{
+			name: "複数行の呼び出しの引数の ( は出さない", fileType: "go",
+			src: "package p\n\nfunc f() {\n\tif true {\n\t\tg(\n\t\t\t1,\n\t\t\t2,\n\t\t)\n\t}\n}",
+			top: 4, cursor: ext.Position{Line: 6, Byte: 3},
+			want: [][2]int{{2, 3}, {3, 4}},
+		},
+		{
+			name: "型を持つ複合リテラルは出す", fileType: "go",
+			src: "package p\n\nfunc f() {\n\tm := map[string]int{\n\t\t\"a\": 1,\n\t\t\"b\": 2,\n\t}\n\t_ = m\n}",
+			top: 3, cursor: ext.Position{Line: 5, Byte: 2},
+			want: [][2]int{{2, 3}, {3, 4}},
 		},
 		{
 			name: "関数リテラルは代入の行", fileType: "go",
@@ -145,10 +173,11 @@ func TestContextHeadingsShapes(t *testing.T) {
 			want: [][2]int{{4, 5}},
 		},
 		{
+			// 配列の要素の { は括弧だけの行なので出さず、全体の [ を出す。
 			name: "JSON の配列の中のオブジェクト", fileType: "json",
 			src: "[\n  {\n    \"a\": 1,\n    \"b\": 2\n  }\n]",
 			top: 2, cursor: ext.Position{Line: 3, Byte: 4},
-			want: [][2]int{{1, 2}},
+			want: [][2]int{{0, 1}},
 		},
 		{
 			name: "JSON の入れ子の対", fileType: "json",
@@ -380,7 +409,7 @@ func TestServeSticky(t *testing.T) {
 	win := ext.WindowChangeParams{Window: "client/1", Buffer: 1, Version: 1, Top: 9, Bottom: 13, Rows: 4, Columns: 80, Cursor: ext.Position{Line: 12, Byte: 3}, Seq: 1}
 	h.notify(t, ext.MethodWindowChange, win)
 	p := h.band(t)
-	want := []string{"for i := 0; i < a; i++ {@6", "if i > 0 {@7", "} else {@10"}
+	want := []string{"func outer(@2", "for i := 0; i < a; i++ {@6", "if i > 0 {@7"}
 	if p.Window != "client/1" || p.Buffer != 1 || p.Version != 1 || p.Seq != 1 || !slices.Equal(bandTexts(p), want) {
 		t.Fatalf("band = %+v %v, want %v", p, bandTexts(p), want)
 	}
@@ -416,7 +445,7 @@ func TestServeSticky(t *testing.T) {
 	for last.Version != 2 {
 		last = h.band(t)
 	}
-	if want := []string{"for i := 0; i < a; i++ {@8", "if i > 0 {@9", "} else {@12"}; !slices.Equal(bandTexts(last), want) {
+	if want := []string{"func outer(@4", "for i := 0; i < a; i++ {@8", "if i > 0 {@9"}; !slices.Equal(bandTexts(last), want) {
 		t.Errorf("band after the edit = %v, want %v", bandTexts(last), want)
 	}
 }
@@ -483,6 +512,24 @@ func TestContextHeadingsLanguages(t *testing.T) {
 			src: "class A:\n    def f(self, a):\n        if a > 0:\n            x = 1\n            y = 2\n        elif a < 0:\n            x = 2\n            y = 3\n        else:\n            x = 3\n            y = 4\n",
 			top: 6, cursor: ext.Position{Line: 10, Byte: 12},
 			want: [][2]int{{0, 1}, {1, 2}, {2, 3}, {8, 9}},
+		},
+		{
+			name: "python の except の中は except の行", lang: "python",
+			src: "class Processor:\n    async def run(self, path):\n        try:\n            risky()\n            risky()\n        except OSError as e:\n            print(e)\n            print(e)\n            print(e)\n        finally:\n            self.count += 1\n            self.count += 1\n",
+			top: 3, cursor: ext.Position{Line: 7, Byte: 12},
+			want: [][2]int{{0, 1}, {1, 2}, {2, 3}, {5, 6}},
+		},
+		{
+			name: "python の finally の中は finally の行", lang: "python",
+			src: "class Processor:\n    async def run(self, path):\n        try:\n            risky()\n            risky()\n        except OSError as e:\n            print(e)\n            print(e)\n            print(e)\n        finally:\n            self.count += 1\n            self.count += 1\n",
+			top: 7, cursor: ext.Position{Line: 11, Byte: 12},
+			want: [][2]int{{0, 1}, {1, 2}, {2, 3}, {9, 10}},
+		},
+		{
+			name: "typescript の finally の中は finally の行", lang: "typescript",
+			src: "try {\n  a();\n} catch (e) {\n  b();\n  b();\n} finally {\n  c();\n  c();\n}\n",
+			top: 6, cursor: ext.Position{Line: 7, Byte: 2},
+			want: [][2]int{{5, 6}},
 		},
 		{
 			name: "typescript のクラスのメソッド", lang: "typescript",

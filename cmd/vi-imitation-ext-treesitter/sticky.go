@@ -21,13 +21,12 @@ import (
 // lua/treesitter-context/context.lua の get（mode の既定の cursor）に合わせ、言語ごとのクエリ（queries/<言語>/context.scm）の代わりに、
 // テキストオブジェクトの an と同じ構文のまとまりを使う。
 //
-//   - 見出しの候補は、カーソルの位置を含むまとまり（blocksAt）の見出しである。まとまりの見出し（headings）は、まとまりの最初の行から、
-//     カーソルを含む容れ物（関数の複数行の引数の並びと本体のように、1 つのまとまりは複数の容れ物を持つ）の中身（bodySpan）の始まりの前の行までで、
-//     中身が行の途中から始まるなら（func f() { x := 1）その行を含む。カーソルの行とその後の行は含めない。
-//     カーソルが節（else、elif の本体。clauseRow）の中にあれば、まとまりの見出しはその前の節でない容れ物（if の本体）までにし、
-//     節の始まりの行（} else {、elif x:）からその節の中身の前までを、もう 1 つの見出しにする
-//   - 括弧の容れ物の中の節（switch の case と default。caseHeadings）も見出しにする。an のまとまりではないが、
-//     nvim-treesitter-context の Go のクエリが見出しにするのに合わせた
+//   - 見出しの候補は、カーソルの位置を含むまとまり（blocksAt）の見出しである。要素の並びのまとまり（isElementBlock。複数行の呼び出しの引数、
+//     テストの表の要素の {）は見出しにしない。まとまりの見出し（headings）は、まとまりの最初の行から、
+//     文の並びの容れ物（要素の並びでない最初の容れ物。関数の複数行の引数の並びは飛ばす）の中身（bodySpan）の始まりの前の行までで、
+//     中身が行の途中から始まるなら（func f() { x := 1）その行を含む。カーソルの行とその後の行は含めない
+//   - カーソルを含む、まとまりの節（clausesOf。予約語で始まる } else if x {、elif x:、except E:、finally:、case 1:）は、節ごとに見出しにする。
+//     Go の } else { は予約語で始まらない本体なので節にせず、if の見出しにまとめる（nvim-treesitter-context の Go のクエリと同じ）
 //   - 見出しの行の末尾の空白だけの行は除き、1 つの見出しは multilineThreshold の行までにする（context.lua の get_text_for_range）
 //   - 帯の行数の上限は、設定の maxLines（0 は上限なし）と、カーソルの行から窓の最初の行を引いた数の小さい方である（calc_max_lines）。
 //     本体の帯の行数の上限（ext.MaxBandLines）も超えない
@@ -271,11 +270,15 @@ func (d *document) contextHeadings(top int, cursor ext.Position, c contextSettin
 	off := d.lineStarts[cursor.Line] + min(max(cursor.Byte, 0), d.lineLen(cursor.Line))
 	q := span{off, min(off+1, len(d.src))}
 	blocks := blocksAt(d.tree, d.src, q)
+	inner := map[uintptr]bool{}
+	for i := range blocks {
+		inner[blocks[i].node.Id()] = true
+	}
+	leaf := d.tree.RootNode().DescendantForByteRange(uint(q.start), uint(q.end))
 	var cands []heading
 	for i := len(blocks) - 1; i >= 0; i-- {
-		cands = append(cands, d.headings(blocks[i], off, cursor.Line, c.multilineThreshold)...)
+		cands = append(cands, d.headings(blocks[i], leaf, cursor.Line, c.multilineThreshold, inner)...)
 	}
-	cands = append(cands, d.caseHeadings(q, cursor.Line, c.multilineThreshold)...)
 	// 見出しはどれもカーソルを含むノードのものなので、始まりの行の順が外側から内側の順である。同じ行のものは、まとまりの外側から内側の順を保つ。
 	slices.SortStableFunc(cands, func(a, b heading) int { return a.start - b.start })
 	var out []heading
@@ -305,49 +308,29 @@ func (d *document) contextHeadings(top int, cursor ext.Position, c contextSettin
 	return out
 }
 
-// headings は、まとまり b の見出しを返す（この節の初めのコメント）。off はカーソルのバイト位置、cursorRow はその行、
-// threshold は 1 つの見出しの行数の上限である。見出しは、カーソルの行より前の行だけにする。
+// headings は、まとまり b の見出しを、外側から順に返す（この節の初めのコメント）。leaf はカーソルを含む最も小さいノード、
+// cursorRow はカーソルの行、threshold は 1 つの見出しの行数の上限である。
+// inner は、カーソルを含むまとまりの全体のノードの集合である。見出しは、カーソルの行より前の行だけにする。
 //
-// まとまりの見出しと、カーソルが節の容れ物（else、elif の本体。clauseRow）の中にあれば、その節の見出しの、多くて 2 つである。
-// まとまりの見出しの終わりは、次の容れ物の中身の始まりで決める。
-//
-//   - カーソルが節でない容れ物の中にあれば、その容れ物（関数の複数行の引数の並びの後の本体なら、本体）
-//   - カーソルが節の容れ物の中にあれば、それより前の、節でない最後の容れ物（if の本体）
-//   - カーソルがどの容れ物の中にも無ければ（見出しの上）、カーソルより後の最初の容れ物
-func (d *document) headings(b block, off, cursorRow, threshold int) []heading {
-	k := -1
+// 要素の並びのまとまり（isElementBlock）は見出しにしない。
+// まとまりの見出しは、最初の行から、文の並びの容れ物（要素の並びでない最初の容れ物）の中身の前の行までである。
+// 関数の複数行の引数の並びは要素の並びなので、見出しは本体の前の ) error { の行までになる。
+// カーソルがまとまりの節（clausesOf。} else if x {、elif x:、except E:、case 1: など）の中にあれば、節ごとにもう 1 つの見出しにする。
+// Go の } else { は節にしない（予約語で始まらない本体の block なので、if の見出しにまとめる）。
+func (d *document) headings(b block, leaf *sitter.Node, cursorRow, threshold int, inner map[uintptr]bool) []heading {
+	if d.isElementBlock(b) {
+		return nil
+	}
+	head := 0
 	for i := range b.bodies {
-		if nodeSpan(&b.bodies[i]).contains(off) {
-			k = i
+		if !isElementList(&b.bodies[i]) {
+			head = i
+			break
 		}
-	}
-	clause := -1
-	if k >= 0 {
-		clause = d.clauseRow(b, k)
-	}
-	head := -1
-	switch {
-	case k >= 0 && clause < 0:
-		head = k
-	case k >= 0:
-		for i := range k {
-			if d.clauseRow(b, i) < 0 {
-				head = i
-			}
-		}
-	default:
-		for i := range b.bodies {
-			if int(b.bodies[i].StartByte()) > off {
-				head = i
-				break
-			}
-		}
-	}
-	if head < 0 {
-		head = len(b.bodies) - 1
 	}
 	start := int(b.node.StartPosition().Row)
 	var out []heading
+	last := start
 	add := func(h heading) {
 		h.end = min(h.end, cursorRow)
 		if h.start < h.end {
@@ -355,52 +338,131 @@ func (d *document) headings(b block, off, cursorRow, threshold int) []heading {
 		}
 	}
 	add(heading{start, d.contentRow(&b.bodies[head], start)})
-	if clause > start {
-		add(heading{clause, d.contentRow(&b.bodies[k], clause)})
+	for _, c := range d.clausesOf(b, leaf, inner) {
+		row := int(c.StartPosition().Row)
+		if row <= last {
+			continue
+		}
+		last = row
+		add(heading{row, d.clauseEnd(b, c, row)})
 	}
 	return out
 }
 
-// caseHeadings は、範囲 q を含む、括弧の容れ物の中の節（Go と C と JavaScript の switch の case と default、Go の select の case）の見出しを、
-// 外側から順に返す。cursorRow と threshold は headings と同じである。
+// clausesOf は、まとまり b の節のうち、カーソルを含むもの（leaf の祖先）を外側から順に返す。
 //
-// 節は、括弧の容れ物の直接の子で、行の最初から予約語で始まり、最初の行の後に行の最初から始まる名前を持つ子があるノードである
-// （block.go の isClause の、親が括弧の容れ物のもの）。見出しは、節の最初の行から、その子の行の前までである。
-// テキストオブジェクトの an と in は、これを構文のまとまりにしない（switch の中身を選ぶ。PR #377 のレビューの必須 1）が、
-// 帯では、nvim-treesitter-context の Go のクエリ（queries/go/context.scm）が expression_case と default_case を見出しにするのに合わせて出す。
-func (d *document) caseHeadings(q span, cursorRow, threshold int) []heading {
-	var out []heading
-	leaf := d.tree.RootNode().DescendantForByteRange(uint(q.start), uint(q.end))
-	for n := leaf; n != nil; n = n.Parent() {
-		p := n.Parent()
-		if p == nil || !n.IsNamed() || n.IsExtra() || !isBracketed(p) || !startsLine(n, d.src) {
+// 節は、b の全体のノードの中の、名前を持つノードで、予約語（括弧でない、名前を持たない子）で始まり、b の最初の行より後の行で始まり、
+// b の容れ物を含むか、最初の行の後に行の最初から始まる子を持つものである。
+// Go の } else if x { の if 文、switch の case と default、select の case、Python の elif、else、except、finally の節、
+// TypeScript の else、catch、finally の節、bash の elif と else の節が当たる。
+// leaf から b の全体のノードへたどる途中で、内側のまとまりの全体のノード（inner）を通ったら、そこまでに集めた節は内側のまとまりのものなので捨てる。
+func (d *document) clausesOf(b block, leaf *sitter.Node, inner map[uintptr]bool) []*sitter.Node {
+	var out []*sitter.Node
+	bodyIn := func(n *sitter.Node) bool {
+		for i := range b.bodies {
+			if n.StartByte() <= b.bodies[i].StartByte() && b.bodies[i].EndByte() <= n.EndByte() {
+				return true
+			}
+		}
+		return false
+	}
+	row := b.node.StartPosition().Row
+	for n := leaf; n != nil && n.Id() != b.node.Id(); n = n.Parent() {
+		if inner[n.Id()] {
+			out = out[:0]
 			continue
 		}
-		if first := firstNonExtraChild(n); first == nil || first.IsNamed() {
+		if !n.IsNamed() || n.IsExtra() || n.StartPosition().Row <= row {
 			continue
 		}
-		body, _, ok := ownLineChildren(n, d.src, false)
-		start := int(n.StartPosition().Row)
-		if !ok || start >= cursorRow {
+		first := firstNonExtraChild(n)
+		if first == nil || first.IsNamed() || openers[first.Kind()] != "" || first.Kind() == "(" {
 			continue
 		}
-		out = append(out, d.trimHeading(heading{start, min(int(body), cursorRow)}, threshold))
+		if bodyIn(n) || d.firstOwnLineRow(n) >= 0 {
+			out = append(out, n)
+		}
 	}
 	slices.Reverse(out)
 	return out
 }
 
-// clauseRow は、まとまり b の i 番目の容れ物が節（else、elif の本体）の中にあれば、その節の始まりの行を返す。節の中に無ければ -1 である。
-// 容れ物からまとまりの全体のノードの手前までの祖先（容れ物を含む）のうち、最も近い、親の alternative のフィールドの子か、
-// 予約語で閉じる容れ物の中の節（isClause。bash の elif、else）を節とする。
-// Go の } else { の本体の block、} else if x { の if 文、Python の elif と else の節が当たる。
-func (d *document) clauseRow(b block, i int) int {
-	for n := &b.bodies[i]; n != nil && n.Id() != b.node.Id(); n = n.Parent() {
-		if inField(n, []string{"alternative"}) || isClause(n, d.src) {
-			return int(n.StartPosition().Row)
+// clauseEnd は、まとまり b の節 c の見出しの次の行を返す。row は節の最初の行である。
+// 節が b の容れ物を含めば、その容れ物（文の並びのものを先に採る）の中身の行（contentRow）、含まなければ、
+// 節の最初の行の後で行の最初から始まる最初の子（コメントを含む）の行である。case の後のコメントの行は見出しに入れない。
+func (d *document) clauseEnd(b block, c *sitter.Node, row int) int {
+	found := -1
+	for i := range b.bodies {
+		if c.StartByte() <= b.bodies[i].StartByte() && b.bodies[i].EndByte() <= c.EndByte() {
+			if found < 0 || isElementList(&b.bodies[found]) && !isElementList(&b.bodies[i]) {
+				found = i
+			}
+		}
+	}
+	if found >= 0 {
+		return d.contentRow(&b.bodies[found], row)
+	}
+	if r := d.firstOwnLineRow(c); r > row {
+		return r
+	}
+	return row + 1
+}
+
+// firstOwnLineRow は、ノード n の最初の行の後で、行の最初から始まる最初の子（名前を持つ子と、コメントのような extra）の行を返す。無ければ -1 である。
+func (d *document) firstOwnLineRow(n *sitter.Node) int {
+	row := n.StartPosition().Row
+	for i := range n.ChildCount() {
+		c := n.Child(i)
+		if c.StartPosition().Row > row && (c.IsNamed() || c.IsExtra()) && startsLine(c, d.src) {
+			return int(c.StartPosition().Row)
 		}
 	}
 	return -1
+}
+
+// isElementList は、容れ物 c が要素の並び（直接の子に区切りの , を持つもの。Go の複合リテラルの中身、引数の並び、JSON のオブジェクトと配列）かを返す。
+func isElementList(c *sitter.Node) bool {
+	for i := range c.ChildCount() {
+		if ch := c.Child(i); !ch.IsNamed() && ch.Kind() == "," {
+			return true
+		}
+	}
+	return false
+}
+
+// isElementBlock は、まとまり b を、要素の並びのまとまりとして見出しにしないかを返す。
+// 容れ物がどれも要素の並びで、次のどちらかに当たるものである（nvim-treesitter-context の Go のクエリが見出しにしないもの）。
+//
+//   - 容れ物が ( で開く（複数行の呼び出しの引数の並び）
+//   - まとまりの見出しの行が、括弧と区切りのほかに中身を持たない（テストの表の要素の {、}, {）。ただし根の直下（JSON の全体の {）は除く
+//
+// 型を持つ複合リテラル（tests := []struct{...}{、map[string]int{）と、JSON の "a": { の対は見出しにする。
+func (d *document) isElementBlock(b block) bool {
+	for i := range b.bodies {
+		if !isElementList(&b.bodies[i]) {
+			return false
+		}
+	}
+	for i := range b.bodies {
+		if first := firstNonExtraChild(&b.bodies[i]); first != nil && first.Kind() == "(" {
+			return true
+		}
+	}
+	if p := b.node.Parent(); p == nil || isRoot(p) {
+		return false
+	}
+	// 全体のノードは、要素を包むノード（Go の literal_element）のことがあるので、最初の字句までたどる。
+	first := &b.node
+	for first.ChildCount() > 0 {
+		if first = firstNonExtraChild(first); first == nil {
+			return false
+		}
+	}
+	if first.IsNamed() || openers[first.Kind()] == "" {
+		return false
+	}
+	lineStart := d.lineStarts[b.node.StartPosition().Row]
+	return strings.Trim(string(d.src[lineStart:b.node.StartByte()]), " \t}]),") == ""
 }
 
 // contentRow は、容れ物 c の見出しの次の行を返す。c の中身（bodySpan）が始まる行で、中身がその行の途中から始まる（前に空白でない文字がある）なら
