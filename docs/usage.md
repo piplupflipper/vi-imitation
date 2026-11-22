@@ -636,6 +636,7 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 | `band.linenr` | 帯の行の、印の列と行番号の列 | 書かなければ `linenr` の今の色を引き継ぐ（nvim-treesitter-context の既定の `TreesitterContextLineNumber` は `LineNr` へのリンク）。同梱の iceberg も書かないので、`linenr`（iceberg.vim の `LineNr`）の色になる |
 | `band.bottom` | 帯の最後の行の全体に重ねる色（帯と本文の境目に下線を引くときに書く。nvim-treesitter-context の `TreesitterContextBottom`） | なし |
 | `inlayHint` | LSP のインレイヒント（[インレイヒント](#インレイヒント)）の文字列（Neovim の `LspInlayHint`）。前後の空白には付けない | 書かなければ `nontext` の今の色を引き継ぐ（Neovim の `LspInlayHint` は `NonText` へのリンク）。同梱の iceberg では `#8b80a8`（iceberg.vim の `NonText` の色は背景との比が 1.24 で読めないため） |
+| `chunk`、`chunk.error` | カーソルを含むブロックの範囲の罫線（[ブロックの範囲を罫線で示す](#ブロックの範囲を罫線で示す)）と、構文の誤りを含むブロックの罫線（hlchunk.nvim の `HLChunk1` と `HLChunk2`） | 順に `#806d9c`、`#c21f30`（hlchunk.nvim の既定と同じ 24 ビットの色）。同梱の iceberg も書かない |
 | `sign.executionPoint`、`sign.breakpoint`、`sign.breakpointUnverified` | 印の列のデバッガーの印 | 順に黄色、赤、灰色 |
 | `sign.diagnostic.error`、`sign.diagnostic.warning`、`sign.diagnostic.info`、`sign.diagnostic.hint` | 印の列の診断の印 | 順に赤、黄色、青、灰色 |
 | `tabline`、`tabline.selected`、`tabline.fill` | タブの行の、ほかのタブ、いまのタブ、タブの右の空いた列 | 順に灰色の背景と下線、太字、反転 |
@@ -2362,6 +2363,66 @@ nvim-treesitter-context との違いは次のとおりである（[基本設計]
 | JSON の配列の中の要素の `{` と、ファイルの全体の `[` | 要素の `{` を出さず、全体の `[` を出す | 要素の `{` を出し、`[` を出さない（JSON のクエリに `array` が無い） |
 
 - `mode`（窓の最初の行で決める `topline`）、`separator`、`min_window_height`、`trim_scope` の設定は無い。`trim_scope` は既定の `outer`（外側から削る）と同じに動く
+
+#### ブロックの範囲を罫線で示す
+
+設定で有効にすると、カーソルを含むブロック（`an` で選ぶ構文のまとまりのうち、複数の行にわたる最も内側のもの。関数、`if`、`for`、オブジェクトなど）の範囲を、行頭の字下げの上に重ねる罫線で示す（オーナーの nvim の hlchunk.nvim の `chunk` に当たる）。
+既定では出さない。
+
+```text
+    3 ╔══─if a > 0 {       ← 設定の例の記号。始まりの行の字下げに角と横線
+    4 ║       a++
+    5 ║                    ← 空の行にも縦線
+    6 ║       a += 2
+    7 ╚══▶}                ← 終わりの行の字下げに角と横線と矢印
+```
+
+- 罫線の列は、ブロックの始まりの行と終わりの行の字下げの小さい方から、字下げの 1 段の幅（`indent.width`。0 なら `tab.width`）を引いた列である。トップレベルの関数のように始まりと終わりの行に字下げが無ければ、角と横線を描かず、本体の行の左の端に縦線だけを描く
+- 縦線は、罫線の列が行頭の空白の中にある行と、空白だけの行に描く。罫線の列より左から本文が始まる行（行の最初から書いた生の文字列の続きなど）には描かない
+- カーソルが止まってから `delay` のミリ秒の後に描き直す。同じブロックの中で動いただけなら描き直さない。違うブロックへ移ったら、`duration` のミリ秒をかけて、始まりの行から終わりの行の矢印まで 1 本の線を引くように描く。編集した後は、待たずに一度に描き直す
+- 構文の誤りを含むブロックは、色の名前 `chunk.error` の色（既定は赤）で描く
+- 罫線は本文の字下げに重ねて描くので、横にスクロールすると本文と一緒に動き、行を折り返すと最初の見た目の行に描く
+- 同じファイルを複数の窓に出しているときは、最後にカーソルを動かした窓のカーソルで決めた罫線が、どの窓にも出る（hlchunk.nvim と同じ）。見比べの 2 つの client は別のバッファなので、それぞれのカーソルで出る
+
+設定は `extensions.settings.treesitter.chunk` に書く。
+例は、オーナーの nvim の設定（記号、`duration = 100`、`delay = 100`）と同じにするもので、同梱の `config.example.jsonc` にも書いてある。
+
+```jsonc
+{
+  "extensions": {
+    "settings": {
+      "treesitter": {
+        "chunk": {
+          "enable": true,
+          "delay": 100,
+          "duration": 100,
+          "symbols": { "horizontalLine": "═", "verticalLine": "║", "leftTop": "╔", "leftBottom": "╚", "rightArrow": "▶" },
+        },
+      },
+    },
+  },
+}
+```
+
+| 項目（仮） | 内容 | 省いたとき |
+|---|---|---|
+| `chunk.enable` | 罫線を出すか | `false`（hlchunk.nvim は `setup` で `enable` を書かないと出さない） |
+| `chunk.delay` | カーソルが止まってから描き直すまでのミリ秒。0 から 10000 | 300（hlchunk.nvim の既定） |
+| `chunk.duration` | 罫線を描く動きのミリ秒。0 から 10000。0 か、`delay` が 0 なら一度に描く | 200（hlchunk.nvim の既定） |
+| `chunk.errorSign` | 構文の誤りを含むブロックを `chunk.error` の色で描くか | `true`（hlchunk.nvim の `error_sign` の既定） |
+| `chunk.symbols` | 記号。`horizontalLine`（横線）、`verticalLine`（縦線）、`leftTop`（左上の角）、`leftBottom`（左下の角）、`leftArrow`（始まりの行の本文の側の端）、`rightArrow`（終わりの行の矢印）。どれも表示幅が 1 の文字 1 つ。書いた項目だけを変える | `─`、`│`、`╭`、`╰`、`─`、`>`（hlchunk.nvim の `chars` の既定） |
+
+色は[配色](#配色)の `chunk` と `chunk.error` で変える。
+
+hlchunk.nvim との違いは次のとおりである（[基本設計](basic-design.md) 6.1 の「ブロックの範囲の罫線」）。
+
+- ブロックの行の行番号に色を付けること（hlchunk.nvim の `line_num`）はまだ無い。拡張機能が行番号の列に色を付ける口が無いためである
+- ブロックを、ノードの種類の名前の表でなく、`an` と同じ構文の形で決める
+- 本文の途中の空白と、罫線の列より短い行の行末より右には、縦線を描かない（hlchunk.nvim は罫線の列の 1 文字が空白なら描く）
+- 字下げと罫線の列の差が 1 列なら、角だけを描く（hlchunk.nvim は、始まりの行では角の後の記号を本文の最初の文字に重ねる）
+- 罫線のセルには、下の色（選択の色、検索の一致の色など）を混ぜない
+- 1 文字ずつでなく、16 ミリ秒ごとのこまで描き進める
+- `straight`、`max_file_size`、`exclude_filetypes`、`textobject`（`an` を使う）の設定と、`indent` と `blank` の部品は無い
 
 #### パーサを足す
 

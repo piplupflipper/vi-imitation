@@ -232,3 +232,19 @@ func TestThemeWithColors(t *testing.T) {
 		}
 	}
 }
+
+// ブロックの範囲の罫線の色の名前は、設定の colors に書け、既定は hlchunk.nvim の chunk の style の既定と同じ色である。
+//
+// req: FR-267
+func TestChunkStyles(t *testing.T) {
+	def := DefaultTheme()
+	if !IsStyleName(StyleChunk) || def[StyleChunk] != (Attr{Fg: RGB(0x80, 0x6d, 0x9c)}) {
+		t.Errorf("chunk = %+v", def[StyleChunk])
+	}
+	if !IsStyleName(StyleChunkError) || def[StyleChunkError] != (Attr{Fg: RGB(0xc2, 0x1f, 0x30)}) {
+		t.Errorf("chunk.error = %+v", def[StyleChunkError])
+	}
+	if got := def.WithColors(map[string]Attr{StyleChunk: {Fg: Indexed(5)}}); got.attr(StyleChunk) != (Attr{Fg: Indexed(5)}) {
+		t.Errorf("colors で変えた chunk = %+v", got.attr(StyleChunk))
+	}
+}
