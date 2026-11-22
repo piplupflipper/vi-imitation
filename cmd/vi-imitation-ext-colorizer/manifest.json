@@ -1,0 +1,7 @@
+{
+  "id": "colorizer",
+  "command": "./vi-imitation-ext-colorizer",
+  "activation": [
+    { "on": "settingsFileType", "pattern": "/fileTypes" }
+  ]
+}

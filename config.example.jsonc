@@ -241,7 +241,7 @@
     "tabnew": { "command": "tab.new" },
   },
 
-  // 本体の既定の表に無い拡張子のファイルの種類（下の整形ツールの fileTypes に使う）。名前は nvim の filetype にそろえた
+  // 本体の既定の表に無い拡張子のファイルの種類（下の整形ツールと色コードの着色の fileTypes に使う）。名前は nvim の filetype にそろえた
   "fileTypes": {
     ".tsx": "typescriptreact",
     ".jsx": "javascriptreact",
@@ -256,6 +256,14 @@
     ".cpp": "cpp",
     ".cc": "cpp",
     ".hpp": "cpp",
+    ".scss": "scss",
+    ".html": "html",
+    ".htm": "html",
+    ".vim": "vim",
+    // ファイル名で決める種類は、拡張子の項目（.conf）より先に当たる
+    ".tmux.conf": "tmux",
+    "tmux.conf": "tmux",
+    ".conf": "conf",
   },
 
   "extensions": {
@@ -349,6 +357,16 @@
           { "command": "clang-format", "args": ["-assume-filename", "{path}"], "fileTypes": ["c", "cpp"] },
           // conform.nvim は Cargo.toml の edition を読むが、ここでは 2021 に決めて渡す
           { "command": "rustfmt", "args": ["--emit=stdout", "--edition=2021"], "fileTypes": ["rust"] },
+        ],
+      },
+      // 色コード（#ff0000、red など）の範囲を、その色の背景で塗る（nvim の nvim-colorizer.lua に当たる）。説明は docs/usage.md の「色コードの着色」にある。
+      // ここに書いたファイルの種類のファイルを開いたときに起動する。認識する形と塗り方は nvim-colorizer.lua の既定と同じで、
+      // rgb() と hsl() を塗るには "rgb": true と "hsl": true を足す
+      "colorizer": {
+        "fileTypes": [
+          "css", "scss", "html",
+          "javascript", "typescript", "javascriptreact", "typescriptreact",
+          "lua", "vim", "fish", "tmux", "toml", "yaml", "conf",
         ],
       },
     },

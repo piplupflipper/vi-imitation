@@ -13,7 +13,7 @@ BINARY  := $(BIN_DIR)/vi-imitation
 # MCP の中継コマンド。MCP のクライアントが標準入出力のサーバーとして起動する（FR-33）。
 MCP_BRIDGE := $(BIN_DIR)/vi-imitation-mcp-bridge
 # 標準の拡張機能。本体とは別の実行ファイルとして作る（NFR-01）。
-EXTENSIONS := vi-imitation-ext-line vi-imitation-ext-script vi-imitation-ext-dap vi-imitation-ext-lsp vi-imitation-ext-acp vi-imitation-ext-mcp vi-imitation-ext-git vi-imitation-ext-finder vi-imitation-ext-filer vi-imitation-ext-formatter vi-imitation-ext-memusage
+EXTENSIONS := vi-imitation-ext-line vi-imitation-ext-script vi-imitation-ext-dap vi-imitation-ext-lsp vi-imitation-ext-acp vi-imitation-ext-mcp vi-imitation-ext-git vi-imitation-ext-finder vi-imitation-ext-filer vi-imitation-ext-formatter vi-imitation-ext-memusage vi-imitation-ext-colorizer
 # cgo を使う標準の拡張機能。C コンパイラが要る。cgo を使うのはこれだけで、本体は CGO_ENABLED=0 で作る（NFR-02）。
 # cgo の拡張機能（tree-sitter）は、glibc に動的にリンクする（NFR-01。2026-11-20 のオーナーの裁定、#277）。
 # 利用者の手元でビルドしたパーサの共有ライブラリを dlopen で読む（FR-142）ためで、musl を静的にリンクした実行ファイルは dlopen を使えない。
@@ -46,7 +46,8 @@ DIST_PACKAGES := ./cmd/vi-imitation ./cmd/vi-imitation-mcp-bridge $(addprefix ./
 DIST_LICENSE_PACKAGES := $(DIST_PACKAGES) ./internal/diff
 # Go のモジュールでなく、データを写して本体に入れたもののライセンスの文面。licenses/ の下に同じ並びで写す。
 # 既定のアイコンの表（internal/ui の icons_default.go。FR-152）は、nvim-web-devicons と neo-tree.nvim（どちらも MIT）から写した。
-DIST_DATA_LICENSES := internal/ui/licenses
+# 色コードの着色の拡張機能の色の名前の表（cmd/vi-imitation-ext-colorizer の names_table.go。FR-260）は、Neovim（Apache-2.0）から写した。
+DIST_DATA_LICENSES := internal/ui/licenses cmd/vi-imitation-ext-colorizer/licenses
 # 配布物を起動して確かめるコンテナのイメージ。ビルド用の道具が無く、C の標準ライブラリが異なるものを選ぶ。
 # 結果が docs/measurements/nfr-dist.md の記録と同じものを指すように、版のタグで固定する。
 DIST_SMOKE_IMAGES := debian:13.7-slim almalinux:8.10-minimal alpine:3.24.1 busybox:1.36.1
@@ -152,7 +153,7 @@ dist: build ## 配布物を dist/ に作る（実行ファイルと宣言ファ�
 		while read -r p d; do \
 			mkdir -p $(DIST_DIR)/licenses/$$p && cp $$d/LICENSE* $(DIST_DIR)/licenses/$$p/ || exit 1; \
 		done
-	cp -R $(DIST_DATA_LICENSES)/. $(DIST_DIR)/licenses/
+	for d in $(DIST_DATA_LICENSES); do cp -R $$d/. $(DIST_DIR)/licenses/ || exit 1; done
 	tar -C $(DIST_ROOT) -czf $(DIST_DIR).tar.gz $(DIST_NAME)
 
 .PHONY: dist-check
