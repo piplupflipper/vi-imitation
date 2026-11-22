@@ -85,6 +85,8 @@ type treesitterSettings struct {
 //	  "duration": 100,
 //	  // 構文の誤りを含むまとまりを chunk.error の色で描くか（hlchunk.nvim の error_sign。既定は描く）
 //	  "errorSign": true,
+//	  // この大きさ（バイト）以上のバッファには描かない（hlchunk.nvim の max_file_size。既定は 1 MiB）。0 なら上限なし
+//	  "maxFileSize": 1048576,
 //	  // 罫線の記号（hlchunk.nvim の chars）。どれも表示幅が 1 の文字 1 つ
 //	  "symbols": { "horizontalLine": "═", "verticalLine": "║", "leftTop": "╔", "leftBottom": "╚", "leftArrow": "─", "rightArrow": "▶" }
 //	}
@@ -93,7 +95,9 @@ type chunkSettings struct {
 	// delay と duration は、ミリ秒である。
 	delay, duration int
 	errorSign       bool
-	symbols         chunkSymbols
+	// maxFileSize は、罫線を描かないバッファの全文のバイト数の下限である。0 なら上限なし。
+	maxFileSize int
+	symbols     chunkSymbols
 }
 
 // chunkSymbols は、罫線の記号である（hlchunk.nvim の chars）。どれも表示幅が 1 の文字 1 つである。
@@ -108,10 +112,11 @@ type chunkSymbols struct {
 
 // defaultChunkSettings は、設定に chunk が無いときの値である（chunkSettings の doc）。
 var defaultChunkSettings = chunkSettings{
-	enable:    false,
-	delay:     300,
-	duration:  200,
-	errorSign: true,
+	enable:      false,
+	delay:       300,
+	duration:    200,
+	errorSign:   true,
+	maxFileSize: 1024 * 1024,
 	symbols: chunkSymbols{
 		horizontalLine: "─",
 		verticalLine:   "│",
@@ -124,11 +129,12 @@ var defaultChunkSettings = chunkSettings{
 
 // chunkJSON は、chunk の JSON の形である。省いた項目は nil で、既定の値を使う。
 type chunkJSON struct {
-	Enable    *bool             `json:"enable"`
-	Delay     *int              `json:"delay"`
-	Duration  *int              `json:"duration"`
-	ErrorSign *bool             `json:"errorSign"`
-	Symbols   map[string]string `json:"symbols"`
+	Enable      *bool             `json:"enable"`
+	Delay       *int              `json:"delay"`
+	Duration    *int              `json:"duration"`
+	ErrorSign   *bool             `json:"errorSign"`
+	MaxFileSize *int              `json:"maxFileSize"`
+	Symbols     map[string]string `json:"symbols"`
 }
 
 // maxChunkMs は、chunk の delay と duration の上限のミリ秒である（仮。誤って大きな値を書いて、罫線が出ないように見えるのを防ぐ）。
@@ -151,6 +157,13 @@ func parseChunk(raw json.RawMessage) (chunkSettings, []string) {
 	}
 	if j.ErrorSign != nil {
 		out.errorSign = *j.ErrorSign
+	}
+	if j.MaxFileSize != nil {
+		if *j.MaxFileSize < 0 {
+			problems = append(problems, "設定の extensions.settings.treesitter.chunk.maxFileSize は 0 以上にする")
+		} else {
+			out.maxFileSize = *j.MaxFileSize
+		}
 	}
 	for _, f := range []struct {
 		name string

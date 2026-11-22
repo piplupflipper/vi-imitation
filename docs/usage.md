@@ -676,6 +676,10 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 罫線（`─`）や `●` のような、Unicode で幅が曖昧と定められた文字は、本体は 1 列と数える（Vim の `'ambiwidth'` の既定の `single` と同じ）。
 端末がそれらの文字を 2 列で描く設定だと、列がずれる。
 
+ブロックの範囲の罫線（[ブロックの範囲を罫線で示す](#ブロックの範囲を罫線で示す)）の記号は、この `symbols` ではなく、tree-sitter の拡張機能の設定 `extensions.settings.treesitter.chunk.symbols` に書く。
+ここに `chunk.verticalLine` などと書くと、本体の知らない記号の名前として設定の誤りになる。
+罫線の既定の記号（`─`、`│`、`╭`、`╰`）と設定の例の記号（`═`、`║`、`╔`、`╚`、`▶`）も幅が曖昧な文字なので、2 列で描く端末では罫線の列がずれる。
+
 ### アイコン
 
 [ファジーファインダー](#ファジーファインダー)と[ファイラ](#ファイラ)の、ファイルとディレクトリの項目の前に、ファイルの種類のアイコンを付ける（nvim の neo-tree と fzf-lua が使う nvim-web-devicons と同じ見た目）。
@@ -2382,6 +2386,7 @@ nvim-treesitter-context との違いは次のとおりである（[基本設計]
 - カーソルが止まってから `delay` のミリ秒の後に描き直す。同じブロックの中で動いただけなら描き直さない。違うブロックへ移ったら、`duration` のミリ秒をかけて、始まりの行から終わりの行の矢印まで 1 本の線を引くように描く。編集した後は、待たずに一度に描き直す
 - 構文の誤りを含むブロックは、色の名前 `chunk.error` の色（既定は赤）で描く
 - 罫線は本文の字下げに重ねて描くので、横にスクロールすると本文と一緒に動き、行を折り返すと最初の見た目の行に描く
+- 罫線は、窓に見えている行とその前後の 1 画面分の行にだけ置く。そこから外へスクロールすると、待たずに置き直す（ブロックが画面より大きくても、送る量が窓の大きさで決まる）
 - 同じファイルを複数の窓に出しているときは、最後にカーソルを動かした窓のカーソルで決めた罫線が、どの窓にも出る（hlchunk.nvim と同じ）。見比べの 2 つの client は別のバッファなので、それぞれのカーソルで出る
 
 設定は `extensions.settings.treesitter.chunk` に書く。
@@ -2410,7 +2415,8 @@ nvim-treesitter-context との違いは次のとおりである（[基本設計]
 | `chunk.delay` | カーソルが止まってから描き直すまでのミリ秒。0 から 10000 | 300（hlchunk.nvim の既定） |
 | `chunk.duration` | 罫線を描く動きのミリ秒。0 から 10000。0 か、`delay` が 0 なら一度に描く | 200（hlchunk.nvim の既定） |
 | `chunk.errorSign` | 構文の誤りを含むブロックを `chunk.error` の色で描くか | `true`（hlchunk.nvim の `error_sign` の既定） |
-| `chunk.symbols` | 記号。`horizontalLine`（横線）、`verticalLine`（縦線）、`leftTop`（左上の角）、`leftBottom`（左下の角）、`leftArrow`（始まりの行の本文の側の端）、`rightArrow`（終わりの行の矢印）。どれも表示幅が 1 の文字 1 つ。書いた項目だけを変える | `─`、`│`、`╭`、`╰`、`─`、`>`（hlchunk.nvim の `chars` の既定） |
+| `chunk.maxFileSize` | この大きさ（バイト）以上のファイルには描かない。0 なら上限なし。ファイルの大きさでなく、開いているバッファの中身の大きさ（改行が LF のとき）で比べる | 1048576（1 MiB。hlchunk.nvim の `max_file_size` の既定） |
+| `chunk.symbols` | 記号（本体の `symbols` ではなくここに書く）。`horizontalLine`（横線）、`verticalLine`（縦線）、`leftTop`（左上の角）、`leftBottom`（左下の角）、`leftArrow`（始まりの行の本文の側の端）、`rightArrow`（終わりの行の矢印）。どれも表示幅が 1 の文字 1 つ。書いた項目だけを変える | `─`、`│`、`╭`、`╰`、`─`、`>`（hlchunk.nvim の `chars` の既定） |
 
 色は[配色](#配色)の `chunk` と `chunk.error` で変える。
 
@@ -2422,7 +2428,8 @@ hlchunk.nvim との違いは次のとおりである（[基本設計](basic-desi
 - 字下げと罫線の列の差が 1 列なら、角だけを描く（hlchunk.nvim は、始まりの行では角の後の記号を本文の最初の文字に重ねる）
 - 罫線のセルには、下の色（選択の色、検索の一致の色など）を混ぜない
 - 1 文字ずつでなく、16 ミリ秒ごとのこまで描き進める
-- `straight`、`max_file_size`、`exclude_filetypes`、`textobject`（`an` を使う）の設定と、`indent` と `blank` の部品は無い
+- 改行が CRLF のファイルでは、本体が行末の復帰を `^M` で描くので、空の行の縦線は `^M` の最初の列に重なる
+- `straight`、`exclude_filetypes`、`textobject`（`an` を使う）の設定と、`indent` と `blank` の部品は無い
 
 #### パーサを足す
 

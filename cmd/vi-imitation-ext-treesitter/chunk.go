@@ -64,14 +64,43 @@ type chunkCell struct {
 
 // chunkShape は、1 つのまとまりの罫線である。
 type chunkShape struct {
-	// cells は、描く順に並べた罫線のセルである。
+	// start と end はまとまりの始まりと終わりの行、col は罫線の列、beg と fin は始まりと終わりの行の字下げの幅である。
+	start, end, col, beg, fin int
+	// rows は、cells を作った行の範囲である（窓の見えている行とその前後。chunkView）。
+	rows rowRange
+	// cells は、rows の中の罫線のセルを、描く順に並べたものである。
 	cells []chunkCell
 	// style は、罫線の色の名前である。
 	style string
 }
 
-func (s chunkShape) equal(o chunkShape) bool {
-	return s.style == o.style && slices.Equal(s.cells, o.cells)
+// sameChunk は、s と o が同じまとまりの同じ形の罫線か（セルを作った行の範囲は比べない）を返す。
+func (s chunkShape) sameChunk(o chunkShape) bool {
+	return s.start == o.start && s.end == o.end && s.col == o.col && s.beg == o.beg && s.fin == o.fin && s.style == o.style
+}
+
+// covers は、窓の見えている行 view のうちまとまりに掛かる行を、s のセルがすべて含むかを返す。
+func (s chunkShape) covers(view rowRange) bool {
+	lo, hi := max(view.lo, s.start), min(view.hi, s.end)
+	return lo > hi || s.rows.lo <= lo && hi <= s.rows.hi
+}
+
+// rowRange は、行の範囲 [lo, hi]（両端を含む）である。
+type rowRange struct{ lo, hi int }
+
+// allRows は、すべての行である。
+var allRows = rowRange{0, int(^uint(0) >> 1)}
+
+// chunkView は、窓の知らせ p から、罫線のセルを作る行の範囲を返す。見えている行と、その前後の 1 画面分の行である。
+// 大きなまとまり（10 万行の JSON の全体）でも、こまごとに作って送るセルの数を窓の大きさで抑える（PR #396 のレビューの推奨 2）。
+func chunkView(p ext.WindowChangeParams) rowRange {
+	rows := max(p.Bottom-p.Top, p.Rows, 1)
+	return rowRange{lo: max(p.Top-rows, 0), hi: p.Bottom + rows}
+}
+
+// visibleRows は、窓の知らせ p の見えている行である（Bottom は最後まで描いた行の次の行なので、途中まで描いた行も含める）。
+func visibleRows(p ext.WindowChangeParams) rowRange {
+	return rowRange{lo: p.Top, hi: max(p.Bottom, p.Top)}
 }
 
 // indentOptions は、罫線の列を数えるのに使う、バッファの設定の値である。
@@ -83,11 +112,11 @@ type indentOptions struct {
 // defaultIndentOptions は、本体に問い合わせられないときの値である（本体の tab.width と indent.width の既定）。
 var defaultIndentOptions = indentOptions{tab: 8, shift: 8}
 
-// chunkAt は、カーソル cursor を含むまとまりの罫線を返す。まとまりが無ければ ok は false である。
+// chunkAt は、カーソル cursor を含むまとまりの罫線のうち、行の範囲 rows の中のセルを返す。まとまりが無ければ ok は false である。
 // errorSign が true なら、構文の誤りを含むまとまりの罫線を chunk.error の色にする（hlchunk.nvim の error_sign）。
 //
 // req: FR-265
-func (d *document) chunkAt(cursor ext.Position, opt indentOptions, sym chunkSymbols, errorSign bool) (chunkShape, bool) {
+func (d *document) chunkAt(cursor ext.Position, rows rowRange, opt indentOptions, sym chunkSymbols, errorSign bool) (chunkShape, bool) {
 	if cursor.Line < 0 || cursor.Line >= len(d.lineStarts) {
 		return chunkShape{}, false
 	}
@@ -98,7 +127,8 @@ func (d *document) chunkAt(cursor ext.Position, opt indentOptions, sym chunkSymb
 		if start == end {
 			continue
 		}
-		shape := chunkShape{cells: d.chunkCells(start, end, opt, sym), style: chunkStyle}
+		shape := d.chunkCells(start, end, rows, opt, sym)
+		shape.style = chunkStyle
 		if errorSign && b.node.HasError() {
 			shape.style = chunkErrorStyle
 		}
@@ -116,25 +146,26 @@ func blockRows(n *sitter.Node) (int, int) {
 	return start, end
 }
 
-// chunkCells は、行 start から end までのまとまりの罫線のセルを、描く順に返す（この節の初めのコメント）。
-func (d *document) chunkCells(start, end int, opt indentOptions, sym chunkSymbols) []chunkCell {
+// chunkCells は、行 start から end までのまとまりの罫線を返す。セルは行の範囲 rows の中のものだけを、描く順に並べる（この節の初めのコメント）。
+func (d *document) chunkCells(start, end int, rows rowRange, opt indentOptions, sym chunkSymbols) chunkShape {
 	beg, fin := d.indentWidth(start, opt.tab), d.indentWidth(end, opt.tab)
 	col := max(min(beg, fin)-opt.shift, 0)
-	var cells []chunkCell
-	if beg > 0 {
+	s := chunkShape{start: start, end: end, col: col, beg: beg, fin: fin, rows: rows}
+	in := func(row int) bool { return rows.lo <= row && row <= rows.hi }
+	if beg > 0 && in(start) {
 		top := d.edgeCells(start, col, beg, sym.leftTop, sym.horizontalLine, sym.leftArrow, opt.tab)
 		slices.Reverse(top)
-		cells = append(cells, top...)
+		s.cells = append(s.cells, top...)
 	}
-	for row := start + 1; row < end; row++ {
+	for row := max(start+1, rows.lo); row < end && row <= rows.hi; row++ {
 		if anchor, pad, ok := d.anchorAt(row, col, opt.tab); ok {
-			cells = append(cells, chunkCell{row: row, col: col, text: sym.verticalLine, anchor: anchor, pad: pad})
+			s.cells = append(s.cells, chunkCell{row: row, col: col, text: sym.verticalLine, anchor: anchor, pad: pad})
 		}
 	}
-	if fin > 0 {
-		cells = append(cells, d.edgeCells(end, col, fin, sym.leftBottom, sym.horizontalLine, sym.rightArrow, opt.tab)...)
+	if fin > 0 && in(end) {
+		s.cells = append(s.cells, d.edgeCells(end, col, fin, sym.leftBottom, sym.horizontalLine, sym.rightArrow, opt.tab)...)
 	}
-	return cells
+	return s
 }
 
 // edgeCells は、行 row の列 from から to の前までに、角 corner、横線 line、端 tip を左から並べたセルを返す。
@@ -158,10 +189,24 @@ func (d *document) edgeCells(row, from, to int, corner, line, tip string, tab in
 	return cells
 }
 
+// crWidth は、本体が行末の復帰（CRLF の改行の \r）を描く ^M の列数である。
+const crWidth = 2
+
+// lineBody は、行 row の中身から行末の復帰（\r）を除いたものと、復帰があったかを返す。
+func (d *document) lineBody(row int) ([]byte, bool) {
+	line := d.line(row)
+	if n := len(line); n > 0 && line[n-1] == '\r' {
+		return line[:n-1], true
+	}
+	return line, false
+}
+
 // indentWidth は、行 row の行頭の空白とタブ文字の表示幅を返す。空白だけの行は、行の全体の幅である（Vim の indent()）。
+// 行末の復帰（CRLF の改行）は字下げに数えず、空白だけの行の終わりとして扱う（PR #396 のレビューの推奨 5）。
 func (d *document) indentWidth(row, tab int) int {
 	w := 0
-	for _, c := range d.line(row) {
+	body, _ := d.lineBody(row)
+	for _, c := range body {
 		switch c {
 		case ' ':
 			w++
@@ -178,8 +223,15 @@ func (d *document) indentWidth(row, tab int) int {
 // col が行頭の空白とタブ文字の中にあれば、その文字のバイトと、文字の最初のセルから col までの列数を返す。
 // 行が空白とタブ文字だけで、col が行末より右なら、行末のバイトと、行末から col までの列数を返す。
 // col より左から本文が始まる行では ok が false である。
+// 行末の復帰（CRLF の改行）は空白と同じに扱い、本体が描く ^M の 2 列として数える（PR #396 のレビューの推奨 5）。
 func (d *document) anchorAt(row, col, tab int) (anchor, pad int, ok bool) {
-	line := d.line(row)
+	line, cr := d.lineBody(row)
+	defer func() {
+		if ok && cr && anchor == len(line) && pad >= crWidth {
+			// 復帰より右の列は、復帰の後ろ（行末）に重ねる。
+			anchor, pad = len(line)+1, pad-crWidth
+		}
+	}()
 	w := 0
 	for i, c := range line {
 		var cw int
@@ -243,6 +295,8 @@ type chunkBuffer struct {
 	window ext.WindowID
 	// cursor は、window のカーソルである。
 	cursor ext.Position
+	// view は、window の知らせから決めた、罫線のセルを作る行の範囲である（chunkView）。
+	view rowRange
 	// due は、罫線を決め直す時刻である。ゼロなら決め直さない。
 	due time.Time
 	// lazy は、決め直す契機がカーソルの移動であることを表す（hlchunk.nvim の render の lazy）。
@@ -328,7 +382,8 @@ func (c *chunker) configure(s chunkSettings) {
 }
 
 // windowChanged は、window/change を覚え、カーソルが動いたか窓のバッファが替わったら、delay の後に罫線を決め直させる。ループの上で呼ぶ。
-// 見えている範囲だけが変わった（スクロール）ときは決め直さない。罫線はバッファの位置に重ねるので、本体が本文と一緒に送る。
+// 見えている範囲だけが変わった（スクロール）ときは、ふつうは決め直さない。罫線はバッファの位置に重ねるので、本体が本文と一緒に送る。
+// ただし、送ったセルは窓の見えている行とその前後だけ（chunkView）なので、見えている行が送ったセルの行の外へ出たら、待たずに一度に描き直させる。
 // 窓が無くなったか、窓のバッファが替わって、前のバッファを出す窓が無くなったら、そのバッファの罫線を消させる。
 //
 // req: FR-265, FR-266
@@ -351,10 +406,16 @@ func (c *chunker) windowChanged(p ext.WindowChangeParams) {
 		c.leaveLocked(prev.Buffer, p.Window)
 	}
 	if had && prev.Buffer == p.Buffer && prev.Cursor == p.Cursor {
+		if b, ok := c.bufs[p.Buffer]; ok && b.window == p.Window {
+			b.view = chunkView(p)
+			if b.drawn && !b.shape.covers(visibleRows(p)) {
+				c.scheduleLocked(b, false)
+			}
+		}
 		return
 	}
 	b := c.bufferLocked(p.Buffer)
-	b.window, b.cursor = p.Window, p.Cursor
+	b.window, b.cursor, b.view = p.Window, p.Cursor, chunkView(p)
 	c.scheduleLocked(b, true)
 }
 
@@ -368,7 +429,7 @@ func (c *chunker) leaveLocked(id ext.BufferID, w ext.WindowID) {
 	b.window = ""
 	for _, wid := range slices.Sorted(maps.Keys(c.windows)) {
 		if p := c.windows[wid]; p.Buffer == id {
-			b.window, b.cursor = wid, p.Cursor
+			b.window, b.cursor, b.view = wid, p.Cursor, chunkView(p)
 			break
 		}
 	}
@@ -419,9 +480,10 @@ type chunkTask struct {
 	id ext.BufferID
 	// frame が true なら描く動きの次のこまを送り、false なら罫線を決め直す。
 	frame bool
-	// window、cursor、lazy は、決め直すときの窓とカーソルと契機である。
+	// window、cursor、view、lazy は、決め直すときの窓とカーソルと、セルを作る行の範囲と、契機である。
 	window ext.WindowID
 	cursor ext.Position
+	view   rowRange
 	lazy   bool
 }
 
@@ -471,7 +533,7 @@ func (c *chunker) dueTasks(now time.Time) ([]chunkTask, time.Time) {
 	for id, b := range c.bufs {
 		switch {
 		case !b.due.IsZero() && !b.due.After(now):
-			tasks = append(tasks, chunkTask{id: id, window: b.window, cursor: b.cursor, lazy: b.lazy})
+			tasks = append(tasks, chunkTask{id: id, window: b.window, cursor: b.cursor, view: b.view, lazy: b.lazy})
 			b.due = time.Time{}
 		case b.anim != nil && !b.anim.next.After(now):
 			tasks = append(tasks, chunkTask{id: id, frame: true})
@@ -497,7 +559,10 @@ func (c *chunker) render(t chunkTask) {
 	ok := false
 	if t.window != "" {
 		if d, v := c.trees.latest(t.id); d != nil {
-			shape, ok = d.chunkAt(t.cursor, c.indentOptions(t.id), settings.symbols, settings.errorSign)
+			// 大きいファイルでは描かない（hlchunk.nvim の max_file_size。ファイルの大きさの代わりに全文のバイト数で比べる）。
+			if settings.maxFileSize == 0 || len(d.src) < settings.maxFileSize {
+				shape, ok = d.chunkAt(t.cursor, t.view, c.indentOptions(t.id), settings.symbols, settings.errorSign)
+			}
 			version = v
 			d.close()
 		}
@@ -508,34 +573,41 @@ func (c *chunker) render(t chunkTask) {
 		c.mu.Unlock()
 		return
 	}
-	var params *ext.VirtualTextSetParams
+	// 送るセル（cells）は、決めた後に変えないスライスを指すので、仮想テキストはロックの外で作る（PR #396 のレビューの推奨 2）。
+	erase, send := false, false
+	var cells []chunkCell
 	switch {
 	case !ok || len(shape.cells) == 0:
 		// まとまりが無ければ消す（hlchunk.nvim の NO_CHUNK）。
-		if b.drawn {
-			params = &ext.VirtualTextSetParams{Buffer: t.id, Version: version}
-		}
+		erase = b.drawn
 		b.drawn, b.anim, b.shape = false, nil, chunkShape{}
 		if b.window == "" && b.due.IsZero() {
 			delete(c.bufs, t.id)
 		}
-	case t.lazy && b.drawn && b.shape.equal(shape):
+	case t.lazy && b.drawn && b.shape.sameChunk(shape) && b.shape.rows == shape.rows:
 		// カーソルが同じまとまりの中で動いただけなら描き直さない。描く動きの途中なら続ける（hlchunk.nvim の render の lazy）。
+	case t.lazy && b.drawn && b.shape.sameChunk(shape):
+		// 同じまとまりで、セルを作る行の範囲だけが変わった（スクロールした）なら、描く動きをせずに今の範囲のセルを描く。
+		b.shape, b.version, b.anim = shape, version, nil
+		send, cells = true, shape.cells
 	default:
 		wasDrawn := b.drawn
 		b.shape, b.version, b.drawn, b.anim = shape, version, true, nil
 		if t.lazy && settings.delay > 0 && settings.duration > 0 {
 			b.anim = newChunkAnim(len(shape.cells), settings.duration)
-			if wasDrawn {
-				// 前の罫線を消してから描き始める（hlchunk.nvim は描く動きの前に名前空間の全体を消す）。
-				params = &ext.VirtualTextSetParams{Buffer: t.id, Version: version}
-			}
+			// 前の罫線を消してから描き始める（hlchunk.nvim は描く動きの前に名前空間の全体を消す）。
+			erase = wasDrawn
 		} else {
-			params = &ext.VirtualTextSetParams{Buffer: t.id, Version: version, VirtualTexts: chunkOverlays(shape.cells, shape.style)}
+			send, cells = true, shape.cells
 		}
 	}
 	c.mu.Unlock()
-	c.publish(params)
+	switch {
+	case send:
+		c.publish(&ext.VirtualTextSetParams{Buffer: t.id, Version: version, VirtualTexts: chunkOverlays(cells, shape.style)})
+	case erase:
+		c.publish(&ext.VirtualTextSetParams{Buffer: t.id, Version: version})
+	}
 }
 
 // newChunkAnim は、n 個のセルを duration ミリ秒で描く動きを作る。こまの間隔は chunkMinFrameMs より短くしない。
@@ -570,9 +642,10 @@ func (c *chunker) nextFrame(id ext.BufferID) {
 	} else {
 		a.next = a.next.Add(a.interval)
 	}
-	params := &ext.VirtualTextSetParams{Buffer: id, Version: b.version, VirtualTexts: chunkOverlays(cells, b.shape.style)}
+	version, style := b.version, b.shape.style
 	c.mu.Unlock()
-	c.publish(params)
+	// セルのスライスは決めた後に変えないので、仮想テキストはロックの外で作る。
+	c.publish(&ext.VirtualTextSetParams{Buffer: id, Version: version, VirtualTexts: chunkOverlays(cells, style)})
 }
 
 // publish は、virtualText/set を送る。p が nil なら何もしない。送れなければログに書く。

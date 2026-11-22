@@ -45,6 +45,13 @@ func drawChunk(t *testing.T, src string, overlays []ext.VirtualText, tab int) []
 				j++
 				continue
 			}
+			if l[j] == '\r' {
+				// 本体は復帰を ^M の 2 列で描く。
+				cells[i] = append(cells[i], "^", "M")
+				col += crWidth
+				j++
+				continue
+			}
 			r := []rune(l[j:])[0]
 			cells[i] = append(cells[i], string(r))
 			col++
@@ -121,6 +128,13 @@ func TestChunkAtGo(t *testing.T) {
 			want: []string{"│   x := []int{1, 2}", "│   s := `", "raw`", "│   _, _ = x, s"},
 		},
 		{
+			// 改行が CRLF のファイルの空の行（中身は \r だけ）にも縦線を描く。本体は \r を ^M の 2 列で描くので、縦線はその最初の列に重なる
+			// （PR #396 のレビューの推奨 5）。
+			name: "CRLF の空の行", src: strings.ReplaceAll(chunkSource, "\n", "\r\n"),
+			cursor: ext.Position{Line: 4, Byte: 2}, opt: indentOptions{tab: 4, shift: 4}, from: 3,
+			want: []string{"╭───if a > 0 {^M", "│       a++^M", "│M", "│       a += 2^M", "╰──>}^M"},
+		},
+		{
 			// 字下げの幅が始まりの行の字下げより広ければ、罫線の列は 0 で、角の列が 1 つなら角だけを描く。
 			name: "列が 1 つなら角だけ", src: "{\n \"a\": [\n  1,\n  2\n ]\n}",
 			cursor: ext.Position{Line: 2, Byte: 2}, opt: indentOptions{tab: 8, shift: 4}, from: 1,
@@ -134,7 +148,7 @@ func TestChunkAtGo(t *testing.T) {
 				ft = "json"
 			}
 			d := parse(t, h, ft, tt.src)
-			shape, ok := d.chunkAt(tt.cursor, tt.opt, sym, true)
+			shape, ok := d.chunkAt(tt.cursor, allRows, tt.opt, sym, true)
 			if !ok || shape.style != chunkStyle {
 				t.Fatalf("chunkAt = %+v, %v", shape, ok)
 			}
@@ -155,7 +169,7 @@ func TestChunkAtOrder(t *testing.T) {
 	h := newTestHighlighter(t)
 	d := parse(t, h, "go", chunkSource)
 	owner := chunkSymbols{horizontalLine: "═", verticalLine: "║", leftTop: "╔", leftBottom: "╚", leftArrow: "─", rightArrow: "▶"}
-	shape, ok := d.chunkAt(ext.Position{Line: 4, Byte: 2}, indentOptions{tab: 4, shift: 4}, owner, true)
+	shape, ok := d.chunkAt(ext.Position{Line: 4, Byte: 2}, allRows, indentOptions{tab: 4, shift: 4}, owner, true)
 	if !ok {
 		t.Fatal("chunkAt: no chunk")
 	}
@@ -173,16 +187,16 @@ func TestChunkAtOrder(t *testing.T) {
 	if got := drawChunk(t, chunkSource, chunkOverlays(shape.cells[:2], shape.style), 4)[3]; got != "  ═─if a > 0 {" {
 		t.Errorf("描く途中の始まりの行 = %q", got)
 	}
-	if _, ok := d.chunkAt(ext.Position{Line: 0, Byte: 0}, indentOptions{tab: 4, shift: 4}, owner, true); ok {
+	if _, ok := d.chunkAt(ext.Position{Line: 0, Byte: 0}, allRows, indentOptions{tab: 4, shift: 4}, owner, true); ok {
 		t.Error("package の行で罫線がある")
 	}
 
 	broken := "package main\n\nfunc f() {\n\tif x {\n\t\ty := )\n\t}\n}"
 	e := parse(t, h, "go", broken)
-	if s, ok := e.chunkAt(ext.Position{Line: 4, Byte: 2}, indentOptions{tab: 4, shift: 4}, owner, true); !ok || s.style != chunkErrorStyle {
+	if s, ok := e.chunkAt(ext.Position{Line: 4, Byte: 2}, allRows, indentOptions{tab: 4, shift: 4}, owner, true); !ok || s.style != chunkErrorStyle {
 		t.Errorf("誤りを含むまとまり = %+v, %v, want the style %s", s, ok, chunkErrorStyle)
 	}
-	if s, ok := e.chunkAt(ext.Position{Line: 4, Byte: 2}, indentOptions{tab: 4, shift: 4}, owner, false); !ok || s.style != chunkStyle {
+	if s, ok := e.chunkAt(ext.Position{Line: 4, Byte: 2}, allRows, indentOptions{tab: 4, shift: 4}, owner, false); !ok || s.style != chunkStyle {
 		t.Errorf("errorSign が false の誤りを含むまとまり = %+v, %v, want the style %s", s, ok, chunkStyle)
 	}
 }
@@ -214,7 +228,7 @@ func TestChunkAtLanguages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := parseWith(t, tt.lang, tt.src)
-			shape, ok := d.chunkAt(tt.cursor, indentOptions{tab: 4, shift: 4}, defaultChunkSettings.symbols, true)
+			shape, ok := d.chunkAt(tt.cursor, allRows, indentOptions{tab: 4, shift: 4}, defaultChunkSettings.symbols, true)
 			if !ok {
 				t.Fatal("chunkAt: no chunk")
 			}
@@ -235,14 +249,14 @@ func TestParseChunk(t *testing.T) {
 	}
 	s, problems = parseSettings(json.RawMessage(`{"chunk": {"enable": true, "delay": 100, "duration": 100, "errorSign": false,
 		"symbols": {"horizontalLine": "═", "verticalLine": "║", "leftTop": "╔", "leftBottom": "╚", "rightArrow": "▶"}}}`))
-	want := chunkSettings{enable: true, delay: 100, duration: 100, errorSign: false, symbols: chunkSymbols{
+	want := chunkSettings{enable: true, delay: 100, duration: 100, errorSign: false, maxFileSize: 1 << 20, symbols: chunkSymbols{
 		horizontalLine: "═", verticalLine: "║", leftTop: "╔", leftBottom: "╚", leftArrow: "─", rightArrow: "▶",
 	}}
 	if len(problems) != 0 || s.chunk != want {
 		t.Errorf("オーナーの値 = %+v, %v, want %+v", s.chunk, problems, want)
 	}
-	s, problems = parseSettings(json.RawMessage(`{"chunk": {"enable": true, "delay": -1, "duration": 20000, "symbols": {"leftTop": "ab", "verticalLine": "\t", "rightArrow": " ", "up": "^"}}}`))
-	if !s.chunk.enable || s.chunk.delay != 300 || s.chunk.duration != 200 || s.chunk.symbols != defaultChunkSettings.symbols || len(problems) != 6 {
+	s, problems = parseSettings(json.RawMessage(`{"chunk": {"enable": true, "delay": -1, "duration": 20000, "maxFileSize": -1, "symbols": {"leftTop": "ab", "verticalLine": "\t", "rightArrow": " ", "up": "^"}}}`))
+	if !s.chunk.enable || s.chunk.delay != 300 || s.chunk.duration != 200 || s.chunk.maxFileSize != 1<<20 || s.chunk.symbols != defaultChunkSettings.symbols || len(problems) != 7 {
 		t.Errorf("誤りのある値 = %+v, %q", s.chunk, problems)
 	}
 	if _, problems = parseSettings(json.RawMessage(`{"chunk": {"enabled": true}}`)); len(problems) != 1 {
@@ -465,4 +479,85 @@ func TestServeChunkAnimation(t *testing.T) {
 	off.open(t)
 	off.notify(t, ext.MethodWindowChange, win)
 	off.quiet(t, 100*time.Millisecond, "出さない設定")
+}
+
+// TestServeChunkDebounce は、delay より短い間隔でカーソルが動き続ける間は描かず、最後の移動から delay の後に、
+// 最後のカーソルのまとまりの罫線だけを描くことを確かめる（hlchunk.nvim の debounce。PR #396 のレビューの推奨 3）。
+//
+// req: FR-266
+func TestServeChunkDebounce(t *testing.T) {
+	h := connectChunk(t, `{"chunk": {"enable": true, "delay": 80, "duration": 0}}`, tab4)
+	h.open(t)
+	win := ext.WindowChangeParams{Window: "client/1", Buffer: 1, Version: 1, Bottom: 10, Rows: 20, Columns: 80}
+	// if の中、関数の本体、if の中の順に 50 ミリ秒ごとに動かす。待ち直さなければ、2 回目の移動の後の 80 ミリ秒の時点で関数の本体の罫線が届く。
+	var last time.Time
+	for i, line := range []int{4, 8, 4} {
+		win.Cursor, win.Seq = ext.Position{Line: line, Byte: 2}, uint64(i+1)
+		if i > 0 {
+			time.Sleep(50 * time.Millisecond)
+		}
+		last = time.Now()
+		h.notify(t, ext.MethodWindowChange, win)
+	}
+	p := h.virt(t)
+	if d := time.Since(last); d < 80*time.Millisecond {
+		t.Errorf("最後の移動から %v で届いた。want delay の 80ms 以上", d)
+	}
+	if got := drawChunk(t, chunkSource, p.VirtualTexts, 4)[3:8]; !slices.Equal(got, []string{"╭───if a > 0 {", "│       a++", "│", "│       a += 2", "╰──>}"}) {
+		t.Errorf("罫線 =\n%s\nwant the chunk of the if", strings.Join(got, "\n"))
+	}
+	h.quiet(t, 150*time.Millisecond, "最後の移動の罫線の後")
+}
+
+// TestChunkAtView は、セルを窓の見えている行とその前後（行の範囲）の中だけで作り、範囲の外の始まりと終わりの行の角も作らないこと、
+// 範囲が違っても同じまとまりと分かることを確かめる（PR #396 のレビューの推奨 2）。
+//
+// req: FR-265
+func TestChunkAtView(t *testing.T) {
+	h := newTestHighlighter(t)
+	src := "package main\n\nfunc f() {\n\tif true {\n" + strings.Repeat("\t\tx++\n", 300) + "\t}\n}"
+	d := parse(t, h, "go", src)
+	opt := indentOptions{tab: 4, shift: 4}
+	view := rowRange{lo: 100, hi: 120}
+	s, ok := d.chunkAt(ext.Position{Line: 110, Byte: 2}, view, opt, defaultChunkSettings.symbols, true)
+	if !ok || len(s.cells) != 21 || s.cells[0].row != 100 || s.cells[20].row != 120 {
+		t.Fatalf("範囲の中のセル = %d 個 %+v", len(s.cells), s)
+	}
+	all, _ := d.chunkAt(ext.Position{Line: 110, Byte: 2}, allRows, opt, defaultChunkSettings.symbols, true)
+	if !s.sameChunk(all) || len(all.cells) != 4+300+4 {
+		t.Errorf("すべての行のセル = %d 個, sameChunk = %v", len(all.cells), s.sameChunk(all))
+	}
+	if !s.covers(rowRange{105, 115}) || s.covers(rowRange{115, 125}) || !s.covers(rowRange{400, 410}) {
+		t.Error("covers が見えている行とセルの行の範囲を比べていない")
+	}
+}
+
+// TestServeChunkView は、送るセルを窓の見えている行とその前後に絞り、見えている行がその外へ出るスクロールで描き直し、
+// 中でのスクロールでは送り直さないことと、maxFileSize 以上の大きさのバッファには描かないことを確かめる（PR #396 のレビューの推奨 2）。
+//
+// req: FR-265, FR-267
+func TestServeChunkView(t *testing.T) {
+	src := "package main\n\nfunc f() {\n" + strings.Repeat("\tx++\n", 300) + "}"
+	h := connectChunk(t, `{"chunk": {"enable": true, "delay": 0, "duration": 0}}`, tab4)
+	h.notify(t, ext.MethodBufferOpen, ext.BufferOpenParams{Buffer: 1, Version: 1, FileType: "go", Text: src})
+	<-h.decs
+	win := ext.WindowChangeParams{Window: "client/1", Buffer: 1, Version: 1, Top: 0, Bottom: 20, Rows: 20, Columns: 80, Cursor: ext.Position{Line: 5, Byte: 1}, Seq: 1}
+	h.notify(t, ext.MethodWindowChange, win)
+	// 見えている 0〜20 行と、前後の 20 行（40 行目まで）の縦線。関数の行（2 行目）と閉じの行には字下げが無いので角を描かない。
+	if p := h.virt(t); len(p.VirtualTexts) != 38 || p.VirtualTexts[0].Position.Line != 3 || p.VirtualTexts[37].Position.Line != 40 {
+		t.Fatalf("最初の罫線 = %d 個", len(p.VirtualTexts))
+	}
+	win.Top, win.Bottom, win.Seq = 100, 120, 2
+	h.notify(t, ext.MethodWindowChange, win)
+	if p := h.virt(t); len(p.VirtualTexts) != 61 || p.VirtualTexts[0].Position.Line != 80 {
+		t.Fatalf("送ったセルの外へのスクロールの後 = %d 個", len(p.VirtualTexts))
+	}
+	win.Top, win.Bottom, win.Seq = 110, 130, 3
+	h.notify(t, ext.MethodWindowChange, win)
+	h.quiet(t, 100*time.Millisecond, "送ったセルの中のスクロール")
+
+	small := connectChunk(t, `{"chunk": {"enable": true, "delay": 0, "duration": 0, "maxFileSize": 50}}`, tab4)
+	small.open(t)
+	small.notify(t, ext.MethodWindowChange, ext.WindowChangeParams{Window: "client/1", Buffer: 1, Version: 1, Bottom: 10, Rows: 20, Columns: 80, Cursor: ext.Position{Line: 4, Byte: 2}, Seq: 1})
+	small.quiet(t, 100*time.Millisecond, "maxFileSize 以上のバッファ")
 }
