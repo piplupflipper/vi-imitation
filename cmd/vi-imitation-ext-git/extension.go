@@ -6,14 +6,22 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/ext/server"
 	"github.com/piplupflipper/vi-imitation/internal/rpc"
 )
 
-// cmdDiffHead は、バッファのファイルを git の HEAD の版と見比べるコマンドの ID である（manifest.json）。
-const cmdDiffHead = "git.diffHead"
+// コマンドの ID（manifest.json）。
+const (
+	// cmdDiffHead は、バッファのファイルを git の HEAD の版と見比べるコマンドである。
+	cmdDiffHead = "git.diffHead"
+	// cmdChanges は、比べる元（引数。省けば既定のブランチとの merge-base）との差分があるファイルの一覧を開くコマンドである。
+	cmdChanges = "git.changes"
+	// cmdChangesHead は、HEAD との差分（作業ツリーの変更）があるファイルの一覧を開くコマンドである（:git.changes HEAD と同じ）。
+	cmdChangesHead = "git.changesHead"
+)
 
 // extension は、git 連携の拡張機能である。
 type extension struct {
@@ -21,12 +29,30 @@ type extension struct {
 	// ctx は、ハンドラーから起こした goroutine が git を実行し、本体へリクエストを送るときの ctx である。
 	// ハンドラーの ctx は応答で終わり、それで本体へ送ると ErrEditInHandler になる（ext/server の Edit の doc）。
 	ctx context.Context
+
+	// mu は、pickers と early を守る。
+	mu sync.Mutex
+	// pickers は、開いている差分の一覧である（ポップアップの ID から）。
+	pickers map[ext.ViewID]*changesPicker
+	// early は、OpenPopup の応答より先に届いたポップアップの知らせである。
+	early map[ext.ViewID]*earlyEvents
+
+	// openMu は、一覧で選んだファイルを開く処理（openChange）を 1 つずつにし、lastBase を守る。
+	openMu sync.Mutex
+	// lastBase は、前に一覧から開いた比べる元の版のバッファである。無ければ 0 である。
+	lastBase ext.BufferID
 }
 
 // newExtension は、コマンドを登録した拡張機能を作る。
 func newExtension() *extension {
-	x := &extension{server: server.New(), ctx: context.Background()}
+	x := &extension{
+		server: server.New(), ctx: context.Background(),
+		pickers: map[ext.ViewID]*changesPicker{}, early: map[ext.ViewID]*earlyEvents{},
+	}
 	x.server.Command(cmdDiffHead, x.diffHead)
+	x.server.CommandAsync(cmdChanges, x.changesCommand(cmdChanges, ""))
+	x.server.CommandAsync(cmdChangesHead, x.changesCommand(cmdChangesHead, "HEAD"))
+	x.server.OnView(x.onView)
 	return x
 }
 

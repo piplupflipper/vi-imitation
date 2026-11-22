@@ -87,11 +87,22 @@ func (e *Editor) bufferUpdateRequest(ev *exthost.BufferUpdateRequest) {
 }
 
 // bufferDisposeRequest は、buffer/dispose を処理する。作った拡張機能のバッファを閉じる。タブならタブも閉じる（FR-64）。
+//
+// そのバッファが最後の client の最後のタブ（最後の窓）なら、閉じる前に名前の無い空のバッファをその client のタブにして移り、
+// server と client を終わらせない（Vim の :bd で最後のバッファを消したときと同じ）。
+// 拡張機能から本体を終わらせる経路を作らず、:q の E162 の確かめを通らずに未保存の変更を失わないためである
+// （PR #382 の再レビューの必須。git 連携の拡張機能が、左のペインを閉じた後に右の比べる元の版を閉じた）。
+// 最後の client でなければ、:q で最後のタブを閉じたのと同じくその client を終える（見比べのペインを閉じるのに使う）。
+//
+// req: FR-64
 func (e *Editor) bufferDisposeRequest(ev *exthost.BufferDisposeRequest) {
 	bs, err := e.createdBy(ev.Extension, ev.Params.Buffer)
 	if err != nil {
 		_ = ev.ReplyError(err)
 		return
+	}
+	if o := bs.owner; o != nil && len(e.clients) == 1 && e.clients[0] == o && len(o.tabs) == 1 {
+		e.withView(o, func() { e.enter(e.newUnnamedBuffer("")) })
 	}
 	e.closeBufferState(bs)
 	_ = ev.Reply()

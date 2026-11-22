@@ -3,6 +3,7 @@ package editor
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,49 @@ func TestCreatedBufferUpdateDispose(t *testing.T) {
 	}
 	h.keys(":fake.headdiff dispose 1<CR>")
 	h.waitMessage("not created by this extension")
+}
+
+// buffer/dispose で閉じるバッファが最後の client の最後のタブなら、名前の無い空のバッファのタブに替え、client も server も終わらない。
+// 未保存の変更のある、どのタブでもないバッファ（端末が閉じた client の残したもの）も残る（PR #382 の再レビューの必須）。
+//
+// req: FR-64
+func TestCreatedBufferDisposeLastWindow(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "one\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	h.keys("Iunsaved <Esc>")
+	h.eventually("a.txt を変える", func() bool { return h.e.cur.buf.Text() == "unsaved one" && h.e.cur.buf.Modified() })
+	var id uint64
+	h.e.do(func() {
+		// 左のペインの client が端末を閉じて、未保存の a.txt を、どのタブでもないバッファとして残した形にする（loseClient）。
+		a := h.e.cur
+		bs := h.e.newBuffer(buffer.New("base"), "", "")
+		bs.title, bs.creator = "origin/main...HEAD:a.txt", "fake"
+		bs.buf.SetReadOnly(true)
+		h.e.enter(bs)
+		c := h.e.view
+		c.tabs = slices.DeleteFunc(c.tabs, func(o *bufferState) bool { return o == a })
+		a.owner = nil
+		id = uint64(bs.id)
+	})
+	h.keys(fmt.Sprintf(":fake.headdiff dispose %d<CR>", id))
+	h.waitMessage("headdiff dispose err=<nil>")
+	var clients, tabs int
+	var quit, unnamed bool
+	h.e.do(func() {
+		clients, tabs, quit = len(h.e.clients), len(h.e.view.tabs), h.e.quit
+		unnamed = h.e.cur.path == "" && h.e.cur.title == "" && h.e.cur.buf.Text() == ""
+	})
+	if clients != 1 || tabs != 1 || quit || !unnamed {
+		t.Errorf("dispose の後: clients=%d tabs=%d quit=%v 名前の無い空のバッファ=%v", clients, tabs, quit, unnamed)
+	}
+	if got := h.bufferText("a.txt"); got != "unsaved one" {
+		t.Errorf("a.txt = %q", got)
+	}
+	if _, _, n := h.createdBuffer("origin/main...HEAD:a.txt"); n != 0 {
+		t.Errorf("閉じたバッファが %d 個残った", n)
+	}
+	// 他の client が残っていれば（見比べのペイン）、最後のタブを閉じた client は :q と同じく終わる。この経路は
+	// cmd/vi-imitation-ext-git の TestChangesInTmux が実物の tmux で確かめる。
 }
 
 // 端末多重化ソフトの外では、diff/start で分割できないので断り（基本設計 6.8）、作ったバッファを閉じる（FR-64）。
