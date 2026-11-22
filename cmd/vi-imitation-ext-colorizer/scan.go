@@ -2,8 +2,6 @@ package main
 
 import (
 	"math"
-	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -22,7 +20,7 @@ type formats struct {
 	hexRGB, hexRGBA, hexRRGGBB, hexRRGGBBAA bool
 	// hexAARRGGBB は、0x の後に 16 進の数字が 3、6、8 個続く形（0xRGB、0xRRGGBB、0xAARRGGBB）である。
 	hexAARRGGBB bool
-	// rgbFn は rgb() と rgba()、hslFn は hsl() と hsla() の関数の形である。
+	// rgbFn は rgb() と rgba()、hslFn は hsl() と hsla() の関数の形である（cssfunc.go）。
 	rgbFn, hslFn bool
 	// namesLower、namesCamel、namesUpper は、色の名前（Neovim の nvim_get_color_map() の名前。names_table.go）を、
 	// 小文字にした綴り（red、lightblue）、表のままの綴り（Red、LightBlue）、大文字にした綴り（RED、LIGHTBLUE）で認識するかである。
@@ -48,17 +46,22 @@ func (f *formats) namesEnabled() bool {
 	return f.namesLower || f.namesCamel || f.namesUpper
 }
 
+// maxCodeBytes は、1 つの色コードの長さの上限である。関数の形（cssfunc.go）は、これより長いものを認めない。
+// # の形は最大 9 バイト、0x の形は 10 バイト、色の名前は 20 バイトなので、どの形もこの長さに収まる。
+// 長い行を編集の周りだけ数え直すとき（incremental.go）の、編集の前に遡る幅にも使う。
+const maxCodeBytes = 256
+
 // scanner は、1 行の中の色コードを探す。作った後は変えないので、goroutine の間で共有してよい。
 //
-// 認識する形と、範囲の区切り方は、nvim-colorizer.lua（上のコミット）の既定の振る舞いに合わせた。
-// nvim-colorizer.lua は GPL-3.0 なので、そのコードは写さず、実物に同じ行を与えて出した範囲と色が一致するように書いた
-// （scan_test.go の表は、2026-11-22 に Neovim 0.12.5 でその実物から取った値である）。
+// # の形、0x の形、色の名前の認識と、範囲の区切り方は、nvim-colorizer.lua（上のコミット）の既定の振る舞いに合わせた。
+// nvim-colorizer.lua は GPL-3.0 なので、そのコードは写さず、実物に同じ行を与えて出した範囲と色が一致するように書いた。
+// rgb() と hsl() の関数の形は、CSS Color Module Level 4 の文法から書いた（cssfunc.go。nvim-colorizer.lua との違いは docs/usage.md）。
 // 行の先頭から 1 バイトずつ進み、各位置で次の順に試して、最初に認めた形の分だけ進む。どれも認めなければ 1 バイト進む。
-// 行の最後のバイトの位置では試さない（nvim-colorizer.lua の buffer.lua の parse_lines と同じ）。
+// 行の最後のバイトの位置では試さない（1 バイトの色コードは無い）。
 //
 //  1. # で始まる形（hexAt）。# の位置では、認めなくても 2 と 3 を試さない
 //  2. 0x で始まる形（argbAt）
-//  3. rgb(、rgba(、hsl(、hsla( で始まる関数の形（rgbAt、hslAt）。rgba( と hsla( は、rgb( と hsl( より先に当てる
+//  3. rgb(、rgba(、hsl(、hsla( で始まる関数の形（cssFuncAt）
 //  4. 色の名前（nameAt）
 type scanner struct {
 	f formats
@@ -127,13 +130,8 @@ func (s *scanner) at(line string, i int) (int, uint32, bool) {
 			return n, rgb, true
 		}
 	}
-	if s.f.rgbFn && strings.HasPrefix(line[i:], "rgb") {
-		if n, rgb, ok := rgbAt(line, i); ok {
-			return n, rgb, true
-		}
-	}
-	if s.f.hslFn && strings.HasPrefix(line[i:], "hsl") {
-		if n, rgb, ok := hslAt(line, i); ok {
+	if (c == 'r' && s.f.rgbFn) || (c == 'h' && s.f.hslFn) {
+		if n, rgb, ok := cssFuncAt(line, i); ok {
 			return n, rgb, true
 		}
 	}
@@ -149,14 +147,13 @@ func isAlnum(c byte) bool {
 }
 
 // wordChar は、# と 0x の形の前後にあれば、その形を認めない文字かを返す。英字と数字である。
-// 色の名前を認識するときは、- も含める。nvim-colorizer.lua は、色の名前の表を作るときに extra_word_chars の - を
-// 英字や数字と同じ文字の種類に足し、# と 0x の形の区切りの判定もその種類で行うためである（#fff- と -#fff を認めない）。
+// 色の名前を認識するときは、- も含める（-#fff と #fff- を認めない。nvim-colorizer.lua に行を与えて確かめた振る舞い）。
 func (s *scanner) wordChar(c byte) bool {
 	return isAlnum(c) || c == '-' && s.f.namesEnabled()
 }
 
 // isNameChar は、c が色の名前の一部になりうる文字かを返す。名前の前後がこの文字なら、名前と認めない。
-// 英字と数字のほかに - を含める（nvim-colorizer.lua の names の extra_word_chars の既定。text-red-500 の red を名前にしない）。
+// 英字と数字のほかに - を含める（text-red-500 の red を名前にしない）。
 func isNameChar(c byte) bool {
 	return isAlnum(c) || c == '-'
 }
@@ -173,7 +170,7 @@ func hexDigit(c byte) (uint32, bool) {
 }
 
 // withAlpha は、各成分に不透明度 alpha（0 から 1）を掛けて切り捨てた色を返す。
-// 背景の色との合成はせず、黒に寄せる（nvim-colorizer.lua の #RGBA、#RRGGBBAA、0xAARRGGBB と同じ）。
+// 背景の色との合成はせず、黒に寄せる（#RGBA、#RRGGBBAA、0xAARRGGBB。nvim-colorizer.lua に行を与えて確かめた色と同じ）。
 func withAlpha(r, g, b uint32, alpha float64) uint32 {
 	f := func(c uint32) uint32 { return uint32(math.Floor(float64(c) * alpha)) }
 	return f(r)<<16 | f(g)<<8 | f(b)
@@ -223,7 +220,7 @@ func (s *scanner) hexAt(line string, i int) (int, uint32, bool) {
 }
 
 // argbAt は、位置 i の 0x（0X）から始まる 0xRGB、0xRRGGBB、0xAARRGGBB を読む。
-// 前の文字は問わず、後ろが英字か数字なら認めない（nvim-colorizer.lua の AARRGGBB と同じ）。
+// 前の文字は問わず、後ろが英字か数字なら認めない。
 func (s *scanner) argbAt(line string, i int) (int, uint32, bool) {
 	if i+1 >= len(line) || line[i] != '0' || line[i+1]|0x20 != 'x' {
 		return 0, 0, false
@@ -273,178 +270,4 @@ func (s *scanner) nameAt(line string, i int) (int, uint32, bool) {
 	}
 	rgb, ok := s.names[line[i:j]]
 	return j - i, rgb, ok
-}
-
-// cssSpace は、関数の形の中の空白である（Lua のパターンの %s と同じ文字。nvim-colorizer.lua は Lua のパターンで読む）。
-const cssSpace = `[\t\n\v\f\r ]`
-
-// rgbPattern と hslPattern は、関数の形の引数の並びである。数は数字と . の並びで、成分ごとに区切りの空白 1 つと , を拾う。
-// Go の regexp は、先頭に寄せた上で、後戻りで探す実装と同じ部分一致を選ぶ（regexp の doc）ので、
-// nvim-colorizer.lua の Lua のパターンと同じ区切り方になる（rgb(255, 200,) の 200 を 20 と 0 に分ける、など）。
-var (
-	rgbPattern = regexp.MustCompile(`^(rgba?)\(` + cssSpace + `*` +
-		`([.\d]+)(%?)(` + cssSpace + `?)` + cssSpace + `*(,?)` + cssSpace + `*` +
-		`([.\d]+)(%?)(` + cssSpace + `?)` + cssSpace + `*(,?)` + cssSpace + `*` +
-		`([.\d]+)(%?)` + cssSpace + `*(/?,?)` + cssSpace + `*` +
-		`([.\d]*)(%?)` + cssSpace + `*\)`)
-	rgbHexPattern = regexp.MustCompile(`^rgb\(` + cssSpace + `*([0-9a-fA-F]{6})` + cssSpace + `*\)`)
-	// rgbaHexPattern は rgba(RRGGBBAA) の形（Hyprland の設定の書き方）である。
-	rgbaHexPattern = regexp.MustCompile(`^rgba\(` + cssSpace + `*([0-9a-fA-F]{8})` + cssSpace + `*\)`)
-	hslPattern     = regexp.MustCompile(`^(hsla?)\(` + cssSpace + `*` +
-		`([.\d]+)([deg]*)([turn]*)(` + cssSpace + `?)` + cssSpace + `*(,?)` + cssSpace + `*` +
-		`([.\d]+)%?(` + cssSpace + `?)` + cssSpace + `*(,?)` + cssSpace + `*` +
-		`([.\d]+)%?` + cssSpace + `*(/?,?)` + cssSpace + `*` +
-		`([.\d]*)(%?)` + cssSpace + `*\)`)
-)
-
-// validSeparators は、関数の形の区切りが正しいかを返す。commas は成分の後ろの , と / の並び、spaces は成分の後ろの空白の並びである。
-// , があれば、, の数が成分の間の数（不透明度があれば 3、無ければ 2）と同じでなければならない。
-// , が無ければ、最初の 2 つの成分の後ろに空白が要り、不透明度は / で区切る（rgb(1 2 3 / 50%)）。
-func validSeparators(commas, spaces string, hasAlpha bool) bool {
-	want := 2
-	if hasAlpha {
-		want = 3
-	}
-	if strings.Contains(commas, ",") {
-		return strings.Count(commas, ",") == want
-	}
-	if len(spaces) < 2 {
-		return false
-	}
-	return !hasAlpha || commas == "/"
-}
-
-// number は、数字と . の並びを数として読む。読めなければ（. だけ、. が 2 つ以上）false を返す。
-func number(s string) (float64, bool) {
-	v, err := strconv.ParseFloat(s, 64)
-	return v, err == nil
-}
-
-// truncRGB は、0 から 255 の小数の成分を切り捨てて色にする（nvim-colorizer.lua は LuaJIT の string.format の %02x で切り捨てる）。
-func truncRGB(r, g, b float64) uint32 {
-	return uint32(r)<<16 | uint32(g)<<8 | uint32(b)
-}
-
-// rgbAt は、位置 i から始まる rgb() と rgba() の形を読む。前の文字は問わない（xrgb(1,2,3) の rgb( から認める）。
-// 成分は 0 から 255 の数か、3 つとも % の付いた数である。255 と 100% を超える値は上限に切り詰める。
-// 不透明度は書いてよいが、色には掛けない（nvim-colorizer.lua と同じ）。rgb() と rgba() のどちらにも、不透明度を書いても書かなくてもよい。
-// 引数の並びとして読めなければ、rgb(RRGGBB) と rgba(RRGGBBAA) の形を試す。
-func rgbAt(line string, i int) (int, uint32, bool) {
-	rest := line[i:]
-	m := rgbPattern.FindStringSubmatch(rest)
-	if m == nil || m[5] != m[9] {
-		if h := rgbHexPattern.FindStringSubmatch(rest); h != nil {
-			v, _ := strconv.ParseUint(h[1], 16, 32)
-			return len(h[0]), uint32(v), true
-		}
-		if h := rgbaHexPattern.FindStringSubmatch(rest); h != nil {
-			v, _ := strconv.ParseUint(h[1], 16, 32)
-			return len(h[0]), withAlpha(uint32(v>>24), uint32(v>>16&0xff), uint32(v>>8&0xff), float64(v&0xff)/255), true
-		}
-		return 0, 0, false
-	}
-	units := m[3] + m[7] + m[11]
-	if strings.Contains(units, "%") && strings.Count(units, "%") != 3 {
-		return 0, 0, false
-	}
-	hasAlpha := m[13] != ""
-	if !validSeparators(m[5]+m[9]+m[12], m[4]+m[8], hasAlpha) {
-		return 0, 0, false
-	}
-	if hasAlpha {
-		if _, ok := number(m[13]); !ok {
-			return 0, 0, false
-		}
-	}
-	var c [3]float64
-	for k, idx := range []int{2, 6, 10} {
-		v, ok := number(m[idx])
-		if !ok {
-			return 0, 0, false
-		}
-		if m[3] == "%" {
-			if v > 100 {
-				v = 255
-			} else {
-				v = v / 100 * 255
-			}
-		} else {
-			v = min(v, 255)
-		}
-		c[k] = v
-	}
-	return len(m[0]), truncRGB(c[0], c[1], c[2]), true
-}
-
-// hslAt は、位置 i から始まる hsl() と hsla() の形を読む。前の文字は問わない。
-// 色相は度で、deg か turn を付けてよい。彩度と明度の % は省いてよい。360 度と 100% を超える値は、色相は 1 周の中へ戻し、ほかは上限に切り詰める。
-// 不透明度は色に掛けない（nvim-colorizer.lua と同じ）。
-func hslAt(line string, i int) (int, uint32, bool) {
-	m := hslPattern.FindStringSubmatch(line[i:])
-	if m == nil || m[6] != m[9] {
-		return 0, 0, false
-	}
-	hasAlpha := m[12] != ""
-	if m[3] != "" && m[3] != "deg" && m[4] != "turn" {
-		return 0, 0, false
-	}
-	if !validSeparators(m[6]+m[9]+m[11], m[5]+m[8], hasAlpha) {
-		return 0, 0, false
-	}
-	if hasAlpha {
-		if _, ok := number(m[12]); !ok {
-			return 0, 0, false
-		}
-	}
-	h, ok := number(m[2])
-	if !ok {
-		h = 1
-	}
-	if m[4] == "turn" {
-		h *= 360
-	}
-	if h > 360 {
-		turns := h / 360
-		h = 360 * (turns - math.Floor(turns))
-	}
-	sat, ok1 := number(m[7])
-	light, ok2 := number(m[10])
-	if !ok1 || !ok2 {
-		return 0, 0, false
-	}
-	r, g, b := hslToRGB(h/360, min(sat, 100)/100, min(light, 100)/100)
-	return len(m[0]), truncRGB(r, g, b), true
-}
-
-// hslToRGB は、0 から 1 の色相、彩度、明度を、0 から 255 の小数の成分にする（CSS Color Module Level 3 の HSL の変換）。
-func hslToRGB(h, s, l float64) (float64, float64, float64) {
-	if s == 0 {
-		return l * 255, l * 255, l * 255
-	}
-	var q float64
-	if l < 0.5 {
-		q = l * (1 + s)
-	} else {
-		q = l + s - l*s
-	}
-	p := 2*l - q
-	return 255 * hueToRGB(p, q, h+1.0/3), 255 * hueToRGB(p, q, h), 255 * hueToRGB(p, q, h-1.0/3)
-}
-
-func hueToRGB(p, q, t float64) float64 {
-	if t < 0 {
-		t++
-	}
-	if t > 1 {
-		t--
-	}
-	switch {
-	case t < 1.0/6:
-		return p + (q-p)*6*t
-	case t < 1.0/2:
-		return q
-	case t < 2.0/3:
-		return p + (q-p)*(2.0/3-t)*6
-	}
-	return p
 }

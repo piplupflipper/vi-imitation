@@ -23,7 +23,8 @@ func spansString(spans []span) string {
 	return strings.Join(parts, " ")
 }
 
-// TestScanLineMatchesColorizer は、行の中の色コードの範囲と色が、nvim-colorizer.lua と同じになることを確かめる。
+// TestScanLineMatchesColorizer は、# の形、0x の形、色の名前の範囲と色が、nvim-colorizer.lua と同じになることを確かめる。
+// rgb() と hsl() は仕様から書いたので、この表に入れず、cssfunc_test.go で確かめる。
 // 期待値は、2026-11-22 に Neovim 0.12.5 と nvim-colorizer.lua（catgoose/nvim-colorizer.lua のコミット
 // 72a05f62c52241bc7441c820eb53946f92b2e6a4）の lua/colorizer/buffer.lua の parse_lines に同じ行を与えて取った。
 // def は setup に filetypes だけを渡したとき（オーナーの nvim と同じ既定）、all は user_default_options で
@@ -50,23 +51,6 @@ func TestScanLineMatchesColorizer(t *testing.T) {
 		// 名前を認識するときは、- も英字や数字と同じく区切りにならない
 		{"#fff-)", "", ""},
 		{"x -#fff", "", ""},
-		{"rgb(255, 0, 0)", "", "0-14:ff0000"},
-		{"rgba(255, 0, 0, 0.5)", "", "0-20:ff0000"},
-		{"rgb(255 0 0 / 50%)", "", "0-18:ff0000"},
-		{"rgb(50%, 50%, 50%)", "", "0-18:7f7f7f"},
-		{"rgb(50%, 50, 50)", "", ""},
-		{"rgb(1,2 3)", "", ""},
-		{"rgba(1 2 3 0.5)", "", ""},
-		{"rgb(255, 200,)", "", ""},
-		{"rgb(ff0000)", "", "0-11:ff0000"},
-		{"rgba(ff000080)", "", "0-14:800000"},
-		{"xrgb(1,2,3)", "", "1-11:010203"},
-		{"rgb(300, 0, 0)", "", "0-14:ff0000"},
-		{"hsl(120, 50%, 50%)", "", "0-18:3fbf3f"},
-		{"hsl(400, 100%, 50%)", "", "0-19:ffaa00"},
-		{"hsl(0.25turn, 100%, 50%)", "", "0-24:7fff00"},
-		{"hsl(90deg 100% 50%)", "", "0-19:7fff00"},
-		{"hsla(120 100% 50% / 0.3)", "", "0-24:00ff00"},
 		{"0xFFF 0xFF0000 0x80FF0000 0xF00F 0X123", "", "0-5:ffffff 6-14:ff0000 15-25:800000 33-38:112233"},
 		{"red blue Red RED LightBlue lightblue light-blue", "0-3:ff0000 4-8:0000ff 9-12:ff0000 17-26:add8e6 27-36:add8e6", "0-3:ff0000 4-8:0000ff 9-12:ff0000 17-26:add8e6 27-36:add8e6"},
 		{"redish xred red1 Blue3 NvimDarkGrey1 nvimdarkgrey1", "12-16:ff0000 17-22:0000cd 23-36:07080d 37-50:07080d", "12-16:ff0000 17-22:0000cd 23-36:07080d 37-50:07080d"},
