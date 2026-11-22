@@ -142,9 +142,10 @@ func TestVirtualTextJoinAndCase(t *testing.T) {
 
 // 行を足す操作の後の仮想テキストの位置を、Neovim 0.12.5 の nvim_buf_get_extmarks の位置と比べる（PR #378 の再レビューの必須 1）。
 // xyz、"  abc"、end の 3 行の、xyz の行末に inline の 123 と eol の note、2 行目の先頭に overlay の |、バイト 2 に inline の <a> を置く。
-// o と行単位の p は、行末の仮想テキストを元の行に残す（足す行を次の行の先頭に入れる。internal/command の insertBelowAtNextLine）。
-// 行末での <CR> は、Neovim と同じく次の行へ移す。J の後の u は、取り消しの編集でずらすだけなので、Neovim（123 と note を xyz の行末に、
-// | を 2 行目の先頭に戻す）と違い、4 つとも 2 行目のバイト 2 に集まる（docs/vim-differences.md に書いた違い）。
+// o と行単位の p は、行末の仮想テキストを元の行に残す（行末の仮想テキストを、その行の改行の手前に結び付けて数える。
+// ui.VirtualLayer.ApplyEdit と eolInsert）。行末での <CR> も同じ形の編集なので元の行に残る（Neovim は次の行へ移す。
+// docs/vim-differences.md に書いた違い）。J の後の u は、取り消しの編集でずらすので、eol の note は xyz の行末に戻るが、Neovim
+// （123 も xyz の行末に、| を 2 行目の先頭に戻す）と違い、123 と | は 2 行目のバイト 2 に集まる（同じく vim-differences.md）。
 //
 // req: FR-231
 func TestVirtualTextLineOps(t *testing.T) {
@@ -158,11 +159,13 @@ func TestVirtualTextLineOps(t *testing.T) {
 		{"yyp", "xyz123 note\nxyz\n| <a>abc"},
 		{"jyyP", "xyz123 note\n  abc\n| <a>abc"},
 		{"jyyp", "xyz123 note\n| <a>abc\n  abc"},
-		{"A<CR><Esc>", "xyz\n123 note\n| <a>abc"},
+		// 足す行が次の行と同じテキストでも、同じ規則で元の行に残る。
+		{"jjyykp", "xyz123 note\n| <a>abc\nend"},
+		{"A<CR><Esc>", "xyz123 note\n\n| <a>abc"},
 		{"yypu", "xyz123 note\n| <a>abc"},
 		// J の後は、4 つとも入れた空白の後ろ（バイト 4）に集まる（Neovim も 4 つとも 0,4）。同じ位置は一覧の順に描く。
 		{"J", "xyz 123|a>abc note"},
-		{"Ju", "xyz\n  123|a>abc note"},
+		{"Ju", "xyz note\n  123|a>abc"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.keys, func(t *testing.T) {
@@ -178,6 +181,43 @@ func TestVirtualTextLineOps(t *testing.T) {
 			h.screenHas("置いた後", "xyz123 note\n| <a>abc\n")
 			h.keys(tt.keys)
 			h.screenHas(tt.keys, "\n"+tt.want+"\n")
+		})
+	}
+}
+
+// 最後の行の下に行を足す操作でも、最後の行の行末の仮想テキストを元の行に残す（Neovim 0.12.5 の nvim_buf_get_extmarks で、xyz、end の
+// end の行末の inline の ! と eol の tail は、Go、Gofoo、Gp、Gyyp とその u のどれでも 2 行目に残った。2026-11-22 に確かめた）。
+// 最後の行の下には次の行が無いので、これらの編集は最後の行の行末への「改行と行」の挿入として届く。
+//
+// req: FR-231
+func TestVirtualTextLastLineOps(t *testing.T) {
+	tests := []struct {
+		keys string
+		want string
+	}{
+		{"Go<Esc>", "end! tail\n\n"},
+		{"Gofoo<Esc>", "end! tail\nfoo\n"},
+		{"Go<Esc>u", "end! tail\n~"},
+		{"yyGp", "end! tail\nxyz\n"},
+		{"yyGpu", "end! tail\n~"},
+		{"Gyyp", "end! tail\nend\n"},
+		{"Gyypu", "end! tail\n~"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.keys, func(t *testing.T) {
+			h := start(t, Config{})
+			h.keys("ixyz<CR>end<Esc>gg0")
+			h.settle()
+			h.e.do(func() {
+				bs := h.e.cur
+				h.e.setVirtualTexts("x", ext.VirtualTextSetParams{Buffer: bs.id, Version: ext.Version(bs.buf.Version()), VirtualTexts: []ext.VirtualText{
+					{Position: ext.Position{Line: 1, Byte: 3}, Placement: ext.VirtualTextInline, Chunks: []ext.VirtualTextChunk{{Text: "!"}}},
+					{Position: ext.Position{Line: 1, Byte: 3}, Placement: ext.VirtualTextEOL, Chunks: []ext.VirtualTextChunk{{Text: "tail"}}},
+				}})
+			})
+			h.screenHas("置いた後", "\nxyz\nend! tail\n~")
+			h.keys(tt.keys)
+			h.screenHas(tt.keys, "\nxyz\n"+tt.want)
 		})
 	}
 }

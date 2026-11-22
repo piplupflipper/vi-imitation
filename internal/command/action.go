@@ -393,18 +393,12 @@ func (s *State) putText(reg Register, after bool, n int) (rg buffer.Range, put b
 	if reg.Linewise {
 		text = strings.TrimSuffix(text, "\n")
 		if after {
-			// 下へ貼るときは、次の行の先頭に「テキストと改行」を入れる（最後の行の後ろだけは、行末に「改行とテキスト」を入れる）。
-			// 行末に「改行とテキスト」を入れると、行末の位置の拡張機能の仮想テキストが、ずらすときに貼った行へ移るためである
-			// （Neovim 0.12.5 は元の行に残す。PR #378 の再レビューの必須 1）。バッファの中身は同じである。
-			at, ins := s.lineEnd(l), "\n"+text
-			if s.insertBelowAtNextLine(l, text) {
-				at, ins = pos(l+1, 0), text+"\n"
-			}
-			if err := s.apply(buffer.Edit{Range: emptyRange(at), Text: ins}); err != nil {
+			at := s.lineEnd(l)
+			if err := s.apply(buffer.Edit{Range: emptyRange(at), Text: "\n" + text}); err != nil {
 				return buffer.Range{}, false, err
 			}
 			s.setCursorNormal(s.firstNonBlankPos(l + 1))
-			return buffer.Range{Start: at, End: textEnd(at, ins)}, true, nil
+			return buffer.Range{Start: at, End: textEnd(at, "\n"+text)}, true, nil
 		}
 		at := pos(l, 0)
 		if err := s.apply(buffer.Edit{Range: emptyRange(at), Text: text + "\n"}); err != nil {
@@ -441,23 +435,6 @@ func checkPutSize(reg Register, n int) error {
 	return nil
 }
 
-// insertBelowAtNextLine は、行 l の下に行 text（改行を含めない。複数の行でもよい）を足す編集を、次の行の先頭への「text と改行」の挿入に
-// するかを返す（o と行単位の p。PR #378 の再レビューの必須 1）。false なら、行 l の行末への「改行と text」の挿入にする。
-//
-// 次の行の先頭に入れると、行 l の行末の位置の拡張機能の仮想テキストは、ずらしても行 l に残る（Neovim 0.12.5 と同じ）。
-// 行末に入れると、仮想テキストは入れた改行の後ろへ動く（行末での <CR> と同じ）。
-// 最後の行の下には次の行が無いので、行末に入れる。
-// 足す最初の行が次の行と同じテキストのときも、行末に入れる。取り消しのときに buffer の UndoInfo が変わった行の範囲を、同じ行の続きの
-// 後ろの方に寄せて数え、取り消しの後のカーソルが Vim 9.1 と違う行になるため（ddp.u。TestVimUndoCursor）で、その場合だけ行末の仮想テキストは
-// 足した行へ動く。
-func (s *State) insertBelowAtNextLine(l int, text string) bool {
-	if l >= s.lastLine() {
-		return false
-	}
-	first, _, _ := strings.Cut(text, "\n")
-	return s.line(l+1) != first
-}
-
 // textEnd は、start の位置に text を入れたときの、入れたテキストの終わりの位置を返す。
 func textEnd(start buffer.Position, text string) buffer.Position {
 	if i := strings.LastIndexByte(text, '\n'); i >= 0 {
@@ -482,20 +459,12 @@ func actOpen(below bool) actionFunc {
 		if c.auto {
 			indent = c.makeIndent(s.lineIndent(l))
 		}
-		switch {
-		case below && s.insertBelowAtNextLine(l, indent):
-			// 下に開く行は、次の行の先頭に「字下げと改行」を入れて作る。行末に改行を入れると、行末の位置の拡張機能の仮想テキストが、
-			// ずらすときに開いた行へ移るためである（Neovim 0.12.5 は元の行に残す。PR #378 の再レビューの必須 1）。最後の行だけは行末に入れる。
-			if err := s.apply(buffer.Edit{Range: emptyRange(pos(l+1, 0)), Text: indent + "\n"}); err != nil {
-				return err
-			}
-			s.cursor = pos(l+1, len(indent))
-		case below:
+		if below {
 			if err := s.apply(buffer.Edit{Range: emptyRange(s.lineEnd(l)), Text: "\n" + indent}); err != nil {
 				return err
 			}
 			s.cursor = pos(l+1, len(indent))
-		default:
+		} else {
 			if err := s.apply(buffer.Edit{Range: emptyRange(pos(l, 0)), Text: indent + "\n"}); err != nil {
 				return err
 			}

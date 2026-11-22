@@ -448,7 +448,7 @@ func TestVirtualLayerApplyEdit(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, ed := range eds {
-			l.ApplyEdit(ed)
+			l.ApplyEdit(ed, false)
 		}
 		v.Changed()
 		if v.Gen() == gen {
@@ -476,7 +476,7 @@ func TestVirtualLayerApplyEdit(t *testing.T) {
 	}
 	// 行の中身だけを変える、仮想テキストの無い行の編集では、何も変えない。
 	l := NewVirtualLayer(vts, 2)
-	if l.ApplyEdit(buffer.Edit{Range: buffer.Range{Start: pos(5, 0), End: pos(5, 1)}, Text: "z"}) {
+	if l.ApplyEdit(buffer.Edit{Range: buffer.Range{Start: pos(5, 0), End: pos(5, 1)}, Text: "z"}, false) {
 		t.Error("仮想テキストの無い行の編集で変えたと答えた")
 	}
 	// xyz と空の行の J（つなぐ箇所の改行を消すだけ）は、行末の inline を行末に残す（Neovim は xyz123）。
@@ -486,7 +486,7 @@ func TestVirtualLayerApplyEdit(t *testing.T) {
 	if _, err := b2.Apply(buffer.Transaction{BaseVersion: b2.Version(), Edits: []buffer.Edit{ed}}); err != nil {
 		t.Fatal(err)
 	}
-	l2.ApplyEdit(ed)
+	l2.ApplyEdit(ed, false)
 	v2 := &VirtualTexts{}
 	v2.SetLayers([]*VirtualLayer{l2})
 	if got := rowTexts(newRenderer(20, 4).Render(&Frame{Text: b2, LineLayout: LineLayout{Virtual: v2}}), 1)[0]; got != "xyz123" {

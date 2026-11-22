@@ -60,7 +60,7 @@ func (e *Editor) commitChange(bs *bufferState, ch buffer.Change) {
 	for id, ss := range bs.signs {
 		bs.signs[id] = shiftSigns(ss, ch.Edits)
 	}
-	bs.shiftAllVirtualTexts(ch.Edits)
+	bs.shiftAllVirtualTexts(ch)
 	e.shiftJumps(bs, ch)
 	bs.history = append(bs.history, ch)
 	if n := len(bs.history); n > maxHistory {

@@ -185,8 +185,19 @@ func buildLine(items []virtItem, rank int) *lineVirtual {
 // ApplyEdit は、バッファに適用した編集 ed に合わせて、仮想テキストの位置をずらす。変えたかを返す。
 // 編集の範囲の行の仮想テキストは shiftVirtual でずらして行ごとに分け直し、範囲より後ろの行は、増減した行の数を行の番号に足す。
 //
+// ただし、行末の仮想テキストは、その行の改行の手前に結び付けて数え、改行の後ろに入れた本文では動かさない（left gravity）。
+//
+//   - atEOL（ed が行末の位置への挿入であること。持ち主が編集の前の行の長さから決める）で、ed のテキストが改行で始まるなら、
+//     ed の位置にある仮想テキストは inline も eol も動かさない。o と行単位の p は行末に「改行と行」を入れる編集として届くので、
+//     行末のインレイヒントと注記は、Neovim 0.12.5 と同じく元の行に残る（最後の行の下に足すときも同じ。PR #378 の再レビューの必須 1）
+//   - eol の仮想テキストは、行に付けるもので、位置のバイトは並べる順にだけ使う（ext.VirtualTextEOL）ので、編集の範囲の始まりと同じ位置に
+//     あれば、どの編集でも動かさない（J の後の u で、行末の注記が元の行に戻る）
+//
+// 行末での <CR>（A<CR>）も o と同じ形の編集で届くので、行末の仮想テキストは元の行に残る（Neovim は次の行へ移す。docs/vim-differences.md）。
+// 編集の形からは o と A<CR> を見分けられないためである。行の途中の <CR> では、行末の位置は範囲の始まりより後ろなので、次の行へ移る（Neovim と同じ）。
+//
 // req: FR-231
-func (l *VirtualLayer) ApplyEdit(ed buffer.Edit) bool {
+func (l *VirtualLayer) ApplyEdit(ed buffer.Edit, atEOL bool) bool {
 	if l.Empty() {
 		return false
 	}
@@ -205,10 +216,14 @@ func (l *VirtualLayer) ApplyEdit(ed buffer.Edit) bool {
 	}
 	// 範囲の行の仮想テキストをずらして、ずらした後の行ごとに分け直す。ずらした後の行は s.Line から newEnd.Line の間にあり、
 	// 範囲より前の行と、行の番号を足した後ろの行の間に収まる。
+	newlineAtEOL := atEOL && s == e && strings.HasPrefix(ed.Text, "\n")
 	byLine := map[int][]virtItem{}
 	for _, ll := range l.lines[i0:i1] {
 		for _, it := range ll.items {
-			p := shiftVirtual(buffer.Position{Line: ll.line, Byte: it.byte}, ed, newEnd)
+			p := buffer.Position{Line: ll.line, Byte: it.byte}
+			if p != s || (it.placement != VirtualEOL && !newlineAtEOL) {
+				p = shiftVirtual(p, ed, newEnd)
+			}
 			it.byte = p.Byte
 			byLine[p.Line] = append(byLine[p.Line], it)
 		}

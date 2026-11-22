@@ -56,7 +56,7 @@ func benchVirtualTextInsert(b *testing.B, n, perLine int) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		bs.shiftAllVirtualTexts(ch.Edits)
+		bs.shiftAllVirtualTexts(ch)
 		at.Byte++
 		vtBenchRender(r, bs, at)
 	}
@@ -79,7 +79,7 @@ func BenchmarkVirtualTextNewLine30k(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		bs.shiftAllVirtualTexts(ch.Edits)
+		bs.shiftAllVirtualTexts(ch)
 		at.Line++
 		vtBenchRender(r, bs, at)
 	}

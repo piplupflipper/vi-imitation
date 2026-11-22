@@ -4,6 +4,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strings"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
@@ -46,7 +47,8 @@ func (e *Editor) setVirtualTexts(extID string, p ext.VirtualTextSetParams) bool 
 	}
 	l := ui.NewVirtualLayer(uiVirtualTexts(p.VirtualTexts), lines)
 	for _, ed := range eds {
-		l.ApplyEdit(ed)
+		// 前の版の行の長さは覚えていないので、行末への挿入かは数えない（eolInsert の doc）。
+		l.ApplyEdit(ed, false)
 	}
 	l.Clip(bs.buf.LineCount())
 	if bs.virtLayers == nil {
@@ -79,18 +81,19 @@ func uiVirtualTexts(vs []ext.VirtualText) []ui.VirtualText {
 	return out
 }
 
-// shiftAllVirtualTexts は、バッファ bs のすべての拡張機能の仮想テキストを、適用した編集 eds に合わせてずらす。
+// shiftAllVirtualTexts は、バッファ bs のすべての拡張機能の仮想テキストを、適用した変更 ch の編集に合わせてずらす。
 // 時間は、編集の範囲の行の仮想テキストの数と、行の数の変わる編集では仮想テキストのある行の数に比例する（ui.VirtualLayer.ApplyEdit）。
 //
 // req: FR-231
-func (bs *bufferState) shiftAllVirtualTexts(eds []buffer.Edit) {
+func (bs *bufferState) shiftAllVirtualTexts(ch buffer.Change) {
 	if len(bs.virtLayers) == 0 {
 		return
 	}
+	atEOL := bs.eolInsert(ch)
 	changed := false
 	for _, l := range bs.virtLayers {
-		for _, ed := range eds {
-			if l.ApplyEdit(ed) {
+		for _, ed := range ch.Edits {
+			if l.ApplyEdit(ed, atEOL) {
 				changed = true
 			}
 		}
@@ -98,6 +101,27 @@ func (bs *bufferState) shiftAllVirtualTexts(eds []buffer.Edit) {
 	if changed {
 		bs.virtView.Changed()
 	}
+}
+
+// eolInsert は、変更 ch が、行末の位置への改行で始まるテキストの挿入 1 つだけかを返す（ui.VirtualLayer.ApplyEdit の atEOL）。
+// o と行単位の p（下へ足す）と行末での <CR> がこの形になり、行末の仮想テキストを元の行に残す。
+//
+// 編集の前の行の長さは覚えていないので、編集の後のテキストから数える。挿入の後の最後の行は「入れたテキストの最後の行」と
+// 「挿入の位置より後ろの元の行の残り」をつないだものなので、それが入れたテキストの最後の行と同じなら、挿入の位置は行末だった。
+// 数えられるのは、バッファがちょうど ch の後の版のとき（後に続く変更をまだ適用していないとき）だけで、そうでなければ行末への挿入として扱わない。
+func (bs *bufferState) eolInsert(ch buffer.Change) bool {
+	if len(ch.Edits) != 1 || bs.buf.Version() != ch.After {
+		return false
+	}
+	ed := ch.Edits[0]
+	if ed.Range.Start != ed.Range.End || !strings.HasPrefix(ed.Text, "\n") {
+		return false
+	}
+	last := ed.Range.Start.Line + strings.Count(ed.Text, "\n")
+	if last >= bs.buf.LineCount() {
+		return false
+	}
+	return bs.buf.Line(last) == ed.Text[strings.LastIndexByte(ed.Text, '\n')+1:]
 }
 
 // removeVirtualTexts は、拡張機能 extID の仮想テキストを消す。消すものが無ければ何もしない。
