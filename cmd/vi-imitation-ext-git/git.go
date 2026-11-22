@@ -79,6 +79,14 @@ func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+// lookGit は、PATH に git が無ければ、画面に出せる日本語の誤りを返す。
+func lookGit() error {
+	if _, err := exec.LookPath("git"); err != nil {
+		return errors.New("git のコマンドが見つかりません")
+	}
+	return nil
+}
+
 // headVersion は、git の HEAD の版のファイルの中身である。
 type headVersion struct {
 	// Name は、リポジトリの根からの相対パスである（git の HEAD:<パス> の <パス>）。
@@ -90,8 +98,8 @@ type headVersion struct {
 // readHead は、絶対パス path のファイルの、そのファイルを含む git のリポジトリの HEAD の版を読む。
 // 誤りの文言は、画面のメッセージの行に出せる日本語である。
 func readHead(ctx context.Context, path string) (headVersion, error) {
-	if _, err := exec.LookPath("git"); err != nil {
-		return headVersion{}, errors.New("git のコマンドが見つかりません")
+	if err := lookGit(); err != nil {
+		return headVersion{}, err
 	}
 	// シンボリックリンクは、リンクの先のファイルの HEAD の版と見比べる（バッファの中身はリンクの先の中身なので）。
 	// git show はリンクそのもの（先のパスの文字列）を返すため、先に解く。解けなければ（まだ無いファイルなど）そのまま使う。

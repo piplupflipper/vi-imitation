@@ -2,11 +2,15 @@
   "id": "git",
   "command": "./vi-imitation-ext-git",
   "activation": [
-    { "on": "command", "id": "git.diffHead" }
+    { "on": "command", "id": "git.diffHead" },
+    { "on": "command", "id": "git.changes" },
+    { "on": "command", "id": "git.changesHead" }
   ],
   "contributes": {
     "commands": [
-      { "id": "git.diffHead", "keys": "<Leader>gd", "description": "バッファのファイルを git の HEAD の版と見比べる" }
+      { "id": "git.diffHead", "keys": "<Leader>gd", "description": "バッファのファイルを git の HEAD の版と見比べる" },
+      { "id": "git.changes", "keys": "<Leader>gV", "description": "比べる元（省けば既定のブランチとの merge-base）との差分があるファイルの一覧から開いて見比べる" },
+      { "id": "git.changesHead", "keys": "<Leader>gv", "description": "HEAD との差分（作業ツリーの変更）があるファイルの一覧から開いて見比べる" }
     ]
   }
 }
