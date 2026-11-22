@@ -189,6 +189,8 @@ func (x *extension) change(e *server.BufferChangeEvent) {
 		return
 	}
 	needSend := false
+	// lo と hi は、数え直していない行を含む行の範囲 [lo, hi) である。後の編集で行がずれたら hi もずらす。
+	lo, hi := len(st.lines), 0
 	for _, ed := range e.Edits {
 		start, end := ed.Range.Start.Line, ed.Range.End.Line
 		if start < 0 || end < start || end >= len(st.lines) {
@@ -212,6 +214,10 @@ func (x *extension) change(e *server.BufferChangeEvent) {
 			repl[i].dirty = true
 		}
 		st.lines = slices.Replace(st.lines, start, end+1, repl...)
+		if hi > end {
+			hi += added - (end - start + 1)
+		}
+		lo, hi = min(lo, start), max(hi, start+added)
 	}
 	st.version = b.Version()
 	if len(st.lines) != b.LineCount() {
@@ -219,7 +225,7 @@ func (x *extension) change(e *server.BufferChangeEvent) {
 		x.markLocked(b.ID())
 		return
 	}
-	for i := range st.lines {
+	for i := lo; i < min(hi, len(st.lines)); i++ {
 		l := &st.lines[i]
 		if !l.dirty {
 			continue
@@ -255,6 +261,9 @@ func (x *extension) markLocked(id ext.BufferID) {
 }
 
 // sendLoop は、起こされるたびに、送り直しの要るバッファの一覧を 1 つずつ送る。プロセスが終わるまで続ける。
+// 送っている間に同じバッファが何度変わっても、pending の印は 1 つなので、送り終えた後に最新の状態で 1 回だけ送る。
+//
+// req: FR-262
 func (x *extension) sendLoop() {
 	for range x.wake {
 		for x.sendOne() {

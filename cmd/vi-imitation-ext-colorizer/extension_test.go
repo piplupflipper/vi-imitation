@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
+	userconfig "github.com/piplupflipper/vi-imitation/internal/config"
 	"github.com/piplupflipper/vi-imitation/internal/rpc"
 )
 
@@ -285,7 +289,8 @@ func TestOldHost(t *testing.T) {
 	}
 }
 
-// TestRandomEdits は、乱数の編集を続けた後の一覧が、最後のテキストを全部数え直したものと同じになることを確かめる。
+// TestRandomEdits は、乱数の編集（1 回の変更に 1〜3 個の編集）を続けたとき、変更のたびに、本体の役が最後に受け取った一覧が、
+// その時点のテキストを全部数え直したものと同じになることを確かめる（送らなかった変更でも、前の一覧のままで正しい）。
 //
 // req: FR-262
 func TestRandomEdits(t *testing.T) {
@@ -295,40 +300,88 @@ func TestRandomEdits(t *testing.T) {
 	r := rand.New(rand.NewPCG(388, 1)) //nolint:gosec // 再現できる無作為な編集の列を作るためで、暗号の用途ではない
 	lines := []string{"#abc red", "", "plain #123456 text"}
 	h.open(1, "css", strings.Join(lines, "\n"))
-	v := ext.Version(1)
-	for range 300 {
-		// 行とバイトの位置を選び、範囲を断片の並びで置き換える
-		sl := r.IntN(len(lines))
-		el := min(sl+r.IntN(3), len(lines)-1)
-		sb := r.IntN(len(lines[sl]) + 1)
-		eb := r.IntN(len(lines[el]) + 1)
-		if el == sl && eb < sb {
-			sb, eb = eb, sb
-		}
-		var text strings.Builder
-		for range r.IntN(3) {
-			text.WriteString(pieces[r.IntN(len(pieces))])
-		}
-		joined := strings.Join(lines[sl:el+1], "\n")
-		startOff, endOff := sb, len(joined)-(len(lines[el])-eb)
-		repl := joined[:startOff] + text.String() + joined[endOff:]
-		lines = append(append(append([]string{}, lines[:sl]...), strings.Split(repl, "\n")...), lines[el+1:]...)
-		h.change(1, v, edit(sl, sb, el, eb, text.String()))
-		v++
-	}
 	s := newScanner(x.cfg.formats)
-	var want []string
-	for i, l := range lines {
-		for _, sp := range s.scanLine(l) {
-			want = append(want, fmt.Sprintf("%d:%d-%d", i, sp.start, sp.end))
+	v := ext.Version(1)
+	for step := range 300 {
+		var edits []ext.Edit
+		for range 1 + r.IntN(3) {
+			// 行とバイトの位置を選び、範囲を断片の並びで置き換える。位置は前の編集を適用した後のテキストで数える
+			sl := r.IntN(len(lines))
+			el := min(sl+r.IntN(3), len(lines)-1)
+			sb := r.IntN(len(lines[sl]) + 1)
+			eb := r.IntN(len(lines[el]) + 1)
+			if el == sl && eb < sb {
+				sb, eb = eb, sb
+			}
+			var text strings.Builder
+			for range r.IntN(3) {
+				text.WriteString(pieces[r.IntN(len(pieces))])
+			}
+			joined := strings.Join(lines[sl:el+1], "\n")
+			startOff, endOff := sb, len(joined)-(len(lines[el])-eb)
+			repl := joined[:startOff] + text.String() + joined[endOff:]
+			lines = append(append(append([]string{}, lines[:sl]...), strings.Split(repl, "\n")...), lines[el+1:]...)
+			edits = append(edits, edit(sl, sb, el, eb, text.String()))
+		}
+		h.change(1, v, edits...)
+		v++
+		var want []string
+		for i, l := range lines {
+			for _, sp := range s.scanLine(l) {
+				want = append(want, fmt.Sprintf("%d:%d-%d", i, sp.start, sp.end))
+			}
+		}
+		var got []string
+		if h.sets() > 0 {
+			for _, d := range h.last().Decorations {
+				got = append(got, fmt.Sprintf("%d:%d-%d", d.Range.Start.Line, d.Range.Start.Byte, d.Range.End.Byte))
+			}
+		}
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Fatalf("%d 回目の変更（%+v）の後の一覧 = %v\nwant %v", step, edits, got, want)
 		}
 	}
-	var got []string
-	for _, d := range h.last().Decorations {
-		got = append(got, fmt.Sprintf("%d:%d-%d", d.Range.Start.Line, d.Range.Start.Byte, d.Range.End.Byte))
+}
+
+// TestConfigExample は、同梱の設定の例の colorizer の設定を読めて、オーナーの nvim の nvim-colorizer.lua の filetypes
+// （lua/plugins/colorizer.lua）と同じファイルの種類を対象にし、その種類を本体がファイルの名前から決められることを確かめる。
+//
+// req: FR-261
+func TestConfigExample(t *testing.T) {
+	data, err := os.ReadFile("../../config.example.jsonc")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Errorf("一覧 = %v\nwant %v", got, want)
+	ucfg, errs := userconfig.Parse("config.example.jsonc", data)
+	if len(errs) != 0 {
+		t.Fatalf("設定の例の誤り: %v", errs)
+	}
+	cfg, err := parseSettings(ucfg.ExtensionSettings["colorizer"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"css", "scss", "html", "javascript", "typescript", "javascriptreact", "typescriptreact",
+		"lua", "vim", "fish", "tmux", "toml", "yaml", "conf",
+	}
+	if !slices.Equal(cfg.fileTypes, want) {
+		t.Errorf("fileTypes = %v, want %v", cfg.fileTypes, want)
+	}
+	if cfg.formats != defaultFormats() || cfg.mode != modeBackground {
+		t.Errorf("形と塗り方 = %+v %v, want nvim-colorizer.lua の既定", cfg.formats, cfg.mode)
+	}
+	// 本体の既定の表（.js、.ts、.toml、.yaml）に無い種類は、設定の例の fileTypes で決める
+	for name, ft := range map[string]string{
+		"a.scss": "scss", "a.html": "html", "a.vim": "vim", ".tmux.conf": "tmux", "tmux.conf": "tmux", "a.conf": "conf",
+		"a.css": "css", "a.lua": "lua", "a.fish": "fish", "a.tsx": "typescriptreact", "a.jsx": "javascriptreact",
+	} {
+		got, ok := ucfg.FileTypes[name]
+		if !ok {
+			got = ucfg.FileTypes[filepath.Ext(name)]
+		}
+		if got != ft {
+			t.Errorf("%s の種類 = %q, want %q", name, got, ft)
+		}
 	}
 }
 
@@ -409,13 +462,14 @@ func benchmarkChange(b *testing.B, n int, colored, waitSent bool) {
 	h.sync()
 }
 
-// TestBurstOfChanges は、色コードの多い大きなバッファで、送り終える前に変更が続いても、ping の応答が遅れず、
+// TestBurstOfChanges は、色コードの多いバッファで、送り終える前に変更が続いても、ping の応答が本体の期限（2 秒）より前に届き、
 // 送った一覧が最後のバージョン番号のものになる（送っている間の変更をまとめる）ことを確かめる。
+// 本体の役は一覧を届いた順に復号してから ping の応答を読むので、-race の下でも復号が期限に収まる大きさ（1 万の範囲）にした。
 //
 // req: FR-262
 func TestBurstOfChanges(t *testing.T) {
 	var sb strings.Builder
-	for i := range 50_000 {
+	for i := range 10_000 {
 		fmt.Fprintf(&sb, "a { color: #%06x; }\n", i%64*0x030507)
 	}
 	x := newExtension()
@@ -435,8 +489,8 @@ func TestBurstOfChanges(t *testing.T) {
 	if err := h.call(ext.MethodPing, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	// 1 回の変更の処理は変わった 1 行の数え直しだけなので、200 回でも ping の期限（2 秒）よりずっと短い
-	if d := time.Since(start); d > time.Second {
+	// 1 回の変更の処理は変わった 1 行の数え直しだけなので、200 回でも ping の期限（2 秒）より短い
+	if d := time.Since(start); d > 2*time.Second {
 		t.Errorf("200 回の変更の後の ping の応答まで %v", d)
 	}
 	h.sync()
