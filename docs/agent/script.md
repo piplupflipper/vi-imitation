@@ -326,6 +326,9 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
 - `func (s *Server) SetStatusLine(part, text, style string) error`: 本体へ statusline/set を送り、宣言ファイルの contributes.statusline で足した部品 part の中身を text にする
   。style は部品の色の名前で、空なら利用者の設定の statusline.ext の色で描く。text が空なら部品を出さない。
   応答は待たない。どこから呼んでもよい。
+- `func (s *Server) SetVirtualTexts(p ext.VirtualTextSetParams) error`: 本体へ virtualText/set を送り、バッファの位置に本文に無い文字列（仮想テキスト）を出させる
+  。一覧はバッファ全体の分で、同じ拡張機能とバッファの前の一覧を置き換える。
+  空の一覧で、その組の仮想テキストを消す。応答は待たない。どこから呼んでもよい。
 - `func (s *Server) ShowMessage(level ext.MessageLevel, text string) error`: 本体へ message/show を送り、利用者へメッセージを表示させる。応答は待たない。どこから呼んでもよい。
 - `func (s *Server) ShowPopup(p ext.PopupShowParams) error`: 本体へ popup/show を送る。応答は待たない。どこから呼んでもよい。
 - `func (s *Server) StartDiff(ctx context.Context, p ext.DiffStartParams) (ext.DiffStartResult, error)`: 本体へ diff/start を送り、2 つのバッファの見比べを始めさせる。

@@ -3,7 +3,6 @@ package editor
 import (
 	"maps"
 	"slices"
-	"strconv"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
@@ -92,12 +91,15 @@ func (bs *bufferState) rebuildVirtualTexts() {
 		return
 	}
 	var vts []ui.VirtualText
-	attrs := map[*ext.TextAttr]ui.Attr{}
+	attrs := map[*ext.TextAttr]*ui.Attr{}
 	for _, id := range slices.Sorted(maps.Keys(bs.virtualTexts)) {
 		for _, v := range bs.virtualTexts[id] {
 			chunks := make([]ui.VirtualChunk, len(v.Chunks))
 			for i, c := range v.Chunks {
-				chunks[i] = ui.VirtualChunk{Text: c.Text, Style: c.Style, Attr: cachedAttr(attrs, c.Attr)}
+				chunks[i] = ui.VirtualChunk{Text: c.Text, Style: c.Style}
+				if c.Attr != nil {
+					chunks[i].Attr = *cachedAttr(attrs, c.Attr)
+				}
 			}
 			vts = append(vts, ui.VirtualText{Position: fromExtPos(v.Position), Placement: uiPlacement(v.Placement), Chunks: chunks})
 		}
@@ -117,19 +119,16 @@ func uiPlacement(p ext.VirtualTextPlacement) ui.VirtualPlacement {
 	return ui.VirtualInline
 }
 
-// cachedAttr は、uiAttr(a) を、同じポインターについて 1 回だけ求めて cache に覚えて返す。
+// cachedAttr は、uiAttr(a) を、同じポインター a について 1 回だけ求めて cache に覚え、その値を指すポインターを返す。a は nil でない。
 // decoration/set の受け取った一覧は、styles の表の同じ項目を指す範囲が同じ値を共有する（ext.Decoration.Attr）ので、
-// 数十万の範囲でも、色の文字列を読むのは表の項目の数だけになる。
-func cachedAttr(cache map[*ext.TextAttr]ui.Attr, a *ext.TextAttr) ui.Attr {
-	if a == nil {
-		return ui.Attr{}
-	}
+// 数十万の範囲でも、色の文字列を読むのは表の項目の数だけになり、描画の範囲（ui.Highlight.Attr）も同じ値を指す。
+func cachedAttr(cache map[*ext.TextAttr]*ui.Attr, a *ext.TextAttr) *ui.Attr {
 	if v, ok := cache[a]; ok {
 		return v
 	}
 	v := uiAttr(a)
-	cache[a] = v
-	return v
+	cache[a] = &v
+	return &v
 }
 
 // uiAttr は、拡張機能が直に付けた色と飾り（FR-230）を、描画の属性にする。色は ext が "#rrggbb" か空であることを確かめてある。
@@ -150,9 +149,23 @@ func hexColor(s string) ui.Color {
 	if !ext.IsHexColor(s) {
 		return ui.ColorDefault
 	}
-	v, err := strconv.ParseUint(s[1:], 16, 32)
-	if err != nil {
-		return ui.ColorDefault
+	return ui.RGB(hexByte(s[1:3]), hexByte(s[3:5]), hexByte(s[5:7]))
+}
+
+// hexByte は、16 進の 2 桁 s（IsHexColor で確かめたもの）の値を返す。
+func hexByte(s string) byte {
+	var v byte
+	for i := range 2 {
+		c := s[i]
+		switch {
+		case c >= 'a':
+			c = c - 'a' + 10
+		case c >= 'A':
+			c = c - 'A' + 10
+		default:
+			c -= '0'
+		}
+		v = v<<4 | c
 	}
-	return ui.RGB(uint8(v>>16), uint8(v>>8), uint8(v))
+	return v
 }

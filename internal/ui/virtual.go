@@ -116,7 +116,12 @@ func NewVirtualTexts(vts []VirtualText, lines int) *VirtualTexts {
 		var ps []virtPiece
 		for _, c := range vt.Chunks {
 			if t := virtualTextOf(c.Text); t != "" {
-				ps = append(ps, virtPiece{byte: b, text: t, style: st.index(decoStyle{name: c.Style, attr: c.Attr})})
+				ds := decoStyle{name: c.Style}
+				if c.Attr != (Attr{}) {
+					a := c.Attr
+					ds.attr = &a
+				}
+				ps = append(ps, virtPiece{byte: b, text: t, style: st.index(ds)})
 			}
 		}
 		if len(ps) == 0 {
@@ -169,8 +174,7 @@ func (v *VirtualTexts) line(n int) *lineVirtual {
 //
 // req: FR-234
 func (v *VirtualTexts) attr(theme Theme, style int) Attr {
-	st := v.styles[style]
-	return theme.attr(st.name).Over(st.attr)
+	return v.styles[style].over(theme)
 }
 
 // lineWalk は、1 行の文字と inline の仮想テキストの文字を、画面に並べる順に 1 つずつ返す走査である（lineRule.walk で作る）。
@@ -181,6 +185,7 @@ func (v *VirtualTexts) attr(theme Theme, style int) Attr {
 type lineWalk struct {
 	m   *lineRule
 	s   string
+	tab int // タブ文字の幅（0 より大きい）
 	inl []virtPiece
 	vi  int // 次に返す inline の文字列
 	vo  int // inl[vi] の文字列の中の、次に返す文字のバイト
@@ -189,7 +194,7 @@ type lineWalk struct {
 
 // walk は、n 行目（テキスト s）を並べる走査を返す。
 func (m *lineRule) walk(n int, s string) lineWalk {
-	w := lineWalk{m: m, s: s}
+	w := lineWalk{m: m, s: s, tab: tabStopOr(m.tabStop)}
 	if lv := m.virt.line(n); lv != nil {
 		w.inl = lv.inline
 	}
@@ -200,21 +205,37 @@ func (m *lineRule) walk(n int, s string) lineWalk {
 func (w *lineWalk) more() bool { return w.off < len(w.s) || w.vi < len(w.inl) }
 
 // next は、次の文字を列 col に置いた配置を返す。more が true のときだけ呼ぶ。
+// 仮想テキストの無い行（ほとんどの行）では nextGlyph を直に呼ぶ短い関数としてインライン展開されるようにし、
+// 仮想テキストのある行の処理は nextMixed に、空白の記号を描くときのタブ文字は lineRule.listTab に分ける。
+// 長い行を数えるとき（数十万文字の行の折り返し）に、1 文字あたりの関数の呼び出しを増やさないためである（PR #310 のレビューの推奨 2 と同じ）。
 func (w *lineWalk) next(col int) glyph {
 	if w.vi < len(w.inl) {
-		b := w.inl[w.vi].byte
-		if w.off >= len(w.s) || b <= w.off {
-			return w.virtual(col)
-		}
-		if g := w.m.glyph(w.s, w.off, col); b >= g.off+g.size {
-			w.off += g.size
-			return g
-		}
+		return w.nextMixed(col)
+	}
+	// nextGlyph の速い道（表示できる ASCII の文字で、後に結合文字が続かない）を、呼ばずにここで返す。
+	if off := w.off; w.s[off] >= 0x20 && w.s[off] < 0x7f && (off+1 == len(w.s) || w.s[off+1] < 0x80) {
+		w.off++
+		return glyph{off: off, size: 1, col: col, width: 1, kind: glyphText, text: w.s[off : off+1]}
+	}
+	g := nextGlyph(w.s, w.off, col, w.tab)
+	w.off += g.size
+	if g.kind == glyphTab && w.m.list {
+		w.m.listTab(&g)
+	}
+	return g
+}
+
+// nextMixed は、まだ返していない inline の仮想テキストのある行の next である。
+func (w *lineWalk) nextMixed(col int) glyph {
+	b := w.inl[w.vi].byte
+	if w.off >= len(w.s) || b <= w.off {
 		return w.virtual(col)
 	}
-	g := w.m.glyph(w.s, w.off, col)
-	w.off += g.size
-	return g
+	if g := w.m.glyph(w.s, w.off, col); b >= g.off+g.size {
+		w.off += g.size
+		return g
+	}
+	return w.virtual(col)
 }
 
 // virtual は、次の inline の仮想テキストの文字を、列 col に置いた配置を返す。

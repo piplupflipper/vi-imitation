@@ -9,16 +9,16 @@ import (
 	"github.com/piplupflipper/vi-imitation/internal/ui"
 )
 
-// inlineVT は、位置 (line, b) の inline の仮想テキストである。
-func inlineVT(line, b int, text string) ext.VirtualText {
-	return ext.VirtualText{Position: ext.Position{Line: line, Byte: b}, Placement: ext.VirtualTextInline, Chunks: []ext.VirtualTextChunk{{Text: text}}}
+// inlineVT は、最初の行のバイト b の inline の仮想テキストである。
+func inlineVT(b int, text string) ext.VirtualText {
+	return ext.VirtualText{Position: ext.Position{Line: 0, Byte: b}, Placement: ext.VirtualTextInline, Chunks: []ext.VirtualTextChunk{{Text: text}}}
 }
 
-// setVT は、カーソルのあるバッファの今の版で、拡張機能 id の仮想テキストを vts にする。
-func (h *harness) setVT(id string, vts ...ext.VirtualText) {
+// setVT は、カーソルのあるバッファの今の版で、拡張機能 x の仮想テキストを vts にする。
+func (h *harness) setVT(vts ...ext.VirtualText) {
 	h.e.do(func() {
 		bs := h.e.cur
-		h.e.setVirtualTexts(id, ext.VirtualTextSetParams{Buffer: bs.id, Version: ext.Version(bs.buf.Version()), VirtualTexts: vts})
+		h.e.setVirtualTexts("x", ext.VirtualTextSetParams{Buffer: bs.id, Version: ext.Version(bs.buf.Version()), VirtualTexts: vts})
 	})
 }
 
@@ -48,7 +48,7 @@ func TestVirtualTextCursorMotion(t *testing.T) {
 	h := start(t, Config{})
 	h.keys("iabcdef<CR>abcdefghijklmnop<Esc>gg0")
 	h.settle()
-	h.setVT("x", inlineVT(0, 2, "XXXX"))
+	h.setVT(inlineVT(2, "XXXX"))
 	h.screenHas("inline の仮想テキスト", "abXXXXcdef\nabcdefghijklmnop")
 	h.keys("4lj")
 	h.settle()
@@ -97,13 +97,13 @@ func TestVirtualTextVersions(t *testing.T) {
 	h.settle()
 	h.e.do(func() {
 		e, bs := h.e, h.e.cur
-		if !e.setVirtualTexts("x", ext.VirtualTextSetParams{Buffer: bs.id, Version: old, VirtualTexts: []ext.VirtualText{inlineVT(0, 1, "V")}}) {
+		if !e.setVirtualTexts("x", ext.VirtualTextSetParams{Buffer: bs.id, Version: old, VirtualTexts: []ext.VirtualText{inlineVT(1, "V")}}) {
 			t.Fatal("覚えている古い版の一覧を持たない")
 		}
 		if got := bs.virtualTexts["x"][0].Position; got != (ext.Position{Line: 0, Byte: 3}) {
 			t.Errorf("古い版の位置 = %+v, want 0,3", got)
 		}
-		if e.setVirtualTexts("y", ext.VirtualTextSetParams{Buffer: bs.id, Version: old + 100, VirtualTexts: []ext.VirtualText{inlineVT(0, 0, "N")}}) {
+		if e.setVirtualTexts("y", ext.VirtualTextSetParams{Buffer: bs.id, Version: old + 100, VirtualTexts: []ext.VirtualText{inlineVT(0, "N")}}) {
 			t.Error("新しい版の一覧を持った")
 		}
 		if l := e.lineLayout(bs, false); l.Virtual != nil {
@@ -117,9 +117,9 @@ func TestVirtualTextVersions(t *testing.T) {
 	h.e.do(func() { h.e.clearExtension("x") })
 	h.keys("<Esc>")
 	h.screenHas("拡張機能が終わって消える", "ZZabc\n")
-	h.setVT("x", inlineVT(0, 0, "W"))
+	h.setVT(inlineVT(0, "W"))
 	h.screenHas("持つ", "WZZabc")
-	h.setVT("x")
+	h.setVT()
 	h.keys("<Esc>")
 	h.screenHas("空の一覧で消える", "ZZabc\n")
 }
@@ -156,7 +156,7 @@ func TestVirtualTextEOLDrawn(t *testing.T) {
 	h := start(t, Config{})
 	h.keys("iabc<Esc>")
 	h.settle()
-	h.setVT("x", ext.VirtualText{Position: ext.Position{Line: 0, Byte: 3}, Placement: ext.VirtualTextEOL, Chunks: []ext.VirtualTextChunk{{Text: "hint", Attr: &ext.TextAttr{Fg: "#8b80a8"}}}})
+	h.setVT(ext.VirtualText{Position: ext.Position{Line: 0, Byte: 3}, Placement: ext.VirtualTextEOL, Chunks: []ext.VirtualTextChunk{{Text: "hint", Attr: &ext.TextAttr{Fg: "#8b80a8"}}}})
 	h.keys("<Esc>")
 	h.screenHas("eol", "abc hint")
 	if a := h.cell("abc hint", 4).Attr; a.Fg != ui.RGB(0x8b, 0x80, 0xa8) {

@@ -331,11 +331,15 @@ func (e *Editor) rebuildDecorations(bs *bufferState) {
 //
 // req: FR-230
 func buildDecorations(src []decoSource, lines int) *ui.Decorations {
-	attrs := map[*ext.TextAttr]ui.Attr{}
+	attrs := map[*ext.TextAttr]*ui.Attr{}
 	return ui.NewDecorationsSeq(func(yield func(ui.Highlight) bool) {
 		for _, s := range src {
 			for _, d := range s.decs {
-				if !yield(ui.Highlight{Range: fromExtRange(d.Range), Style: d.Style, Attr: cachedAttr(attrs, d.Attr)}) {
+				h := ui.Highlight{Range: fromExtRange(d.Range), Style: d.Style}
+				if d.Attr != nil {
+					h.Attr = cachedAttr(attrs, d.Attr)
+				}
+				if !yield(h) {
 					return
 				}
 			}

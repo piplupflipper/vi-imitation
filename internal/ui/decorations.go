@@ -177,10 +177,22 @@ func forEachLineSpan(hs iter.Seq[Highlight], lines int, f func(n int, sp decoSpa
 	}
 }
 
-// decoStyle は、範囲の色の種類の名前と、その上に直に重ねる色（Highlight.Attr。FR-230）の組である。
+// decoStyle は、範囲の色の種類の名前と、その上に直に重ねる色（Highlight.Attr。FR-230。nil なら重ねない）の組である。
+// 色はポインターのまま比べるので、同じ値の色でも違うポインターなら表の別の項目になる（描く色は同じになる）。
+// internal/editor は同じ色の範囲に同じポインターを渡すので、表は色の種類の数で収まる。値で比べると、数十万の範囲を表に入れるたびに
+// 色の項目まで写して比べることになり、表づくりが遅くなった。
 type decoStyle struct {
 	name string
-	attr Attr
+	attr *Attr
+}
+
+// over は、theme の名前の色の上に、直に重ねる色を重ねた属性を返す。
+func (st decoStyle) over(theme Theme) Attr {
+	a := theme.attr(st.name)
+	if st.attr != nil {
+		a = a.Over(*st.attr)
+	}
+	return a
 }
 
 // styleTable は、色の種類の名前と直に重ねる色の組に、現れた順に添字を振る。
@@ -280,6 +292,5 @@ func (d *Decorations) style(sp decoSpan) string {
 //
 // req: FR-230
 func (d *Decorations) attr(theme Theme, sp decoSpan) Attr {
-	st := d.styles[sp.style]
-	return theme.attr(st.name).Over(st.attr)
+	return d.styles[sp.style].over(theme)
 }

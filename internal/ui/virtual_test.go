@@ -235,6 +235,28 @@ func TestVirtualTextCursor(t *testing.T) {
 	}
 }
 
+// TestVirtualTextWrapCursor は、行を折り返すときのカーソルの位置（wrapper.cursor）が、行の番号で引いた仮想テキストを数え、
+// 見た目の行の右の端で折り返した inline の後ろの文字を次の見た目の行に置くことを確かめる。インサートモードでは仮想テキストの前に置く。
+//
+// req: FR-232, FR-233
+func TestVirtualTextWrapCursor(t *testing.T) {
+	v := NewVirtualTexts([]VirtualText{vt(1, 8, VirtualInline, "XXXX")}, 2)
+	w := wrapper{width: 10, rule: lineRule{tabStop: 8, virt: v}}
+	s := "abcdefghij"
+	if p := w.cursor(1, s, 8, true); p != (wrapPos{row: 1, x: 2}) {
+		t.Errorf("ノーマルモードの i = %+v, want 1,2", p)
+	}
+	if p := w.cursor(1, s, 8, false); p != (wrapPos{row: 0, x: 8}) {
+		t.Errorf("インサートモードの i の前 = %+v, want 0,8", p)
+	}
+	if p := w.cursor(0, s, 8, true); p != (wrapPos{row: 0, x: 8}) {
+		t.Errorf("仮想テキストの無い行の i = %+v, want 0,8", p)
+	}
+	if got := w.rows(1, s); got != 2 {
+		t.Errorf("rows = %d, want 2", got)
+	}
+}
+
 // TestVirtualTextColumns は、望みの列の数え方（Columns と WrapLines）が inline の仮想テキストの列も数え、列から文字を引くときは
 // 仮想テキストの列を後ろの文字として引くことを確かめる。値は nvim 0.12.5 の virtcol() と、j と k の移り先と、マウスのクリックの移り先である
 // （"abcdef" の 2 バイト目に "XXXX" のとき、e の virtcol は 9、下の行の 3〜6 列目からの k は c、仮想テキストの上のクリックは c）。
@@ -332,8 +354,8 @@ func TestDecorationAttr(t *testing.T) {
 	b := buffer.New("abcdef\nxyz\n")
 	hs := []Highlight{
 		{Range: buffer.Range{Start: pos(0, 0), End: pos(0, 2)}, Style: StyleComment},
-		{Range: buffer.Range{Start: pos(0, 2), End: pos(0, 4)}, Style: StyleComment, Attr: Attr{Bg: RGB(255, 0, 0), Italic: true}},
-		{Range: buffer.Range{Start: pos(0, 4), End: pos(1, 1)}, Attr: Attr{Fg: RGB(0, 0, 255)}},
+		{Range: buffer.Range{Start: pos(0, 2), End: pos(0, 4)}, Style: StyleComment, Attr: &Attr{Bg: RGB(255, 0, 0), Italic: true}},
+		{Range: buffer.Range{Start: pos(0, 4), End: pos(1, 1)}, Attr: &Attr{Fg: RGB(0, 0, 255)}},
 	}
 	r := newRenderer(20, 5)
 	s := r.Render(&Frame{Text: b, Decorations: NewDecorations(hs, b.LineCount())})
