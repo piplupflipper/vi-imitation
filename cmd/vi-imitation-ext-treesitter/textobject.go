@@ -13,18 +13,18 @@ import (
 	"github.com/piplupflipper/vi-imitation/ext/server"
 )
 
-// objectKind は、構文に沿ったテキストオブジェクトの対象（関数、型、引数）である。
-// テキストオブジェクトのクエリ（queries/<言語>/textobjects.scm）のキャプチャ名の前半と同じ名前を持つ。
+// objectKind は、構文に沿ったテキストオブジェクトの対象（構文のまとまり、引数）である。
+// 引数は、テキストオブジェクトのクエリ（queries/<言語>/textobjects.scm）のキャプチャ名の前半と同じ名前を持つ。
 type objectKind string
 
 const (
-	objectFunction  objectKind = "function"
-	objectClass     objectKind = "class"
+	// objectBlock は、構文のまとまり（an、in。block.go）である。クエリを使わず、構文木の形で決める。
+	objectBlock     objectKind = "block"
 	objectParameter objectKind = "parameter"
 )
 
-// objectKinds は、対応する対象の一覧である。
-var objectKinds = []objectKind{objectFunction, objectClass, objectParameter}
+// objectKinds は、テキストオブジェクトのクエリで決める対象の一覧である。
+var objectKinds = []objectKind{objectParameter}
 
 // textObjectSpec は、宣言ファイルの contributes.textObjects の 1 つの項目に対応する、テキストオブジェクトの定義である。
 type textObjectSpec struct {
@@ -37,10 +37,8 @@ type textObjectSpec struct {
 
 // textObjectSpecs は、この拡張機能が答えるテキストオブジェクトの一覧である。宣言ファイル（manifest.json）と一致させる。
 var textObjectSpecs = []textObjectSpec{
-	{id: "treesitter.function.around", kind: objectFunction, around: true},
-	{id: "treesitter.function.inner", kind: objectFunction},
-	{id: "treesitter.class.around", kind: objectClass, around: true},
-	{id: "treesitter.class.inner", kind: objectClass},
+	{id: "treesitter.block.around", kind: objectBlock, around: true},
+	{id: "treesitter.block.inner", kind: objectBlock},
 	{id: "treesitter.parameter.around", kind: objectParameter, around: true},
 	{id: "treesitter.parameter.inner", kind: objectParameter},
 }
@@ -147,7 +145,12 @@ func (s *treeStore) close() {
 // 本体はキー入力ごとに結果を待つので、問い合わせが重なることはほぼ無い。
 type textObjects struct {
 	langs map[string]*language // highlighter.langs と同じ表。close の後は読まない
-	trees *treeStore
+	// highlighted は、ファイルの種類の色付けに使っている言語（利用者の設定のパーサが用意できていればそれ、無ければ同梱の言語）を返す。
+	// 用意を待っているときは nil を返す。構文のまとまり（an、in）は、クエリを使わないので、利用者の設定のパーサでも使える。
+	// 引数（aa、ia）は、同梱のクエリが同梱の文法に合わせて書いてあるので、langs の同梱の言語を使う。
+	// highlighter.mu を取るので、highlighter.mu を持ったまま textObjects.mu を取らない（今は、そうする箇所は無い）。
+	highlighted func(ft string) *language
+	trees       *treeStore
 
 	mu     sync.Mutex
 	closed bool
@@ -159,8 +162,8 @@ type textObjects struct {
 // errClosed は、拡張機能が終わる途中に届いた問い合わせの失敗の理由である。
 var errClosed = errors.New("tree-sitter extension is shutting down")
 
-func newTextObjects(langs map[string]*language, trees *treeStore) *textObjects {
-	return &textObjects{langs: langs, trees: trees, parsers: map[*language]*sitter.Parser{}}
+func newTextObjects(langs map[string]*language, trees *treeStore, highlighted func(ft string) *language) *textObjects {
+	return &textObjects{langs: langs, highlighted: highlighted, trees: trees, parsers: map[*language]*sitter.Parser{}}
 }
 
 // register は、textObjectSpecs のすべてのテキストオブジェクトのハンドラーを s に登録する。
@@ -191,9 +194,9 @@ func (o *textObjects) close() {
 }
 
 // resolve は、バッファ b のカーソルの位置にある、spec のテキストオブジェクトの範囲を返す。
-// 文法かテキストオブジェクトのクエリを持たない種類のファイルと、カーソルを含む対象が無いときは、OK が false の結果を返す。
-//
-// req: FR-11, FR-35
+// 文法を持たない種類のファイルと、カーソルを含む対象が無いときは、OK が false の結果を返す。
+// 引数（aa、ia）は、テキストオブジェクトのクエリを持たない種類のファイルでも OK が false である。
+// 構文のまとまり（an、in）は、選択（p.Selection）があれば、選択より真に大きい範囲を返し、選択を置き換えさせる（blockObject）。
 func (o *textObjects) resolve(spec textObjectSpec, b *server.Buffer, p *ext.TextObjectResolveParams) (ext.TextObjectResolveResult, error) {
 	// close の後は、highlighter.close が langs を空にしてクエリを解放するので、mu を取って closed を見てから触る。
 	o.mu.Lock()
@@ -201,8 +204,13 @@ func (o *textObjects) resolve(spec textObjectSpec, b *server.Buffer, p *ext.Text
 	if o.closed {
 		return ext.TextObjectResolveResult{}, errClosed
 	}
-	lang, ok := o.langs[b.FileType()]
-	if !ok || lang.objects == nil {
+	lang := o.langs[b.FileType()]
+	if spec.kind == objectBlock {
+		if l := o.highlighted(b.FileType()); l != nil {
+			lang = l
+		}
+	}
+	if lang == nil || spec.kind != objectBlock && lang.objects == nil {
 		return ext.TextObjectResolveResult{}, nil
 	}
 	src := []byte(b.Text())
@@ -216,11 +224,182 @@ func (o *textObjects) resolve(spec textObjectSpec, b *server.Buffer, p *ext.Text
 	}
 	defer tree.Close()
 	d := &document{lang: lang, tree: tree, src: src, lineStarts: lineStartsOf(src)}
+	if spec.kind == objectBlock {
+		r, linewise, ok, err := d.blockObject(spec.around, p.Cursor, p.Selection, max(p.Count, 1))
+		if err != nil || !ok {
+			return ext.TextObjectResolveResult{}, err
+		}
+		return ext.TextObjectResolveResult{OK: true, Range: r, Linewise: linewise, ReplaceSelection: p.Selection != nil}, nil
+	}
 	r, linewise, ok, err := d.textObject(spec, p.Cursor, max(p.Count, 1))
 	if err != nil || !ok {
 		return ext.TextObjectResolveResult{}, err
 	}
 	return ext.TextObjectResolveResult{OK: true, Range: r, Linewise: linewise}, nil
+}
+
+// blockObject は、構文のまとまり（block.go）のテキストオブジェクトの範囲を返す。around なら全体（an）、そうでなければ中身（in）である。
+// 該当が無ければ ok は false である。
+//
+// 全体は、まとまりの全体のノードの範囲である。後ろに区切りの "," があればそれまで、無く前にあれば前の要素の直後からを含める
+// （aa と同じ。JSON とテーブル駆動のテストの要素を dan で消したときに "," を残さない。withSeparator）。
+// 中身は、まとまりの容れ物の中身（bodySpan）のうち、条件に当たる最も小さいものである。
+//
+// 選択 sel が無ければ（オペレーターの後と、v を打った直後）、範囲がカーソルを含むものを、まとまりの内側から数えて count 番目に採る。
+// 中身がカーソルを含まないまとまり（見出しの上のカーソル、容れ物として拾えない節の中のカーソル）は数えない。
+// カーソルから離れた本体を選ばないためである（PR #377 のレビューの必須 2）。
+// 中身は、カーソルが容れ物の後ろにあるまとまり（onBlock）でも数えない。全体（an）はこの判定をせず、
+// 容れ物として拾えない節（Python の except）の中でも、カーソルを全体に含むまとまり（try の文）を選ぶ（PR #377 の再レビューの必須）。
+//
+// 選択 sel があれば（ビジュアルモードで繰り返したとき）、範囲が選択を含み、選択と同じでないものを、内側から数えて count 番目に採る。
+// 範囲と選択とカーソルは、行単位で返す範囲なら行の全体に広げてから比べる（lineSpan）。
+//
+// 範囲が行の全体を占めるときは行単位にする（textObject と同じ）。
+//
+// req: FR-11, FR-240
+func (d *document) blockObject(around bool, cursor ext.Position, sel *ext.Range, count int) (r ext.Range, linewise, ok bool, err error) {
+	off, err := d.offset(cursor)
+	if err != nil {
+		return ext.Range{}, false, false, err
+	}
+	q := span{off, min(off+1, len(d.src))}
+	fits := func(e span) bool { return e.start <= off && off < e.end }
+	if sel != nil {
+		ss, err := d.spanOf(*sel)
+		if err != nil {
+			return ext.Range{}, false, false, err
+		}
+		q = d.trimSpace(ss)
+		fits = func(e span) bool { return e.start <= ss.start && ss.end <= e.end && e != ss }
+	}
+	var s span
+	var last span
+	n := 0
+	for _, b := range blocksAt(d.tree, d.src, q) {
+		if !around && !d.onBlock(b, q.start) {
+			continue
+		}
+		var cands []span
+		if around {
+			cands = []span{d.withSeparator(&b.node)}
+		} else {
+			for i := range b.bodies {
+				cands = append(cands, d.bodySpan(&b.bodies[i]))
+			}
+			slices.SortFunc(cands, func(a, b span) int { return (a.end - a.start) - (b.end - b.start) })
+		}
+		for _, c := range cands {
+			e := d.lineSpan(c)
+			if !fits(e) || n > 0 && e == last {
+				continue
+			}
+			last = e
+			if n++; n == count {
+				s, ok = c, true
+				break
+			}
+		}
+		if ok {
+			break
+		}
+	}
+	if !ok {
+		return ext.Range{}, false, false, nil
+	}
+	if first, last, whole := d.wholeLines(s); whole {
+		return ext.Range{Start: ext.Position{Line: first}, End: ext.Position{Line: last, Byte: d.lineLen(last)}}, true, true, nil
+	}
+	return ext.Range{Start: d.position(s.start), End: d.position(s.end)}, false, true, nil
+}
+
+// onBlock は、位置 off がまとまり b の容れ物のどれかの中か、最後の容れ物より前（見出し）にあるかを返す。
+// 容れ物の後ろ（bash の elif の [ ... ] の条件の後の本体のような、容れ物として拾えない部分）にあるなら false で、そのまとまりを数えない。
+func (d *document) onBlock(b block, off int) bool {
+	for i := range b.bodies {
+		if nodeSpan(&b.bodies[i]).contains(off) {
+			return true
+		}
+	}
+	return off < int(b.bodies[len(b.bodies)-1].StartByte())
+}
+
+// trimSpace は、範囲 s の前後の空白と改行を除いた範囲を返す。空白だけなら s を返す。
+// 選択からまとまりを探すノードを決めるときに使う（行単位の選択は字下げを含むので、そのままでは外側のノードになってしまう）。
+func (d *document) trimSpace(s span) span {
+	q := s
+	for q.start < q.end && isSpaceByte(d.src[q.start]) {
+		q.start++
+	}
+	for q.end > q.start && isSpaceByte(d.src[q.end-1]) {
+		q.end--
+	}
+	if q.start == q.end {
+		return s
+	}
+	return q
+}
+
+// withSeparator は、まとまりの全体のノード n の範囲に、区切りの "," を足した範囲を返す。
+// 後ろの兄弟が "," ならそれまでを、そうでなく前の兄弟が "," なら、その前の要素の直後からを含める（引数の aa の listItemSpan と同じ向き）。
+// 後ろの "," の後の次の要素までは含めないので、要素が行の全体を占めれば行単位になる。
+func (d *document) withSeparator(n *sitter.Node) span {
+	s := nodeSpan(n)
+	if next := nextNonExtra(n); next != nil && next.Kind() == "," && !next.IsNamed() {
+		s.end = int(next.EndByte())
+		return s
+	}
+	if prev := prevNonExtra(n); prev != nil && prev.Kind() == "," && !prev.IsNamed() {
+		if before := prevNonExtra(prev); before != nil {
+			s.start = int(before.EndByte())
+		} else {
+			s.start = int(prev.StartByte())
+		}
+	}
+	return s
+}
+
+// bodySpan は、容れ物 c の中身の範囲を返す（block.go の初めのコメント）。
+// 括弧の容れ物なら括弧の内側（innerSpan）、予約語で閉じる容れ物なら最初の予約語の後から最初の節の前までの行、節ならその本体の行（ownLineChildren）、
+// 本体の容れ物ならノードそのものである。
+func (d *document) bodySpan(c *sitter.Node) span {
+	if isBracketed(c) {
+		return d.innerSpan(c)
+	}
+	keyword, clause := isKeywordDelimited(c, d.src), isClause(c, d.src)
+	if keyword || clause {
+		first, last, ok := ownLineChildren(c, d.src, keyword)
+		if !ok {
+			// 最初の枝の本体が無い（if の直後に elif がある）。カーソルを含まない幅 0 の範囲にする。
+			return span{int(c.StartByte()), int(c.StartByte())}
+		}
+		return span{d.lineStarts[first], d.lineStarts[last] + d.lineLen(int(last))}
+	}
+	return nodeSpan(c)
+}
+
+// lineSpan は、範囲 s が行の全体を占めるなら最初の行の先頭から最後の行の行末までに広げた範囲を、そうでなければ s を返す。
+// 行単位で返す範囲を、ビジュアルモードの選択（ext の TextObjectResolveParams.Selection）と比べるために使う。
+func (d *document) lineSpan(s span) span {
+	if first, last, whole := d.wholeLines(s); whole {
+		return span{d.lineStarts[first], d.lineStarts[last] + d.lineLen(last)}
+	}
+	return s
+}
+
+// spanOf は、範囲 r を全文の中のバイト位置の半開区間にする。
+func (d *document) spanOf(r ext.Range) (span, error) {
+	start, err := d.offset(r.Start)
+	if err != nil {
+		return span{}, err
+	}
+	end, err := d.offset(r.End)
+	if err != nil {
+		return span{}, err
+	}
+	if end < start {
+		return span{}, errors.New("selection ends before it starts")
+	}
+	return span{start, end}, nil
 }
 
 // parser は、lang の文法のパーサーを返す。無ければ作る。mu を取って呼ぶ。
@@ -250,8 +429,8 @@ type candidate struct {
 	pattern uint
 }
 
-// textObject は、カーソル cursor を含む kind の対象のうち、内側から数えて count 番目のものの範囲を返す。
-// 該当が無ければ ok は false である。
+// textObject は、カーソル cursor を含む kind の対象（クエリで決める対象。いまは引数だけ）のうち、
+// 内側から数えて count 番目のものの範囲を返す。該当が無ければ ok は false である。
 //
 // 範囲の決め方は次のとおりである（基本設計 6.1）。
 //
@@ -260,10 +439,12 @@ type candidate struct {
 //   - 内側（iX）は、@X.inner のノードが括弧（{ ( [）で始まり対応する閉じ括弧で終われば括弧の内側、そうでなければノードそのものである。
 //     括弧の内側の前後の空白と改行は除く
 //   - 範囲が行の全体を占める（範囲の前と後ろに空白しか無い）ときは、行単位（Linewise）にする。
-//     関数の全体を daf で消すと行が残らず、波括弧の内側を dif で消すと {} の行だけが残る（Vim の diB と同じ）
+//     複数の行の並びの最後の引数を daa で消すと、行が残らない
 //
 // カーソルを含むかどうかは、全体の範囲で見る。同じ全体を持つ候補が複数あればクエリで先に書いたパターンを、
 // 同じ内側のノードを持つ候補が複数あれば全体の大きい方を採る。
+//
+// req: FR-11, FR-241
 func (d *document) textObject(spec textObjectSpec, cursor ext.Position, count int) (r ext.Range, linewise, ok bool, err error) {
 	off, err := d.offset(cursor)
 	if err != nil {

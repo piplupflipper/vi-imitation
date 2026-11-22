@@ -155,6 +155,10 @@ type Request struct {
 	// 形を決めるのは呼び出し側（internal/command の State.commentString）で、後に tree-sitter の拡張機能でカーソルの位置の言語の形を
 	// 使うときのために位置を渡す。そのときに前もって要る口（言語の範囲を先に持っておく口と、別の種類の形を段から決める口）は、基本設計 3.3 にある。
 	CommentString func(at buffer.Position) string
+	// Selection は、ビジュアルモードの今の選択の範囲（半開区間）である。本体の表のテキストオブジェクトは見ない。
+	// 拡張機能のテキストオブジェクトへ渡し（ext の TextObjectResolveParams.Selection）、選択を外へ広げるテキストオブジェクト（tree-sitter の an と in）が使う。
+	// ビジュアルモードでないときと、文字単位で 1 文字だけを選んでいるときは nil である（internal/command の State.extSelection）。
+	Selection *buffer.Range
 }
 
 // count1 は、回数を 1 以上にして返す。
@@ -197,6 +201,9 @@ type Span struct {
 	Start buffer.Position
 	End   buffer.Position
 	Kind  Kind
+	// ReplaceSelection は、ビジュアルモードで、選択を広げずに、選択をこの範囲で置き換えるかどうかである。
+	// 拡張機能のテキストオブジェクトが Request.Selection に答えたときだけ true になる（ext の TextObjectResolveResult.ReplaceSelection）。
+	ReplaceSelection bool
 }
 
 // Range は、範囲を、buffer.Slice と buffer.Edit で使える半開区間に直して返す。

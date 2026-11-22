@@ -9,10 +9,8 @@
   ],
   "contributes": {
     "textObjects": [
-      { "id": "treesitter.function.around", "keys": "af", "description": "関数の全体（tree-sitter）" },
-      { "id": "treesitter.function.inner", "keys": "if", "description": "関数の本体の内側（tree-sitter）" },
-      { "id": "treesitter.class.around", "keys": "ac", "description": "型の宣言の全体（tree-sitter）" },
-      { "id": "treesitter.class.inner", "keys": "ic", "description": "型の宣言の内側（tree-sitter）" },
+      { "id": "treesitter.block.around", "keys": "an", "description": "構文のまとまり（関数、if、for、オブジェクトなど）の全体。ビジュアルモードで繰り返すと外へ広げる（tree-sitter）" },
+      { "id": "treesitter.block.inner", "keys": "in", "description": "構文のまとまりの中身（括弧の内側、本体）。ビジュアルモードで繰り返すと外へ広げる（tree-sitter）" },
       { "id": "treesitter.parameter.around", "keys": "aa", "description": "引数と区切りの ,（tree-sitter）" },
       { "id": "treesitter.parameter.inner", "keys": "ia", "description": "引数 1 つ（tree-sitter）" }
     ]
