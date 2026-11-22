@@ -29,8 +29,12 @@
     // 外部の TUI を、端末多重化ソフト（tmux、herdr）の画面の中央のポップアップで開く（:terminal.popup keifu-wt に当たる）。
     // 端末多重化ソフトの外では :! と同じく端末を渡して動かす。使うときはコメントを外し、keifu-wt を手元にあるコマンドに替える。
     // 説明は docs/usage.md の「コマンドをポップアップで動かす」にある
+    // 下の <Leader>gm は、origin/develop と HEAD の merge-base との差分があるファイルの一覧を開く（:git.changes origin/develop... に当たる）。
+    // 既定の <Leader>gV は既定のブランチ（origin/HEAD、origin/main など）との merge-base と比べるので、別のブランチへ MR を出すときに使う。
+    // 説明は docs/usage.md の「ブランチとの差分があるファイルを見比べる」にある
     // "normal": {
     //   "<Leader>gk": { "command": "terminal.popup", "args": "keifu-wt" },
+    //   "<Leader>gm": { "command": "git.changes", "args": "origin/develop..." },
     // },
   },
 
