@@ -266,9 +266,11 @@ func (e *Editor) startDiff(a, b *bufferState) {
 	e.diff.sessions = append(e.diff.sessions, s)
 	e.freshDiff(s)
 	text := fmt.Sprintf("%s と %s（client %d）を見比べます", e.bufferName(a), e.bufferName(b), b.owner.info.ID)
-	e.withView(a.owner, func() { e.message = infoMessage(text) })
+	// どちらの client も、利用者のキーで始めたとは限らない（diff/start で分割したペインの client が後から繋いだときなど）ので、
+	// hit-enter の問いで待っている一覧を上書きしない（showLaterMessage）。キーで始めたなら、キーでメッセージが消えているので出る。
+	e.withView(a.owner, func() { e.showLaterMessage(infoMessage(text)) })
 	text = fmt.Sprintf("%s と %s（client %d）を見比べます", e.bufferName(b), e.bufferName(a), a.owner.info.ID)
-	e.withView(b.owner, func() { e.message = infoMessage(text) })
+	e.withView(b.owner, func() { e.showLaterMessage(infoMessage(text)) })
 }
 
 // endDiff は、bs が入っている組を終える。入っていなければ何もしない。終えたかを返す。
@@ -282,7 +284,7 @@ func (e *Editor) endDiff(bs *bufferState, why string) bool {
 	e.diff.sessions = slices.DeleteFunc(e.diff.sessions, func(o *diffSession) bool { return o == s })
 	if o := s.bs[side.Other()]; why != "" && o.owner != nil && o.owner.attached() {
 		text := fmt.Sprintf("%s の見比べが終わりました（%s）", e.bufferName(o), why)
-		e.withView(o.owner, func() { e.message = infoMessage(text) })
+		e.withView(o.owner, func() { e.showLaterMessage(infoMessage(text)) })
 	}
 	return true
 }
