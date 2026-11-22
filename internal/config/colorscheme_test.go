@@ -86,6 +86,11 @@ func TestLoadColorScheme(t *testing.T) {
 		}
 	}
 
+	// 同梱の iceberg のインレイヒントの色は、nontext（#242940）を引き継がず、オーナーの nvim の LspInlayHint の薄紫にする（#387。FR-258）。
+	if got := load("iceberg", "").SchemeColors["inlayHint"]; got != (Style{Fg: Color{Kind: ColorRGB, R: 0x8b, G: 0x80, B: 0xa8}}) {
+		t.Errorf("同梱の iceberg の inlayHint = %+v", got)
+	}
+
 	var cfg Config
 	if errs := cfg.LoadColorScheme(dir, AppearanceCheck{}); errs != nil || cfg.SchemeColors != nil {
 		t.Errorf("colorscheme なし: %v, %v", errs, cfg.SchemeColors)

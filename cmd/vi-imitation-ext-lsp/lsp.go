@@ -43,6 +43,8 @@ const (
 	lspUnregisterCapability = "client/unregisterCapability"
 	lspApplyEdit            = "workspace/applyEdit"
 	lspWorkspaceFolders     = "workspace/workspaceFolders"
+	lspInlayHint            = "textDocument/inlayHint"
+	lspInlayHintRefresh     = "workspace/inlayHint/refresh"
 )
 
 // LSP の TextDocumentSyncKind。
@@ -88,10 +90,15 @@ type workspaceFolder struct {
 // clientCapabilities は、initialize で申し出るクライアントの能力である。
 // 位置の数え方は utf-8 を先に申し出る（基本設計 6.3）。サーバーが選ばなければ utf-16 で数える。
 // window.workDoneProgress を申し出て、サーバーの $/progress を本体の progress/report に写す（client.progress。FR-179）。
+// textDocument.inlayHint と workspace.inlayHint.refreshSupport を申し出て、インレイヒントを問い合わせ、
+// workspace/inlayHint/refresh に答える（inlay.go。FR-255、FR-256）。inlayHint/resolve は使わないので resolveSupport は申し出ない。
 const clientCapabilities = `{
   "general": {"positionEncodings": ["utf-8", "utf-16"]},
   "window": {"workDoneProgress": true},
-  "workspace": {"configuration": true, "workspaceFolders": true, "symbol": {}, "workspaceEdit": {"documentChanges": true}},
+  "workspace": {
+    "configuration": true, "workspaceFolders": true, "symbol": {}, "workspaceEdit": {"documentChanges": true},
+    "inlayHint": {"refreshSupport": true}
+  },
   "textDocument": {
     "synchronization": {"dynamicRegistration": false, "willSave": false, "willSaveWaitUntil": false, "didSave": true},
     "publishDiagnostics": {"versionSupport": true},
@@ -103,7 +110,8 @@ const clientCapabilities = `{
     "documentSymbol": {"hierarchicalDocumentSymbolSupport": true},
     "rename": {},
     "formatting": {},
-    "rangeFormatting": {}
+    "rangeFormatting": {},
+    "inlayHint": {"dynamicRegistration": false}
   }
 }`
 
@@ -125,6 +133,8 @@ type serverCapabilities struct {
 	DocumentSymbolProvider          json.RawMessage `json:"documentSymbolProvider"`
 	WorkspaceSymbolProvider         json.RawMessage `json:"workspaceSymbolProvider"`
 	RenameProvider                  json.RawMessage `json:"renameProvider"`
+	// InlayHintProvider は、textDocument/inlayHint の能力である（inlay.go）。
+	InlayHintProvider json.RawMessage `json:"inlayHintProvider"`
 }
 
 // textDocumentSyncOptions は、textDocumentSync を読んだ結果である。

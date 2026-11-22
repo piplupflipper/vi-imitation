@@ -12,6 +12,10 @@
 //   - didChange の後の文書が "CRASH" を含めば、終了コード 3 で終わる
 //   - -publish-on-close なら、didClose を受け取ったときに、閉じる前の文書の診断を送ってから文書を捨て、"published on close" の行を書く
 //     （閉じた文書の診断を後から送る言語サーバーの代役）
+//   - -inlay なら inlayHintProvider を返し、textDocument/inlayHint に、範囲の中の "HINT" の出現ごとにその後ろへラベル ": T<世代>"
+//     （文字列、kind 1、paddingLeft）を、"PARAM" の出現ごとにその前へラベル "p" と ":" の部品（kind 2、paddingRight）を返す。
+//     世代は 0 から始まり、didSave を受け取るたびに 1 増やして workspace/inlayHint/refresh を送る（応答を "refresh result" の行に書く）。
+//     -inlay-delay の分だけ応答を遅らせ、取り消されたら "inlayHint cancelled" の行を書く
 //
 // 受け取ったメッセージと、各時点の文書の全文は、-log のファイルへ JSON の行で書き足す。
 // 起動したときに、自分と親（拡張機能）のプロセス ID を "start" の行で書く。
@@ -48,7 +52,37 @@ var (
 	publishClose = flag.Bool("publish-on-close", false, "didClose を受け取ったときに、閉じる前の文書の診断を送る")
 	linger       = flag.Bool("linger", false, "接続が閉じても終わらない（標準入力の終わりで終わらない言語サーバーの代役）")
 	progressFlag = flag.Bool("progress", false, "クライアントが window.workDoneProgress を申し出たら、initialized の後に進み具合（$/progress）を送る")
+	inlayFlag    = flag.Bool("inlay", false, "textDocument/inlayHint に答える")
+	inlayDelay   = flag.Duration("inlay-delay", 0, "textDocument/inlayHint の応答を遅らせる時間")
 )
+
+// hintGen は、インレイヒントのラベルに付ける世代である（-inlay の doc）。mu で守る。
+var hintGen int
+
+// inlayHints は、text の範囲 r の中のインレイヒントを返す（-inlay の doc）。
+func inlayHints(text string, r rng) []map[string]any {
+	mu.Lock()
+	gen := hintGen
+	mu.Unlock()
+	s, e := offset(text, r.Start), offset(text, r.End)
+	hints := []map[string]any{}
+	for _, o := range occurrences(text, "HINT") {
+		if o >= s && o+4 <= e {
+			hints = append(hints, map[string]any{
+				"position": position(text, o+4), "label": fmt.Sprintf(": T%d", gen), "kind": 1, "paddingLeft": true,
+			})
+		}
+	}
+	for _, o := range occurrences(text, "PARAM") {
+		if o >= s && o+5 <= e {
+			hints = append(hints, map[string]any{
+				"position": position(text, o), "label": []map[string]any{{"value": "p"}, {"value": ":", "tooltip": "x"}},
+				"kind": 2, "paddingRight": true,
+			})
+		}
+	}
+	return hints
+}
 
 type pos struct {
 	Line      int `json:"line"`
@@ -225,6 +259,9 @@ func request(ctx context.Context, req *rpc.Request, reply rpc.Replier) {
 		if *encodingFlag != "none" {
 			caps["positionEncoding"] = *encodingFlag
 		}
+		if *inlayFlag {
+			caps["inlayHintProvider"] = map[string]any{}
+		}
 		go func() {
 			time.Sleep(*initDelay)
 			_ = reply(map[string]any{"capabilities": caps}, nil)
@@ -338,6 +375,28 @@ func request(ctx context.Context, req *rpc.Request, reply rpc.Replier) {
 			}
 			_ = reply(formatEdits(text), nil)
 		}()
+	case "textDocument/inlayHint":
+		var p struct {
+			TextDocument struct{ URI string } `json:"textDocument"`
+			Range        rng                  `json:"range"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		mu.Lock()
+		text := docs[p.TextDocument.URI]
+		mu.Unlock()
+		hints := inlayHints(text, p.Range)
+		go func() {
+			if *inlayDelay > 0 {
+				select {
+				case <-time.After(*inlayDelay):
+				case <-ctx.Done():
+					logEntry("inlayHint cancelled", nil)
+					_ = reply(nil, &rpc.Error{Code: -32800, Message: "cancelled"})
+					return
+				}
+			}
+			_ = reply(hints, nil)
+		}()
 	default:
 		_ = reply(nil, &rpc.Error{Code: rpc.CodeMethodNotFound, Message: req.Method})
 	}
@@ -432,6 +491,21 @@ func notification(_ context.Context, n *rpc.Notification) {
 			os.Exit(3)
 		}
 		publish(uri)
+	case "textDocument/didSave":
+		if !*inlayFlag {
+			return
+		}
+		mu.Lock()
+		hintGen++
+		mu.Unlock()
+		go func() {
+			var res json.RawMessage
+			if err := conn.Call(context.Background(), "workspace/inlayHint/refresh", nil, &res); err != nil {
+				logEntry("refresh error", err.Error())
+				return
+			}
+			logEntry("refresh result", res)
+		}()
 	case "textDocument/didClose":
 		var p struct {
 			TextDocument struct{ URI string } `json:"textDocument"`

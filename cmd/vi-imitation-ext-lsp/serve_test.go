@@ -70,6 +70,7 @@ type host struct {
 	edits   chan ext.BufferEditParams
 	choices chan ext.ChoiceAskParams
 	saves   chan ext.BufferSaveParams
+	vtexts  chan ext.VirtualTextSetParams
 
 	// mu は、本体の役が editor/open（focus が false）で開いたファイルの記録（offscreen）と、editor/state で答える
 	// バッファの状態（bufs）を守る。開いたファイルの番号は offscreenBase から振る。
@@ -117,6 +118,8 @@ type hostOptions struct {
 	settings map[string]any
 	// mise は、空でなければ client の mise（mise の実行ファイル）を置き換える。
 	mise string
+	// inlayInterval は、正なら client の inlayInterval（インレイヒントの問い合わせの間隔）を置き換える。
+	inlayInterval time.Duration
 }
 
 // simBuffer は、本体の役が持つバッファの状態である（editor/state、sim の buffer/edit）。
@@ -139,7 +142,7 @@ func startHost(t *testing.T, o hostOptions) *host {
 		diags: make(chan ext.DiagnosticSetParams, 100), popups: make(chan ext.PopupShowParams, 100),
 		msgs: make(chan ext.MessageShowParams, 100), prog: make(chan ext.ProgressReportParams, 100), opens: make(chan ext.EditorOpenParams, 100),
 		edits: make(chan ext.BufferEditParams, 100), choices: make(chan ext.ChoiceAskParams, 100),
-		saves: make(chan ext.BufferSaveParams, 100), offscreen: map[string]ext.BufferID{},
+		saves: make(chan ext.BufferSaveParams, 100), vtexts: make(chan ext.VirtualTextSetParams, 100), offscreen: map[string]ext.BufferID{},
 		bufs: map[ext.BufferID]*simBuffer{}, sim: o.sim, readOnly: map[string]bool{}, failEdit: map[string]bool{},
 		choose: o.choose, texts: map[ext.BufferID]string{}, vers: map[ext.BufferID]ext.Version{},
 	}
@@ -191,6 +194,9 @@ func startHost(t *testing.T, o hostOptions) *host {
 		}
 		if o.mise != "" {
 			c.mise = o.mise
+		}
+		if o.inlayInterval > 0 {
+			c.inlayInterval = o.inlayInterval
 		}
 	}
 	served := make(chan error, 1)
@@ -285,6 +291,8 @@ func (h *host) notification(_ context.Context, n *rpc.Notification) {
 		h.msgs <- decode[ext.MessageShowParams](h.t, n.Params)
 	case ext.MethodProgressReport:
 		h.prog <- decode[ext.ProgressReportParams](h.t, n.Params)
+	case ext.MethodVirtualTextSet:
+		h.vtexts <- decode[ext.VirtualTextSetParams](h.t, n.Params)
 	}
 }
 

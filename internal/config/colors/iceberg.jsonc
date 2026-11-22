@@ -2,6 +2,7 @@
 // 設定ファイルに "colorscheme": "iceberg" と書くと使う（FR-125）。書式は設定の colors の値と同じである。
 //
 // 値は iceberg.vim のコミット 23835d5ed696436f716cbfdb56a93a7850fe3b18 の colors/iceberg.vim だけから写した。
+// ただし、iceberg.vim のグループの色では読めない名前（scrollbar.search、inlayHint）は、その行のコメントに書いた理由で別の色にした。
 // 写したのは dark の側（&background が light でない側）のハイライトグループの guifg、guibg、guisp と gui の飾りである。
 // 同じリポジトリの lightline と airline のテーマの色は、配色そのものの色ではないので入れていない
 // （lightline に近いステータス行の色は、config.example.jsonc の colors にある）。
@@ -70,6 +71,10 @@
   // 枠の中（commandLine.popup）は、noice.nvim の既定のリンク先が Normal なので書いていない
   "commandLine.popup.border": { "fg": "#89b8c2" }, // DiagnosticSignInfo
   "commandLine.popup.border.search": { "fg": "#e2a478" }, // DiagnosticSignWarn
+  // LSP のインレイヒント。iceberg.vim に専用のグループは無く、Neovim 0.12.5 の LspInlayHint の既定のリンク先の NonText（#242940）は、
+  // Normal の背景（#161821）とのコントラスト比が 1.24 で読めない。オーナーの nvim の設定（2026-11-22 に読んだ lua/plugins/colorscheme.lua）が
+  // LspInlayHint に当てている薄紫を写した。比は 4.85 で、comment（#6b7089）や本文の青とも見分けられる。斜体は見づらいので付けない（#387）
+  "inlayHint": { "fg": "#8b80a8" }, // オーナーの nvim の LspInlayHint（iceberg.vim には無い）
 
   // ステータス行。どちらも反転（gui=reverse）なので、文字は guibg の色、背景は guifg の色で出る
   "statusline": { "fg": "#818596", "bg": "#17171b", "reverse": true }, // StatusLine

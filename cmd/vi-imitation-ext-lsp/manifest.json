@@ -9,5 +9,10 @@
     "definition", "implementation", "typeDefinition", "hover",
     "references", "documentSymbols", "workspaceSymbols",
     "format", "rename"
-  ]
+  ],
+  "contributes": {
+    "commands": [
+      { "id": "lsp.inlayHints.toggle", "description": "LSP のインレイヒント（型や引数の名前）を出すかどうかを切り替える" }
+    ]
+  }
 }
