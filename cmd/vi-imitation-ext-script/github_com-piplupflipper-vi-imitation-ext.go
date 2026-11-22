@@ -12,13 +12,14 @@ import (
 func init() {
 	Symbols["github.com/piplupflipper/vi-imitation/ext/ext"] = map[string]reflect.Value{
 		// function, constant and variable definitions
-		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.15.0\"", token.STRING, 0)),
+		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.16.0\"", token.STRING, 0)),
 		"ActivationCommand":          reflect.ValueOf(ext.ActivationCommand),
 		"ActivationFileType":         reflect.ValueOf(ext.ActivationFileType),
 		"ActivationMotion":           reflect.ValueOf(ext.ActivationMotion),
 		"ActivationOperator":         reflect.ValueOf(ext.ActivationOperator),
 		"ActivationSettingsFileType": reflect.ValueOf(ext.ActivationSettingsFileType),
 		"ActivationSocket":           reflect.ValueOf(ext.ActivationSocket),
+		"ActivationStartup":          reflect.ValueOf(ext.ActivationStartup),
 		"ActivationTextObject":       reflect.ValueOf(ext.ActivationTextObject),
 		"EnvExtensionDir":            reflect.ValueOf(constant.MakeFromLiteral("\"VI_IMITATION_EXTENSION_DIR\"", token.STRING, 0)),
 		"EnvMCPSocket":               reflect.ValueOf(constant.MakeFromLiteral("\"VI_IMITATION_MCP_SOCKET\"", token.STRING, 0)),

@@ -28,6 +28,8 @@ type OperatorHandler func(ctx context.Context, b *Buffer, p *ext.OperatorApplyPa
 // b は p.Buffer の複製で、そのバージョン番号は p.Version と一致する。
 // ただし p.Withheld が true（本体が不正な UTF-8 のためにバッファを送っていない）なら b は nil である。
 // バッファを使うコマンドは、そのとき OK を false で返す。
+// 宣言ファイルに noBufferSync を書いた拡張機能では、本体がどのバッファも送らず、p.Withheld をいつも立てるので、b はいつも nil である
+// （ext.Manifest.NoBufferSync。#367）。そうした拡張機能では、バッファの複製を待つ WaitBuffer も、待たずに ErrNoBufferSync を返す。
 // 返した result に Transaction があれば、その BaseVersion は、Server が p.Version で上書きする。
 type CommandHandler func(ctx context.Context, b *Buffer, p *ext.CommandExecuteParams) (ext.CommandExecuteResult, error)
 

@@ -295,7 +295,7 @@ func (h *Host) resync(e *extension, r *run, p ext.BufferResyncParams) {
 		return
 	}
 	d, ok := h.docs[p.Buffer]
-	if !ok || d.withheld() {
+	if !ok || d.withheld() || !e.syncsBuffers() {
 		return
 	}
 	id := e.spec.Manifest.ID
@@ -303,12 +303,15 @@ func (h *Host) resync(e *extension, r *run, p ext.BufferResyncParams) {
 	h.notifyLocked(id, r, ext.MethodBufferOpen, d.openParams())
 }
 
-// broadcastLocked は、稼働中のすべての拡張機能へ通知を送る。
+// broadcastLocked は、稼働中のすべての拡張機能へ、バッファの同期の通知（buffer/open、buffer/change、buffer/close、buffer/didSave）を送る。
+// 宣言ファイルの noBufferSync の拡張機能（[extension.syncsBuffers] が false）へは送らない（#367）。
 // 送信は列に積むだけで待たないので、Host.mu を持ったまま呼んでよい。
 // 積む順が Host.mu の中で決まるので、稼働中になったときの全文と、その後の差分の順が入れ替わることは無い。
+//
+// req: FR-229
 func (h *Host) broadcastLocked(method string, params any) {
 	for _, e := range h.order {
-		if e.state == StateRunning && e.run != nil {
+		if e.state == StateRunning && e.run != nil && e.syncsBuffers() {
 			h.notifyLocked(e.spec.Manifest.ID, e.run, method, params)
 		}
 	}

@@ -91,7 +91,7 @@ func xdgDir(env, fallback string) (string, error) {
 
 // manifestKeys は、宣言ファイルの最上位の項目の名前である（ext.Manifest の json のタグ）。
 var manifestKeys = map[string]bool{
-	"id": true, "command": true, "args": true, "saveHook": true, "activation": true, "contributes": true, "provides": true,
+	"id": true, "command": true, "args": true, "saveHook": true, "noBufferSync": true, "activation": true, "contributes": true, "provides": true,
 }
 
 // LoadManifest は、path の宣言ファイルを JSONC として読み、ext.Manifest.Validate で検査する。
@@ -162,6 +162,8 @@ func typeErrorOffset(root *hujson.Value, te *json.UnmarshalTypeError) int {
 // 宣言ファイルの ext.ActivationSettingsFileType の契機の直後に、その拡張機能に向けた extensions.settings から作った
 // ファイルの種類の契機（ext.ActivationFileType）を足す（expandSettingsActivation）。extensions.activation の契機はその後ろに並ぶ。
 //
+// extensions.disabled に ID を書いた拡張機能は、どのディレクトリのものも一覧に入れない（FR-226）。
+//
 // 一覧の順は、dirs の順、ディレクトリの中では名前の順である。
 // 存在しないディレクトリと、manifest.json の無いディレクトリは飛ばす。
 // 読めない宣言ファイルと、先に読んだものと ID が重なる宣言ファイルは使わず、problems に返す。
@@ -199,6 +201,12 @@ func LoadExtensions(dirs []string, cfg Config) (exts []Extension, problems []err
 			continue
 		}
 		from[m.ID] = p
+		if cfg.ExtensionDisabled[m.ID] {
+			// 利用者が使わないと決めた拡張機能は、一覧に入れない。
+			// from には入れたので、同じ ID の後のディレクトリの宣言ファイル（同梱のもの）も使わない。
+			// req: FR-226
+			continue
+		}
 		dir, err := filepath.Abs(filepath.Dir(p))
 		if err != nil {
 			problems = append(problems, &Error{Path: p, Msg: "宣言ファイルのディレクトリを絶対パスにできない: " + err.Error()})

@@ -119,6 +119,8 @@ type Server struct {
 	conn    atomic.Pointer[rpc.Conn]
 	// loopq は、Serve の間のループの列である。WaitBuffer がループへ処理を頼むのに使う。
 	loopq atomic.Pointer[queue]
+	// noBufferSync は、initialize の NoBufferSync（本体がバッファの同期を送らない）を受け取ったことを表す。WaitBuffer は待たずに誤りを返す。
+	noBufferSync atomic.Bool
 
 	// 以下は、ループだけが触る。
 	buffers map[ext.BufferID]*Buffer
@@ -367,8 +369,9 @@ func (s *Server) initialize(ctx context.Context, req *rpc.Request) (any, error) 
 	if err := decodeParams(req, &p); err != nil {
 		return nil, err
 	}
+	s.noBufferSync.Store(p.NoBufferSync)
 	if s.onInit != nil {
-		e := &InitializeEvent{APIVersion: p.APIVersion, Settings: p.Settings}
+		e := &InitializeEvent{APIVersion: p.APIVersion, Settings: p.Settings, NoBufferSync: p.NoBufferSync}
 		if err := s.protect(req.Method, func() error { return s.onInit(ctx, e) }); err != nil {
 			return nil, err
 		}

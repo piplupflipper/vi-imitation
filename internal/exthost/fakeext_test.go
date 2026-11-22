@@ -190,6 +190,11 @@ func (f *fakeExt) request(ctx context.Context, req *rpc.Request, reply rpc.Repli
 	f.record("request:%s", req.Method)
 	switch req.Method {
 	case ext.MethodInitialize:
+		var p ext.InitializeParams
+		_ = json.Unmarshal(req.Params, &p)
+		if p.NoBufferSync {
+			f.record("initialize:noBufferSync")
+		}
 		if f.mode == modeNoInit {
 			return
 		}
@@ -221,6 +226,7 @@ func (f *fakeExt) request(ctx context.Context, req *rpc.Request, reply rpc.Repli
 	case ext.MethodCommandExecute:
 		var p ext.CommandExecuteParams
 		_ = json.Unmarshal(req.Params, &p)
+		f.record("command:%s:withheld=%v", p.ID, p.Withheld)
 		f.later(ctx, req.Method, p.Count, p.Args, reply, ext.CommandExecuteResult{
 			OK: true, Transaction: &ext.Transaction{BaseVersion: p.Version, Edits: []ext.Edit{{Text: p.ID}}},
 		})

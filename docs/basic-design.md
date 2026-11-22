@@ -1716,6 +1716,7 @@ ACP の拡張機能が `session/new` の `cwd` に本体の作業ディレクト
 | `provides` | 引き受ける本体の操作の名前の列（`["definition", "hover"]` など。5.5） | FR-94 |
 | `contributes.popupKeys` | ポップアップの中だけで効くキーと ID の組の列。#236 で、`contributes` の他の項目と同じ形（`id`、`keys`、`description`）にし、打たれたら `view/key` で ID を知らせる形にした（1.4）。#286 で、`view/key` の代わりに `<CR>` と同じく扱わせる `action`（`select`）を足した（1.4 の「#286 の出す場所の指定」） | FR-69、FR-105 |
 | `contributes.statusline` | ステータス行とタブ行に足す部品の ID と説明文（7.1）。ID は拡張機能の ID と `.` で始め、その後に `.` を含めない（#238。`ext.StatusLinePart`）。部品を足す拡張機能は `activation` を空にしてよい | FR-92 |
+| `noBufferSync` | true なら、本体はその拡張機能へバッファの同期（`buffer/open`、`buffer/change`、`buffer/close`、`buffer/didSave`）を送らない（5.3 の「#367 で」の段落。`ext.Manifest.NoBufferSync`）。`saveHook`、`contributes` の `operators`、`motions`、`textObjects` とは併せて書けない | FR-229 |
 
 段階 3 の拡張機能の宣言ファイルの例を示す。
 
@@ -1744,6 +1745,17 @@ ACP の拡張機能が `session/new` の `cwd` に本体の作業ディレクト
 起動の契機のほかに、利用者が設定の `statusline` か `tabline` に部品（`contributes.statusline`）を並べた拡張機能は、本体の起動時に起動する（7.1。#238）。
 `:ext sync` の入れ替えで未起動へ戻ったときも、そうした拡張機能は起動し直す（`internal/editor` の `restartStatusExtension`）。
 部品だけを足す拡張機能は `activation` を持たないので、起動し直さないと部品が消えたままになるためである（PR #239 のレビュー）。
+
+#367 で、本体の起動で起動する契機 `startup`（`ext.ActivationStartup`。FR-225）を足した。
+利用者の操作もファイルを開くことも待たずに、起動している間は常に動かしておく拡張機能（開いたバッファすべてに色を付けるものなど）のためである。
+次のとおりに決めた（どれも仮）。
+
+- 起動するのは、イベントループ（`internal/editor` の `Run`）が最初の画面を描き終えた直後である（`startResidentExtensions` が `exthost.Host.ActivateStartup` を呼ぶ）。最初の画面を描く前には子プロセスを起動しないので、本体の起動から最初の画面までの時間（NFR-05）に入らない。起動は非同期で、待たずにキーを受け付ける（NFR-04）
+- 部品を並べた拡張機能（上の段落）も、同じ時点で起動するようにした。#238 では `editor.New` の中で起動していて、最初の画面より前に子プロセスの起動が始まっていた
+- `:ext sync` の入れ替え（`exthost.Host.Reload`）で未起動へ戻った `startup` の拡張機能は、ファイルの種類の契機と同じく、すぐに起動し直す（この契機は起動の後に 1 回しか成り立たないため）
+- 異常の後の再起動と、失敗が続いたときの無効は、他の契機の拡張機能と同じである
+- 利用者が止めるには、設定の `extensions.disabled` に拡張機能の ID を書く（FR-226）。本体（`internal/config` の `LoadExtensions`）はその宣言ファイルを一覧に入れないので、どの契機でも起動せず、キー、コマンド、部品も足さない。利用者のディレクトリと同梱のディレクトリの両方に同じ ID があれば、どちらも使わない。#367 の時点では、拡張機能を使わないようにする設定が無かったので足した。`startup` の拡張機能だけでなく、どの拡張機能にも使える
+- 止めた拡張機能の部品を `statusline` か `tabline` に並べていても、そのコマンドを `keymap` の `command` か `commandAliases` に書いていても、設定の誤りにせず、知らせずに使わない（PR #375 のレビューの推奨 1）。利用者が自分で止めたので、「その ID は無い」と知らせると誤解を招くためである。部品は、ID の最後の `.` の前が止めた ID のものを、設定を読んだ時点で並びから除く（`config.Config` の `dropDisabledParts`。部品の ID は拡張機能の ID で始まる）。コマンドは、確かめて使えなかったもののうち、名前の `.` の前までのどれかが止めた ID のものを、誤りに数えない（`CheckKeymapCommands`、`CheckCommandAliases`）
 
 | 状態 | その拡張機能の操作が呼ばれたとき |
 |---|---|
@@ -2015,6 +2027,27 @@ Ex コマンドの確認の問い（逆順の範囲の E493）を出している
 リクエストにしたのは、名前と値の誤りを拡張機能へ返すためである（`:option.set` と同じ検査を通す。issue の指示）。
 ほかの拡張機能から本体へのリクエストと同じく、本体が拡張機能の応答を待っている間は取っておき、待ちが終わってから処理する（この節の上の「待ち」の段落）。
 `ext/server` の口は `Server.SetOptions` と `Server.GetOptions` で、`Edit` と同じく、ハンドラーの上から呼ぶと `ErrEditInHandler` を返す。
+
+#367 で、宣言ファイルの起動の契機の種類 `startup`（5.2）を足し、拡張機能 API の版を 0.16.0 に上げた。
+メッセージは足していない。
+#277 の `settingsFileType` は版を上げなかったが、`startup` は版を上げた。
+古い本体（0.15.0 まで）は `startup` を知らない契機として警告にして無視するので、この契機だけを持つ拡張機能は一度も起動しない。
+`startup` と他の契機（コマンドなど）を併せて書いた拡張機能は、古い本体では他の契機で起動するので、`initialize` の `apiVersion` で、本体の起動では起動されないことを知れる。
+
+同じ #367 で、宣言ファイルに、バッファの同期を受け取らない印 `noBufferSync`（`ext.Manifest.NoBufferSync`。FR-229）を足した（版は同じ 0.16.0）。
+PR #375 のレビューで、メモリの使用量の拡張機能（6.11）が、使わない全バッファの複製を `ext/server` に持ち、46 MB のファイルを開くとその拡張機能の RSS が 9.5 MB から 294 MB になったためである。
+常に動く拡張機能（部品を並べた拡張機能と `startup` の拡張機能）は、バッファを使わなくても開いたすべてのバッファの全文と、キー入力ごとの差分を受け取り続ける。
+本体（`internal/exthost`）は、印のある拡張機能へ次のとおりに扱う。
+
+| 場合 | 扱い |
+|---|---|
+| 稼働中になったとき、バッファを開いた・変えた・閉じた・保存したとき | `buffer/open`、`buffer/change`、`buffer/close`、`buffer/didSave` を送らない（`broadcastLocked`）。`buffer/resync` にも応じない |
+| `command/execute` と `provider/invoke` | params の `Withheld` を立てて送る（不正な UTF-8 のバッファと同じ。`ext/server` はハンドラーへバッファの代わりに nil を渡す） |
+| 拡張機能が `editor/open` でバッファを開いたとき | 不正な UTF-8 のバッファと同じく、応答の前に `buffer/close` を送り、`WaitBuffer` を誤りで終わらせる |
+| `initialize` | params の `noBufferSync` を true にする。`ext/server` は、それを受けた後の `WaitBuffer` を、待たずに `ErrNoBufferSync` で返す（PR #375 の再レビューの推奨。既に開いているバッファで待つと、`buffer/open` が届かずに ctx の期限まで戻らなかったため）。`InitializeEvent` の `NoBufferSync` にも渡す |
+| バッファの複製が要る操作（`operators`、`motions`、`textObjects`）と `saveHook` | 宣言ファイルの検査で、印と併せて書くと誤りにする |
+
+古い本体（0.15.0 まで）は、`noBufferSync` を未知の項目として無視し（`internal/config` の `LoadManifest` が警告にする）、バッファを送る。
 
 `popup/open` の params は、部品（`component`。`kind`、`title`、`text`、`format`、`highlights`、`items`）、置き場所（`placement`。`cursor` か `center`）、カーソルの近くの窓に開いた時点でフォーカスを入れるか（`focus`）である。
 部品の検査（種類、項目の ID の空と重複、改行、範囲）に通らない `popup/open` は、JSON-RPC の誤りで断る。通らない `view/update` は捨てる。
@@ -2870,6 +2903,9 @@ ACP の `fs/*` と MCP のツールが受け取るパスも絶対パスなので
 | 拡張機能ごとの `activation` の追加 | 利用者の設定 | 宣言ファイルの `activation` に `filetype` の契機を足す | LSP |
 | `activation` の `settingsFileType` の契機 | 宣言ファイル | `pattern` は、拡張機能に向けた設定（`extensions.settings.<ID>`）の中を指す JSON Pointer で、参照トークン `*` はオブジェクトのすべての項目か配列のすべての要素に当たる。指した値が文字列ならその 1 つを、配列ならその中の文字列のすべてを、ファイルの種類の名前とする。本体（`internal/config` の `LoadExtensions`）は、宣言ファイルと設定を読んだときに、この契機の直後にそれらの `filetype` の契機を足す。この契機そのものでは起動しない。`*` が当たった項目の下にその先の値が無いか、文字列か文字列を含む配列でないときは（`fileTypes` を `filetypes` と綴った、`[]` や `[3]` を書いたなど）、契機を作らず、設定の誤りとして知らせる（拡張機能が起動しないので、拡張機能からは知らせられない）（#277）。この契機を持つ拡張機能は、足したファイルの種類の契機と一致するファイルの種類でだけ、本体の操作の提供者の候補になる（5.5。#339） | tree-sitter（`/parsers/*/fileTypes`。6.1）、整形ツール（`/formatters/*/fileTypes`。6.10） |
 | ファイルの種類の対応表 | 利用者の設定 | 拡張子とファイル名から、ファイルの種類の名前への対応を足す | すべて |
+| `activation` の `startup` の契機 | 宣言ファイル | 本体が最初の画面を描き終えた後に起動する（5.2。#367。FR-225）。`id` と `pattern` は使わない | 第 3 弾の常駐の拡張機能（開いたバッファすべてに色を付けるものなど）の見込み。#367 の時点で、標準の拡張機能には使うものが無い |
+| `extensions.disabled` | 利用者の設定 | 使わない拡張機能の ID の列。本体はその宣言ファイルを使わない（5.2。#367。FR-226） | すべて |
+| `noBufferSync` | 宣言ファイル | true なら、本体はバッファの同期を送らない（5.3。#367。FR-229） | メモリの使用量（6.11） |
 
 `settingsFileType` の契機は、利用者が拡張機能の設定に書いたファイルの種類を、`extensions.activation` にもう一度書かずに済ませるために足した（#277）。
 宣言ファイルは実行せずに読む固定のファイルなので、利用者が設定で足した言語の契機を宣言ファイルの側に前もって書けない。
@@ -3731,6 +3767,7 @@ cgo は使わないので、NFR-02 は変わらない。
 | git 連携 | バッファのファイルの HEAD の版を、編集を禁止したファイルでないバッファとして開き、`diff/start`（6.8）で、別の編集の client のタブとして見比べる（FR-104）。他の範囲は要件定義 7 章の未決事項。#245 で `cmd/vi-imitation-ext-git` として実装した（下の表） | `buffer/create`、`diff/start` |
 | markdown の描画 | 範囲は要件定義 7 章の未決事項で、要件の ID はまだ無い | 未定 |
 | ツリー型のファイラ | 作業ディレクトリの木を木の部品で出し、選んだファイルを、ファイラを開いた元の編集の client（1.2）のタブで開く。`<leader>e` は中央のポップアップに出して選んだら閉じ、`<leader>E` は端末多重化ソフトで分割したペインに出しっぱなしにする（FR-105、FR-147）。#286 で `cmd/vi-imitation-ext-filer` として実装した（下の表） | `pane/open`（`placement`、`closeOnSelect`）、`view/update`、`view/select`、`view/expand`、`view/key`、`view/tabChange`、`editor/state`、`editor/open` |
+| メモリの使用量 | 本体と、その子孫のプロセスの RSS をステータス行の部品に出し、内訳を中央のポップアップに出す（FR-227、FR-228）。#367 で `cmd/vi-imitation-ext-memusage` として実装した（6.11） | `contributes.statusline`、`statusline/set`、`command/execute`、`popup/open`、`message/show` |
 | ファジーファインダー | 入力の行と一覧の部品を中央のポップアップに出し、入力が変わるたびに絞り込んで一覧を返す（FR-106）。対象は、ファイル、本体の一覧（`editor/list`。FR-107） | `popup/open`、`input/change`、`view/update`、`view/select`、`editor/list` |
 
 #245 で、git 連携の拡張機能を次のとおりに実装した（`cmd/vi-imitation-ext-git`。どれも仮）。
@@ -3851,6 +3888,26 @@ ruff の `--range` や clang-format の `--offset` のように範囲を受け�
 
 - 進み具合の知らせ（#317 の第 2 弾。#340 で `progress/report` を足した。6.7 の「進み具合の表示」）。整形に時間がかかったときの表示に使う見込みである
 
+### 6.11 メモリの使用量
+
+#367 で、本体と、その子孫のプロセスの RSS を出す拡張機能を `cmd/vi-imitation-ext-memusage`（ID は `memusage`）として作った（FR-227、FR-228）。
+オーナーの nvim の lualine の右の部品（`lua/core/memusage.lua`。`nvim 56M · LSP 390M` を 5 秒ごとに出し、`:MemUsage` で内訳をポップアップに出す）を取り込んだ。
+どれも仮である。
+
+| 項目 | 決めたこと |
+|---|---|
+| 部品 | `memusage.rss`（`contributes.statusline`）。中身は `vi 18M · ext 410M` の形で、前が本体（server のプロセス）の RSS、後ろが本体の子孫（拡張機能と、拡張機能が起動した言語サーバー、デバッグアダプター、エージェントなど）の RSS の合計である。量は MiB を四捨五入した整数に `M` を付け、1 GiB 以上は小数 1 桁に `G` を付ける（memusage.lua と同じ）。本体の既定の並び（`ui.DefaultStatusLine`）には入れず、`config.example.jsonc` の `statusline` の右に並べた |
+| 本体を見分ける | 拡張機能のプロセスの親（`os.Getppid`）を本体とする。拡張機能は本体（`internal/exthost` のある server のプロセス）が直接起動するためである。編集の client のプロセスは、server を起動する側（1.2 の #201 の手順）で本体の子孫ではないので、数えない |
+| 更新 | `initialize` を受けたらすぐに 1 回と、その後は `extensions.settings.memusage.intervalMs`（ミリ秒。500 以上 3600000 以下。既定は 5000）ごとに集計し、中身が変わったときだけ `statusline/set` を送る。範囲の外の値と知らない項目は、既定の間隔で動きながら `message/show` で知らせる |
+| 子孫の辿り方 | Linux では `/proc/<pid>/task/<tid>/children`（Linux 3.5 以降の `CONFIG_PROC_CHILDREN`）を本体のすべてのスレッドについて読み、子から順に辿る。全プロセスの一覧（`/proc` のすべてのディレクトリ）は読まない。memusage.lua のコメントによれば、`ps -A` の出力を 5 秒ごとに読んだら LuaJIT のヒープが断片化して膨らんだので、同じ形にした。`children` を読めない環境（Linux 以外）では、`ps -A -o pid=,ppid=,rss=,args=` の出力から木を作る。こちらは全プロセスを並べるが、Go の GC で回収されるので膨らまないと見込んでいる（計測していない） |
+| 拡張機能の名前 | 本体の子ごとにまとめ、本体が子に渡す環境変数 `VI_IMITATION_EXTENSION_DIR`（5.1）を `/proc/<pid>/environ` から読んで、そのディレクトリの宣言ファイルの ID を名前にする。環境変数を読めないとき（ps の出力）は、実行ファイルの名前から `vi-imitation-ext-` を除いたもの（標準の拡張機能では ID と同じ）にする。拡張機能でない子（`:!` で起動したコマンドなど）は、コマンドの名前を括弧で囲んで出す |
+| 内訳 | コマンド `memusage.show`（`:memusage.show`）で、`popup/open` のテキストの部品を中央に出す。先頭に合計と本体と子孫の合計、その下に本体、拡張機能ごと（RSS の合計の大きい順）に、拡張機能のプロセスと、その子孫を字下げして並べ、子孫のある拡張機能には合計の行を足す。言語サーバーごとの行は、LSP の拡張機能の子孫の行である。コマンドラインは実行ファイルの名前とその後の引数で、80 文字までにする。`popup/open` は本体の応答を待つので、ハンドラーの上でなく goroutine で送る（2.2 の規約） |
+| バッファ | 宣言ファイルに `noBufferSync` を書き、バッファの同期を受け取らない（5.3。FR-229）。PR #375 のレビューの前は、開いたすべてのバッファの複製を持ち、46 MB のファイルでこの拡張機能の RSS が 294 MB になった |
+| 本体の子の見分け | 環境変数を読むのは本体の直接の子だけにし、見分けた子はプロセス ID と開始の時刻（`/proc/<pid>/stat` の `starttime`）の組で覚えて、次の集計から `environ` を読まない（PR #375 のレビューの推奨 3）。fork から exec までの間の子は本体の環境変数を持つので、見つからなかったことは覚えない |
+| 起動の契機 | コマンドの契機だけにした。部品を `statusline` か `tabline` に並べれば、本体が最初の画面を描いた後に起動する（5.2、7.1）。`startup` の契機（5.2）にしなかったのは、部品を並べていない利用者（本体の既定）の本体でも常に動いて、使わないメモリを使うためである |
+| マクロの再生 | `memusage.show` は、`sync` が true でも受け付けたことだけを応答する。バッファのテキストとカーソルを変えないので、再生の結果は変わらない |
+| RSS の数え方 | `/proc/<pid>/status` の `VmRSS`（ps では `rss`）で、共有ライブラリを重ねて数えるので、PSS より少し大きい。内訳の末尾にそのことを書く |
+
 ## 7. 設定
 
 設定ファイルは JSONC で書き、本体が起動時に直接読む（FR-40、FR-41）。
@@ -3875,7 +3932,9 @@ ruff の `--range` や clang-format の `--offset` のように範囲を受け�
     // 保存の流れ（6.7）で、拡張機能ごとに buffer/willSave の応答を待つ期限（ミリ秒。仮に 1000）。0 は既定値（FR-177）
     "willSaveTimeoutMs": 1000,
     // 拡張機能ごとのメモリの上限（MB）。0 は「上限なし」
-    "memoryLimitMb": 0
+    "memoryLimitMb": 0,
+    // 使わない拡張機能の ID（FR-226）。宣言ファイルを使わないので、どの契機でも起動しない
+    "disabled": []
   },
   "registers": {
     // レジスターの履歴の件数（FR-53）
@@ -4142,7 +4201,7 @@ nvim-scrollview の既定のリンク先は、`ScrollView` が `Visual`、診断
 
 - 部品の ID は、拡張機能の ID と `.` で始め、その後に `.` を含めない（`mrreview.status`）。本体の部品の ID は `.` を含まないので本体の部品と重ならず、最後の `.` より前が拡張機能の ID に決まるので、拡張機能の ID が `.` を含んでも他の拡張機能の部品と重ならない（PR #239 のレビュー）。宣言ファイルの検査（`ext.Manifest.Validate`）で守らせる
 - 設定は `.` を含む ID を確かめずに残し、宣言ファイルを読んだ後に `internal/editor` が、どの拡張機能も足していない ID を設定の誤りとして知らせる（設定を読む時点では宣言ファイルを読んでいないため）
-- 利用者が並べた部品の拡張機能は、起動の契機を待たずに本体の起動時に起動する。`:ext sync` の入れ替え（`exthost.Host.Reload`）で未起動へ戻ったときも起動し直し、部品を送り直させる（5.2。PR #239 のレビュー）。部品の中身は拡張機能が送るまで無く、lualine の部品のように描くたびに問い合わせる形は、キー入力ごとに拡張機能を待つことになるので採らなかった
+- 利用者が並べた部品の拡張機能は、起動の契機を待たずに本体の起動時に起動する（#367 から、最初の画面を描き終えた後。5.2）。`:ext sync` の入れ替え（`exthost.Host.Reload`）で未起動へ戻ったときも起動し直し、部品を送り直させる（5.2。PR #239 のレビュー）。部品の中身は拡張機能が送るまで無く、lualine の部品のように描くたびに問い合わせる形は、キー入力ごとに拡張機能を待つことになるので採らなかった
 - 幅が足りなければ、本体の部品より先に拡張機能の部品を幅の広いものから切り詰め（末尾を `>` にする）、足りなければ落とす。名前は末尾の 20 列（仮）までを拡張機能の部品より優先し、それより先は今までどおり先頭を `<` で切る（`ui` の `trimExtSegs`）。1 つの部品の中身は 256 文字（仮）までを持つ。タブの行では、いまのタブの見出しの幅を残す
 - 入れ子の待ちの間に溜めた `statusline/set` は、同じ部品の前のものを後のもので置き換えてまとめ、溜めたイベントが上限を超えても捨てない（5.3。最後の更新を捨てると古い中身が出続けるため）
 - `statusline/set` の params は、部品の ID（`part`）、中身（`text`）、色の名前（`style`。省ける）である。本体は部品ごとに最後の中身を持ち、空の中身で部品を出さない。改行と制御文字は空白にする（`ext.StatusLineText`）

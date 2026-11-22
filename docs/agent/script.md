@@ -60,6 +60,8 @@ func main() {
   待つと詰まるので、これらはリクエストを送らずにこの誤りを返す。
 - `ErrInvalidPosition`: 位置がバッファの外にあるか、UTF-8 の文字の途中を指すことを表す。
 - `ErrInvalidRange`: 範囲の終わりが始まりより前にあることを表す。
+- `ErrNoBufferSync`: 本体がこの拡張機能へバッファの同期を送らない（宣言ファイルの noBufferSync。ext.InitializeParams の NoBufferSync）ので、
+  WaitBuffer がバッファの複製を待たなかったことを表す。待っても buffer/open は届かず、ctx の期限まで戻らなくなるためである。
 - `ErrNotRunning`: Serve の前か後に、本体へメッセージを送ろうとしたことを表す。
 
 #### `server.AsyncBufferWillSaveHandler`
@@ -180,6 +182,8 @@ command/execute に答えるハンドラーである。
 b は p.Buffer の複製で、そのバージョン番号は p.Version と一致する。
 ただし p.Withheld が true（本体が不正な UTF-8 のためにバッファを送っていない）なら b は nil である。
 バッファを使うコマンドは、そのとき OK を false で返す。
+宣言ファイルに noBufferSync を書いた拡張機能では、本体がどのバッファも送らず、p.Withheld をいつも立てるので、b はいつも nil である
+（ext.Manifest.NoBufferSync）。そうした拡張機能では、バッファの複製を待つ WaitBuffer も、待たずに ErrNoBufferSync を返す。
 返した result に Transaction があれば、その BaseVersion は、Server が p.Version で上書きする。
 
 `type CommandHandler func(ctx context.Context, b *Buffer, p *ext.CommandExecuteParams) (ext.CommandExecuteResult, error)`
@@ -191,6 +195,8 @@ initialize を受け取ったことを表す。
 
 - `APIVersion string`: 本体が実装している拡張機能 API のバージョンである。
 - `Settings json.RawMessage`: 利用者の設定ファイルのうち、この拡張機能に向けた部分である。無ければ nil。
+- `NoBufferSync bool`: 本体がこの拡張機能へバッファの同期を送らない（宣言ファイルの noBufferSync）ことを表す。
+  true なら、ハンドラーの b はいつも nil で、WaitBuffer は ErrNoBufferSync を返す。
 
 #### `server.MotionHandler`
 

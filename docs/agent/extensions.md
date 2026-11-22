@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.15.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.16.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -136,6 +136,12 @@ f の対象の文字が見つからない場合のように該当が無いとき
   本体は解決せずにそのまま渡す。相対パスの引数は、拡張機能が EnvExtensionDir（VI_IMITATION_EXTENSION_DIR） のディレクトリから解決する。
 - `saveHook`（`bool`、省ける）: true なら、稼働中のときに保存の直前の buffer/willSave を受け取る。
   保存の前に整形する LSP の拡張機能が使う。
+- `noBufferSync`（`bool`、省ける）: true なら、本体がこの拡張機能へバッファの同期（buffer/open、buffer/change、buffer/close、buffer/didSave）を
+  送らないことを表す（API 0.16.0 で足した）。
+  バッファのテキストを使わずに常に動く拡張機能（メモリの使用量など）が、開いたすべてのバッファの複製を持たないためのものである。
+  本体は、この拡張機能への command/execute と provider/invoke の params の Withheld を立てるので、ext/server はハンドラーへ
+  バッファの代わりに nil を渡す。バッファの複製を要る操作（operators、motions、textObjects）と SaveHook とは併せて書けない（Validate）。
+  古い本体（0.15.0 まで）は未知の項目として無視し、バッファを送る。
 - `activation`（`[]Activation`）: 起動の契機の一覧である。どれか 1 つが成り立った時点で起動する。
 - `contributes`（`Contributes`）: 拡張機能が追加する操作である。
 - `provides`（`[]Operation`、省ける）: 拡張機能が引き受ける本体の操作（提供者として名乗る操作）の列である。
@@ -179,6 +185,12 @@ Pattern は、設定の中の値を指す JSON Pointer（RFC 6901）で、参照
 "*" が当たった項目の下にその先の値が無いか、文字列か文字列を含む配列でなければ、本体はその項目を設定の誤りとして知らせる（項目の名前の綴りの誤りのため）。
 例: tree-sitter の拡張機能の {"on": "settingsFileType", "pattern": "/parsers/*/fileTypes"}。
 
+ActivationStartup（startup） は、本体が起動して最初の画面を描き終えた後に成り立つ（API 0.16.0 で足した）。
+ID と Pattern は使わない。利用者の操作もファイルを開くことも待たずに、起動している間は常に動かしておく拡張機能
+（開いたバッファすべてに色を付けるものなど）が使う。最初の画面を描く前には起動しないので、本体の起動の速さを損なわない。
+利用者は、設定の extensions.disabled にその拡張機能の ID を書けば、起動させない（宣言ファイルを読まない）。
+古い本体（0.15.0 まで）は知らない契機として警告にして無視するので、この契機だけを持つ拡張機能は起動しない。
+
 - `"operator"`（ActivationOperator）
 - `"motion"`（ActivationMotion）
 - `"textObject"`（ActivationTextObject）
@@ -186,6 +198,7 @@ Pattern は、設定の中の値を指す JSON Pointer（RFC 6901）で、参照
 - `"filetype"`（ActivationFileType）
 - `"socket"`（ActivationSocket）
 - `"settingsFileType"`（ActivationSettingsFileType）
+- `"startup"`（ActivationStartup）
 
 #### `Contributes`
 

@@ -14,6 +14,7 @@ func init() {
 		"ErrEditInHandler":   reflect.ValueOf(&server.ErrEditInHandler).Elem(),
 		"ErrInvalidPosition": reflect.ValueOf(&server.ErrInvalidPosition).Elem(),
 		"ErrInvalidRange":    reflect.ValueOf(&server.ErrInvalidRange).Elem(),
+		"ErrNoBufferSync":    reflect.ValueOf(&server.ErrNoBufferSync).Elem(),
 		"ErrNotRunning":      reflect.ValueOf(&server.ErrNotRunning).Elem(),
 		"InheritedSocket":    reflect.ValueOf(server.InheritedSocket),
 		"IsReadOnly":         reflect.ValueOf(server.IsReadOnly),

@@ -268,7 +268,9 @@ func (h *Host) terminate(id string, r *run, p *process) {
 
 // initialize は、initialize を送って応答を待ち、届いたら稼働中にして、開いているバッファの全文を送る。
 func (h *Host) initialize(e *extension, r *run, p *process, stop <-chan struct{}) error {
-	f, err := r.conn.Go(ext.MethodInitialize, ext.InitializeParams{APIVersion: ext.APIVersion, Settings: e.spec.Settings})
+	f, err := r.conn.Go(ext.MethodInitialize, ext.InitializeParams{
+		APIVersion: ext.APIVersion, Settings: e.spec.Settings, NoBufferSync: !e.syncsBuffers(),
+	})
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConnClosed, err)
 	}
@@ -316,7 +318,7 @@ func (h *Host) initialize(e *extension, r *run, p *process, stop <-chan struct{}
 	r.runningSince = time.Now()
 	h.setStateLocked(e, StateRunning, nil)
 	for _, d := range h.sortedDocsLocked() {
-		if !d.withheld() {
+		if !d.withheld() && e.syncsBuffers() {
 			h.notifyLocked(id, r, ext.MethodBufferOpen, d.openParams())
 		}
 	}
@@ -503,11 +505,12 @@ func (h *Host) handler(e *extension, r *run) rpc.Handler {
 // 拡張機能は、editor/open の応答を受け取った後に複製を待つ（ext/server の WaitBuffer）。
 // 送っていないバッファの buffer/open は届かないので、代わりに buffer/close を同じ接続で先に送り、待ちを誤りで終わらせる（基本設計 5.3、6.7）。
 // 拡張機能はそのバッファの複製を持っていないので、buffer/close で捨てるものは無い。
+// 宣言ファイルの noBufferSync の拡張機能も、どのバッファの buffer/open も受け取らないので、同じく先に buffer/close を送る（#367）。
 func (h *Host) closeWithheldBeforeReply(e *extension, r *run, reply rpc.Replier) rpc.Replier {
 	return func(result any, err error) error {
 		if res, ok := result.(ext.EditorOpenResult); ok && err == nil {
 			h.mu.Lock()
-			if d, open := h.docs[res.Buffer]; open && d.withheld() && e.run == r && e.state == StateRunning {
+			if d, open := h.docs[res.Buffer]; open && (d.withheld() || !e.syncsBuffers()) && e.run == r && e.state == StateRunning {
 				h.notifyLocked(e.spec.Manifest.ID, r, ext.MethodBufferClose, ext.BufferCloseParams{Buffer: res.Buffer})
 			}
 			h.mu.Unlock()

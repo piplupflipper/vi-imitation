@@ -148,7 +148,7 @@ func TestLoadManifestWarnings(t *testing.T) {
   "id": "a",
   "command": "x",
   "future": true,
-  "activation": [{ "on": "startup" }, { "on": "command", "id": "a.run" }],
+  "activation": [{ "on": "idle" }, { "on": "command", "id": "a.run" }],
   "contributes": { "commands": [{ "id": "a.run" }] }
 }`
 	p := writeManifest(t, t.TempDir(), "a", src)
@@ -156,7 +156,7 @@ func TestLoadManifestWarnings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(warns) != 2 || !strings.HasPrefix(warns[0].Error(), p+":4:3: 未知の項目 future") || !strings.Contains(warns[1].Error(), "startup") {
+	if len(warns) != 2 || !strings.HasPrefix(warns[0].Error(), p+":4:3: 未知の項目 future") || !strings.Contains(warns[1].Error(), "idle") {
 		t.Errorf("warns = %v", warns)
 	}
 	if m.ID != "a" {
@@ -215,6 +215,74 @@ func TestLoadExtensions(t *testing.T) {
 	}
 	if ps[2].Path != "config.jsonc" || ps[2].Line != 3 || ps[2].Column != 45 || !strings.Contains(ps[2].Msg, "nothing") {
 		t.Errorf("見つからない ID の誤り = %v", ps[2])
+	}
+}
+
+// extensions.disabled に ID を書いた拡張機能は、利用者のディレクトリのものも同梱のものも一覧に入れない。
+// 見つからない ID と、文字列でない要素と空の ID は、設定の誤りとして知らせる。
+//
+// req: FR-226
+func TestLoadExtensionsDisabled(t *testing.T) {
+	user, bundled := t.TempDir(), t.TempDir()
+	writeManifest(t, user, "res", `{"id": "res", "command": "./res", "activation": [{"on": "startup"}]}`)
+	writeManifest(t, bundled, "res", `{"id": "res", "command": "./res", "activation": [{"on": "startup"}]}`)
+	writeManifest(t, bundled, "mem", `{"id": "mem", "command": "./mem", "contributes": {"statusline": [{"id": "mem.rss"}]}}`)
+	writeManifest(t, bundled, "lsp", `{"id": "lsp", "command": "./lsp", "activation": [{"on": "filetype", "pattern": "go"}]}`)
+
+	cfg, errs := Parse("config.jsonc", []byte(`{
+  "extensions": { "disabled": ["res", "mem", "res", "nothing", 3, ""] },
+}`))
+	if len(errs) != 2 || !strings.Contains(errs[0].Error(), "extensions.disabled の要素 は文字列にする") ||
+		!strings.Contains(errs[1].Error(), "空の ID") {
+		t.Fatalf("Parse の誤り = %v", errs)
+	}
+	if want := map[string]bool{"res": true, "mem": true, "nothing": true}; !reflect.DeepEqual(cfg.ExtensionDisabled, want) {
+		t.Errorf("ExtensionDisabled = %v, want %v", cfg.ExtensionDisabled, want)
+	}
+
+	exts, problems := LoadExtensions([]string{user, bundled}, cfg)
+	if len(exts) != 1 || exts[0].Manifest.ID != "lsp" {
+		t.Fatalf("exts = %+v", exts)
+	}
+	// 同梱の res の ID の重なり（利用者のものを使うときと同じ）と、見つからない ID の 2 件。
+	ps := problemsOf(t, problems)
+	if len(ps) != 2 || !strings.Contains(ps[0].Msg, "重なる") || ps[1].Line != 2 || !strings.Contains(ps[1].Msg, "extensions.disabled の拡張機能 nothing") {
+		t.Errorf("problems = %v", problems)
+	}
+}
+
+// 止めた拡張機能の部品を並べた statusline と tabline、そのコマンドを呼ぶ keymap と commandAliases は、誤りにせず黙って使わない
+// （PR #375 のレビューの推奨 1）。止めていない拡張機能の ID の誤りは、今までどおり知らせる。
+//
+// req: FR-226
+func TestDisabledReferences(t *testing.T) {
+	cfg, errs := Parse("config.jsonc", []byte(`{
+  "statusline": { "left": ["mode", "mem.rss"], "right": ["a.b.part", "other.part"] },
+  "tabline": { "right": ["mem.tab", "tabs"] },
+  "keymap": { "normal": { "<Space>m": { "command": "mem.show" }, "<Space>o": { "command": "other.show" } } },
+  "commandAliases": { "memshow": { "command": "mem.show" }, "oshow": { "command": "other.show" } },
+  "extensions": { "disabled": ["mem", "a.b"] },
+}`))
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	if got := *cfg.StatusLine; !reflect.DeepEqual(got, StatusLine{Left: []string{"mode"}, Right: []string{"other.part"}}) {
+		t.Errorf("statusline = %+v", got)
+	}
+	if got := cfg.TabLineParts.Right; !reflect.DeepEqual(got, []string{"tabs"}) {
+		t.Errorf("tabline.right = %v", got)
+	}
+	unknown := errors.New("拡張機能のコマンドの ID でない")
+	kerrs := cfg.CheckKeymapCommands(func(string, string, KeymapCommand) error { return unknown })
+	if len(kerrs) != 1 || !strings.Contains(kerrs[0].Error(), "other.show") {
+		t.Errorf("CheckKeymapCommands = %v", kerrs)
+	}
+	if len(cfg.KeymapCommands["normal"]) != 0 {
+		t.Errorf("使えない keymap を残した: %v", cfg.KeymapCommands)
+	}
+	aerrs := cfg.CheckCommandAliases(func(CommandAlias) error { return unknown })
+	if len(aerrs) != 1 || !strings.Contains(aerrs[0].Error(), "oshow") || len(cfg.CommandAliases) != 0 {
+		t.Errorf("CheckCommandAliases = %v, 残り %v", aerrs, cfg.CommandAliases)
 	}
 }
 

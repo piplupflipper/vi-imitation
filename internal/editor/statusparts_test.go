@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/piplupflipper/vi-imitation/ext"
@@ -187,6 +188,60 @@ func TestExtensionStatusLineParts(t *testing.T) {
 		row := h.statusRow()
 		return h.state("st") == exthost.StateRunning && strings.Contains(row, " RSS ") && !strings.Contains(row, " before ")
 	})
+}
+
+// 起動の契機 startup の拡張機能は、Run が最初の画面を描いた後に、キーもファイルの種類も待たずに起動する。
+// Run の前（New とファイルを開いた後）は起動せず、他の契機の拡張機能は起動しない。
+//
+// req: FR-225
+func TestStartupExtensionAfterFirstRender(t *testing.T) {
+	specs := fakeSpecs(t)
+	specs[1].Manifest.Activation = append(specs[1].Manifest.Activation, ext.Activation{On: ext.ActivationStartup})
+	// slow は部品だけを足し、設定の並びに置く（#238 の、並べた部品の拡張機能を起動時に起動する経路）。
+	specs[2].Manifest.Contributes.StatusLine = []ext.StatusLinePart{{ID: "slow.part"}}
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\n"})
+
+	// 最初の Draw の時点の状態を記録する。Draw はイベントループの goroutine で描いた直後に呼ばれるので、
+	// 最初の画面より前に起動を始めていれば（Run の先頭や New で起動すれば）、ここで起動中か稼働中になっている（PR #375 のレビューの推奨 2）。
+	term := newFakeTerm()
+	var ed *Editor
+	var (
+		mu    sync.Mutex
+		first map[string]exthost.State
+		draws int
+	)
+	term.onDraw = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		draws++
+		if first == nil {
+			first = map[string]exthost.State{}
+			for _, id := range []string{"ftx", "slow"} {
+				first[id], _ = ed.host.State(id)
+			}
+		}
+	}
+	h := startTermWith(t, term, Config{
+		WorkDir: dir, Extensions: specs, StatusLine: &ui.StatusLine{Left: []string{ui.StatusPartName}, Right: []string{"slow.part"}},
+	}, func(e *Editor) error {
+		ed = e
+		return e.Open("a.txt")
+	})
+	h.eventually("startup の拡張機能が稼働中", func() bool { return h.state("ftx") == exthost.StateRunning })
+	h.eventually("部品の拡張機能が起動", func() bool { return h.state("slow") != exthost.StateNotStarted })
+	mu.Lock()
+	defer mu.Unlock()
+	if draws == 0 {
+		t.Fatal("Draw が呼ばれていない")
+	}
+	for id, st := range first {
+		if st != exthost.StateNotStarted {
+			t.Errorf("最初の画面を描いた時点の %s の状態 = %s, want not-started", id, st)
+		}
+	}
+	if st := h.state("fake"); st != exthost.StateNotStarted {
+		t.Errorf("fake の状態 = %s, want not-started", st)
+	}
 }
 
 // 設定の並びに書いた "." を含む ID を、どの拡張機能も足していなければ、設定の誤りとして知らせて出さない。

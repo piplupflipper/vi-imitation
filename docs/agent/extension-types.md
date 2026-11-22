@@ -236,6 +236,8 @@ initialize の params である。
 - `apiVersion`（Go では `APIVersion`、`string`）: 本体が実装している拡張機能 API のバージョンである。
 - `settings`（`json.RawMessage`、省ける）: 利用者の設定ファイルのうち、この拡張機能に向けた部分である。
   形は拡張機能ごとに決まるので、本体は解釈せずに JSON のまま渡す。設定が無ければ省く。
+- `noBufferSync`（`bool`、省ける）: 宣言ファイルの noBufferSync（Manifest.NoBufferSync）のとおり、本体がこの拡張機能へバッファの同期を送らないことを表す
+  （API 0.16.0 で足した）。ext/server は、true なら WaitBuffer をすぐ誤りで返す（待っても buffer/open が届かないため）。
 
 #### `InitializeResult`
 

@@ -31,6 +31,7 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/tailscale/hujson"
@@ -59,7 +60,8 @@ import (
 //	    "willSaveTimeoutMs": 1000,
 //	    "memoryLimitMb": 0,
 //	    "settings": { "lsp": { "servers": [] } },
-//	    "activation": { "lsp": [{ "on": "filetype", "pattern": "python" }] }
+//	    "activation": { "lsp": [{ "on": "filetype", "pattern": "python" }] },
+//	    "disabled": ["memusage"]
 //	  },
 //	  "registers": { "historySize": 100, "maxEntryBytes": 1048576, "deleteToHistory": true, "clipboard": "osc52" },
 //	  "colorscheme": "iceberg",
@@ -130,6 +132,10 @@ type Config struct {
 	// ExtensionActivation は extensions.activation の値で、拡張機能の ID から、宣言ファイルの activation に足す契機への対応である
 	// （基本設計 6.7 の「拡張機能ごとの activation の追加」）。足せるのは filetype の契機だけである。
 	ExtensionActivation map[string][]ext.Activation
+	// ExtensionDisabled は extensions.disabled の値で、使わない拡張機能の ID の集合である（基本設計 5.2。FR-226）。
+	// LoadExtensions は、この ID の宣言ファイルを一覧に入れないので、本体はその拡張機能を起動せず、キーもコマンドも部品も足さない。
+	// 起動の契機 startup の拡張機能（本体の起動で起動する）を止めるのに使う。項目が無ければ nil である。
+	ExtensionDisabled map[string]bool
 	// ExtensionInstall は extensions.install の値で、取得する拡張機能の列である（基本設計 5.6）。
 	// 誤りのある項目は除いてある。呼び出し側が extmgr.Spec に写して extmgr.Sync に渡す。
 	ExtensionInstall []ExtensionInstall
@@ -332,7 +338,46 @@ func Parse(path string, data []byte) (Config, []error) {
 			}
 		}
 	}
+	cfg.dropDisabledParts()
 	return cfg, s.problems
+}
+
+// disabledOwner は、名前 name（部品の ID かコマンドの ID）が、extensions.disabled に書いた拡張機能のものかを返す。
+// 部品とコマンドの ID は拡張機能の ID と "." で始まる（部品は宣言ファイルの検査で守らせ、コマンドは標準の拡張機能がそう名付ける）ので、
+// name の "." の前までのどれかが止めた拡張機能の ID なら、その拡張機能のものとみなす。
+func (c *Config) disabledOwner(name string) bool {
+	for i := range len(name) {
+		if name[i] == '.' && c.ExtensionDisabled[name[:i]] {
+			return true
+		}
+	}
+	return false
+}
+
+// dropDisabledParts は、statusline と tabline の並びから、extensions.disabled に書いた拡張機能の部品の ID を黙って除く（FR-226）。
+// 利用者が自分で止めた拡張機能の部品を、どの拡張機能も足していない ID として知らせないためである（PR #375 のレビューの推奨 1）。
+// 部品の ID の最後の "." の前は拡張機能の ID に決まる（ext.Manifest.Validate）ので、止めていない拡張機能の部品を除くことは無い。
+//
+// req: FR-226
+func (c *Config) dropDisabledParts() {
+	if len(c.ExtensionDisabled) == 0 {
+		return
+	}
+	keep := func(ids []string) []string {
+		var out []string
+		for _, id := range ids {
+			if i := strings.LastIndexByte(id, '.'); i >= 0 && c.ExtensionDisabled[id[:i]] {
+				continue
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	for _, sl := range []*StatusLine{c.StatusLine, c.TabLineParts} {
+		if sl != nil {
+			sl.Left, sl.Right = keep(sl.Left), keep(sl.Right)
+		}
+	}
 }
 
 // keymap は、keymap の値を読む。右辺が文字列の項目を Keymap に、オブジェクトの項目（{ "action": "<ID>" }。FR-126）を
@@ -498,8 +543,12 @@ func (c *Config) CheckKeymapCommands(check func(mode, lhs string, cmd KeymapComm
 	for mode, maps := range c.KeymapCommands {
 		for lhs, cmd := range maps {
 			if err := check(mode, lhs, cmd); err != nil {
-				errs = append(errs, c.keymapPos[mode][lhs].with("%s: コマンド %s を使えない: %v", join(join("keymap", mode), lhs), cmd.Name, err))
 				delete(maps, lhs)
+				if c.disabledOwner(cmd.Name) {
+					// extensions.disabled で止めた拡張機能のコマンドは、無いものとして知らせずに使わない（PR #375 のレビューの推奨 1）。
+					continue
+				}
+				errs = append(errs, c.keymapPos[mode][lhs].with("%s: コマンド %s を使えない: %v", join(join("keymap", mode), lhs), cmd.Name, err))
 			}
 		}
 	}
@@ -591,6 +640,8 @@ func (s *source) extensions(v *hujson.Value, cfg *Config) {
 			cfg.ExtensionActivation = s.extensionActivation(m.value, cfg)
 		case "install":
 			cfg.ExtensionInstall, cfg.ExtensionInstallValid = s.extensionInstall(m.value)
+		case "disabled":
+			cfg.ExtensionDisabled = s.extensionDisabled(m.value, cfg)
 		default:
 			s.report(m.nameOff, "未知の項目 %s を無視する", path)
 		}
@@ -677,6 +728,31 @@ func (s *source) extensionSettings(v *hujson.Value, cfg *Config) map[string]json
 		}
 		out[e.name] = buf.Bytes()
 		s.notePos(cfg, e.name, e.nameOff, "extensions.settings")
+	}
+	return out
+}
+
+// extensionDisabled は、extensions.disabled の値（拡張機能の ID の文字列の配列）を読む（FR-226）。
+// 文字列でない要素と空の文字列は誤りとして知らせて除く。同じ ID を 2 回書いても誤りにしない。
+func (s *source) extensionDisabled(v *hujson.Value, cfg *Config) map[string]bool {
+	const path = "extensions.disabled"
+	arr, ok := s.array(v, path)
+	if !ok {
+		return nil
+	}
+	out := map[string]bool{}
+	for i := range arr.Elements {
+		el := &arr.Elements[i]
+		id, ok := s.str(el, path+" の要素")
+		if !ok {
+			continue
+		}
+		if id == "" {
+			s.report(el.StartOffset, "%s に空の ID は書けない", path)
+			continue
+		}
+		out[id] = true
+		s.notePos(cfg, id, el.StartOffset, path)
 	}
 	return out
 }

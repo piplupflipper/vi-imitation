@@ -281,6 +281,109 @@ func TestStartOnActivation(t *testing.T) {
 	}
 }
 
+// 起動の契機 startup の拡張機能は、New でもバッファを開いても起動せず、ActivateStartup で起動する。
+// 他の契機の拡張機能は ActivateStartup で起動しない。:ext sync の入れ替え（Reload）で未起動へ戻ると、すぐに起動し直す。
+//
+// req: FR-225
+func TestStartupActivation(t *testing.T) {
+	res := fakeSpec(t, "res", modeNormal, "")
+	res.Manifest.Activation = append(res.Manifest.Activation, ext.Activation{On: ext.ActivationStartup})
+	hs := newHarness(t, []Spec{fakeSpec(t, "op", modeNormal, "go"), res}, nil, true)
+
+	if err := hs.h.OpenBuffer(snapshot(1, "markdown", buffer.New("x"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := hs.h.Activate(ext.ActivationStartup, "x"); len(got) != 0 {
+		t.Fatalf("Activate(startup) started %v", got)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if st := hs.state("res"); st != StateNotStarted {
+		t.Fatalf("res: state %s before ActivateStartup, want not-started", st)
+	}
+
+	if got := hs.h.ActivateStartup(); !slices.Equal(got, []string{"res"}) {
+		t.Fatalf("ActivateStartup = %v, want [res]", got)
+	}
+	hs.waitState("res", StateRunning)
+	if st := hs.state("op"); st != StateNotStarted {
+		t.Errorf("op: state %s after ActivateStartup, want not-started", st)
+	}
+	if got := hs.h.ActivateStartup(); len(got) != 0 {
+		t.Errorf("second ActivateStartup started %v", got)
+	}
+
+	if err := hs.h.Reload("res"); err != nil {
+		t.Fatal(err)
+	}
+	hs.waitState("res", StateNotStarted)
+	hs.waitState("res", StateRunning)
+}
+
+// 宣言ファイルの noBufferSync の拡張機能へは、稼働中になったときの全文も、その後のバッファの開閉と差分と保存も送らない。
+// command/execute は Withheld を立てて送る。同じ Host の他の拡張機能へは、今までどおり送る。
+//
+// req: FR-229
+func TestNoBufferSync(t *testing.T) {
+	m := ext.Manifest{
+		ID: "nb", Command: fakeCommand(t, modeNormal), NoBufferSync: true,
+		Activation:  []ext.Activation{{On: ext.ActivationCommand, ID: "nb.cmd"}},
+		Contributes: ext.Contributes{Commands: []ext.Contribution{{ID: "nb.cmd"}}},
+	}
+	if _, err := ext.ValidateManifests([]ext.Manifest{m}); err != nil {
+		t.Fatal(err)
+	}
+	hs := newHarness(t, []Spec{{Manifest: m}, fakeSpec(t, "x", modeNormal, "")}, nil, true)
+	b := buffer.New("abc\n")
+	if err := hs.h.OpenBuffer(snapshot(1, "", b)); err != nil {
+		t.Fatal(err)
+	}
+	hs.h.Activate(ext.ActivationCommand, "nb.cmd")
+	hs.h.Activate(ext.ActivationTextObject, "x.obj")
+	hs.waitState("nb", StateRunning)
+	hs.waitState("x", StateRunning)
+
+	c, err := b.Apply(buffer.Transaction{BaseVersion: b.Version(), Edits: []buffer.Edit{{Text: "z"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.ChangeBuffer(1, c); err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.DidSave(ext.BufferDidSaveParams{Buffer: 1, Version: ext.Version(b.Version())}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.OpenBuffer(snapshot(2, "", buffer.New("second"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.CloseBuffer(2); err != nil {
+		t.Fatal(err)
+	}
+	var res ext.CommandExecuteResult
+	if err := hs.h.Call(ctx, "nb", ext.MethodCommandExecute, ext.CommandExecuteParams{Buffer: 1, Version: ext.Version(b.Version()), ID: "nb.cmd"}, callTimeout, &res); err != nil {
+		t.Fatal(err)
+	}
+
+	var nb, x fakeState
+	if err := hs.h.Call(ctx, "nb", methodState, nil, callTimeout, &nb); err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.Call(ctx, "x", methodState, nil, callTimeout, &x); err != nil {
+		t.Fatal(err)
+	}
+	if msgs := bufferMessages(nb.Log); len(nb.Buffers) != 0 || len(msgs) != 0 {
+		t.Errorf("noBufferSync の拡張機能がバッファを受け取った: %v %v", nb.Buffers, msgs)
+	}
+	if !slices.Contains(nb.Log, "command:nb.cmd:withheld=true") {
+		t.Errorf("command/execute の Withheld が立っていない: %v", nb.Log)
+	}
+	if !slices.Contains(nb.Log, "initialize:noBufferSync") || slices.Contains(x.Log, "initialize:noBufferSync") {
+		t.Errorf("initialize の NoBufferSync: nb %v, x %v", nb.Log, x.Log)
+	}
+	if got := bufferMessages(x.Log); len(got) != 5 {
+		t.Errorf("他の拡張機能が受け取ったバッファの知らせ = %v, want 5 件", got)
+	}
+}
+
 // 起動は非同期で、初期化が終わらなくても呼び出し側は待たされない。
 //
 // req: NFR-04

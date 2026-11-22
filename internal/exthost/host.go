@@ -2,6 +2,7 @@
 //
 // 本体のイベントループ（internal/editor）は、[Host] を 1 つ作り、次のように使う。
 //
+//   - 最初の画面を描き終えたら [Host.ActivateStartup] を 1 回呼び、起動の契機 startup の拡張機能を起動する
 //   - バッファを開く、変える、閉じるたびに [Host.OpenBuffer]、[Host.ChangeBuffer]、[Host.CloseBuffer] を呼ぶ。
 //     稼働中の拡張機能へ全文と差分を送る（FR-16）
 //   - 拡張機能の操作が呼ばれたら、[Host.Send] で問い合わせ、結果を [QueryResult] のイベントで受け取る（5.4）。
@@ -317,6 +318,9 @@ type Host struct {
 	docs    map[ext.BufferID]*document
 	queue   []queued
 	closing bool
+	// startup は、起動の契機 startup（ext.ActivationStartup）が成り立った（[Host.ActivateStartup] を呼んだ）ことを表す。
+	// [Host.Reload] で未起動へ戻した拡張機能を、この契機で起動し直すかを決めるのに使う。
+	startup bool
 	// sock は、起動の契機 socket のために待ち受けているソケットである。待ち受けていなければ nil。New の後は変えない。
 	sock *socketActivator
 }
@@ -337,6 +341,28 @@ type extension struct {
 	stopping bool
 	// reload は、[Host.Reload] で止めていることを表す。止まったら無効ではなく未起動へ移す。
 	reload bool
+}
+
+// syncsBuffers は、拡張機能 e へバッファの同期（buffer/open、buffer/change、buffer/close、buffer/didSave）を送るかを返す。
+// 宣言ファイルの noBufferSync（ext.Manifest.NoBufferSync）が true なら送らない（基本設計 5.3。#367）。
+func (e *extension) syncsBuffers() bool { return !e.spec.Manifest.NoBufferSync }
+
+// withheldParams は、バッファの同期を送らない拡張機能 e への問い合わせ params の Withheld を立てる。
+// e はバッファの複製を持たないので、ext/server はハンドラーへ複製の代わりに nil を渡す（ext.CommandExecuteParams の Withheld）。
+// Withheld を持たない問い合わせ（motion/resolve など）は、その拡張機能が宣言できない（ext.Manifest.Validate）ので変えない。
+func withheldParams(e *extension, params any) any {
+	if e.syncsBuffers() {
+		return params
+	}
+	switch p := params.(type) {
+	case ext.CommandExecuteParams:
+		p.Withheld = true
+		return p
+	case ext.ProviderInvokeParams:
+		p.Withheld = true
+		return p
+	}
+	return params
 }
 
 // New は、specs の拡張機能を管理する Host を作る。子プロセスは起動しない（FR-14、NFR-04）。
@@ -474,6 +500,45 @@ func (h *Host) activateLocked(kind ext.ActivationKind, value string) []string {
 	return started
 }
 
+// ActivateStartup は、起動の契機 startup（ext.ActivationStartup）が成り立ったことを知らせ、
+// その契機を宣言した未起動の拡張機能を、宣言ファイルを読んだ順にすべて起動する（基本設計 5.2。FR-225）。
+// イベントループ（internal/editor）が、最初の画面を描き終えた後に 1 回呼ぶ。
+// 最初の画面を描く前に子プロセスを起動しないので、本体の起動の速さ（NFR-05）を損なわない。
+//
+// 2 回目からの呼び出しは、未起動の startup の拡張機能が残っていればそれだけを起動し、動いているものには何もしない。
+// 呼んだ後に [Host.Reload] で未起動へ戻った startup の拡張機能は、すぐに起動し直す（filetype の契機と同じ。Reload の doc）。
+// 再起動待ちと無効の拡張機能は起動しない（異常の後の再起動は、他の契機の拡張機能と同じく待ち時間の後に本体が行う）。
+//
+// 起動は非同期で、子プロセスの起動と初期化を待たずに戻る。起動を始めた拡張機能の ID を返す。
+//
+// req: FR-225
+func (h *Host) ActivateStartup() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closing {
+		return nil
+	}
+	h.startup = true
+	var started []string
+	for _, e := range h.order {
+		if e.state == StateNotStarted && hasStartup(&e.spec.Manifest) {
+			h.startLocked(e)
+			started = append(started, e.spec.Manifest.ID)
+		}
+	}
+	return started
+}
+
+// hasStartup は、宣言ファイル m が起動の契機 startup を持つかを返す。
+func hasStartup(m *ext.Manifest) bool {
+	for _, a := range m.KnownActivation() {
+		if a.On == ext.ActivationStartup {
+			return true
+		}
+	}
+	return false
+}
+
 // Start は、未起動の拡張機能を、契機に依らずに起動する。起動は非同期である。
 // 未起動でなければ何もしない。
 func (h *Host) Start(id string) error {
@@ -554,6 +619,7 @@ func (h *Host) Disable(id string) error {
 // 未起動へ移した時点で、開いているバッファのファイルの種類で起動の契機（filetype）が成り立てば、すぐに起動し直す。
 // ファイルの種類の契機はバッファを開いたときにしか成り立たないので、そうしないと、開いたままのバッファの
 // LSP や構文の色の拡張機能が、別のファイルを開くまで起動しない（PR #220 のレビュー）。
+// 起動の契機 startup の拡張機能も、[Host.ActivateStartup] の後なら、同じ理由ですぐに起動し直す（その契機は 1 回しか成り立たない）。
 // それ以外の契機（操作、コマンド、socket）の拡張機能は、次にその契機が成り立ったときに起動する。
 //
 // 宣言ファイルは読み直さない。New に渡した Spec の起動の契機と command のパスのまま、そのパスの実行ファイルを起動する。
@@ -597,8 +663,13 @@ func (h *Host) stoppedLocked(e *extension) {
 }
 
 // activateByDocsLocked は、未起動の拡張機能 e のファイルの種類の契機が、開いているバッファのどれかで成り立てば起動する。
+// 起動の契機 startup が既に成り立っていて（[Host.ActivateStartup]）、e がその契機を持てば、バッファに依らずに起動する。
 func (h *Host) activateByDocsLocked(e *extension) {
 	if h.closing || e.state != StateNotStarted {
+		return
+	}
+	if h.startup && hasStartup(&e.spec.Manifest) {
+		h.startLocked(e)
 		return
 	}
 	for _, a := range e.spec.Manifest.KnownActivation() {

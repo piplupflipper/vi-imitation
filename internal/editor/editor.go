@@ -466,7 +466,7 @@ type Editor struct {
 	statusOwners map[string]string
 	// extParts は、拡張機能が statusline/set で送った部品の中身である（setStatusPart。FR-92）。
 	extParts map[string]ui.ExtPart
-	// statusExts は、設定の並びに部品を置いたので起動時に起動した拡張機能の ID の集合である（startStatusExtensions）。
+	// statusExts は、設定の並びに部品を置いたので起動時に起動する拡張機能の ID の集合である（collectStatusExtensions）。
 	statusExts map[string]bool
 	// progress は、拡張機能が progress/report で知らせた進み具合を、始めた順に並べたものである（progress.go。FR-178）。
 	progress []*progressItem
@@ -650,7 +650,7 @@ func New(term Terminal, cfg Config) (*Editor, error) {
 	warnings = append(warnings, w3...)
 	warnings = append(warnings, removedCommandWarnings(cfg.Keymap, e.exCommands)...)
 	e.aliases = cfg.CommandAliases
-	warnings = append(warnings, e.startStatusExtensions()...)
+	warnings = append(warnings, e.collectStatusExtensions()...)
 	var w2 []error
 	var remap *remapper
 	remap, w2 = newRemapper(cfg.Keymap, leader)
@@ -883,6 +883,8 @@ func (e *Editor) Run(ctx context.Context) error {
 		checkC = t.C
 	}
 	e.render()
+	// 本体の起動で起動する拡張機能は、最初の画面を描いた後に起動する（NFR-05。#367）。
+	e.startResidentExtensions()
 	for {
 		// 終わる client（:q で最後のタブを閉じた、端末の入力が閉じた）を外す。最後の client が終われば戻る（FR-61、FR-114）。
 		if e.reapClients(); len(e.clients) == 0 {

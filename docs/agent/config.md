@@ -56,8 +56,9 @@
 | `commandAliases` | `vi-imitation --docs usage Ex コマンドの別名を足す` |
 | `fileTypeOptions` と値の決まり方 | `vi-imitation --docs usage 値の決まり方` |
 | `extensions.install` | `vi-imitation --docs usage 拡張機能の取得（:ext sync）` |
+| `extensions.disabled`（使わない拡張機能の ID の列） | `vi-imitation --docs usage 拡張機能を使わない` |
 
-標準の拡張機能の `extensions.settings` は、拡張機能ごとの節（`vi-imitation --docs usage LSP`、`DAP によるデバッグ`、`ACP のエージェント`、`MCP のサーバー`、`tree-sitter による構文ハイライト`、`git の HEAD の版と見比べる`、`ファジーファインダー`、`ファイラ`、`整形ツール`）にある。
+標準の拡張機能の `extensions.settings` は、拡張機能ごとの節（`vi-imitation --docs usage LSP`、`DAP によるデバッグ`、`ACP のエージェント`、`MCP のサーバー`、`tree-sitter による構文ハイライト`、`git の HEAD の版と見比べる`、`ファジーファインダー`、`ファイラ`、`整形ツール`、`メモリの使用量`）にある。
 保存の前の整形を待つ期限は `extensions.willSaveTimeoutMs`（ミリ秒。既定は 1000）で、`vi-imitation --docs usage 整形ツール` にある。
 
 ## 設定の項目

@@ -18,6 +18,9 @@ type InitializeEvent struct {
 	APIVersion string
 	// Settings は、利用者の設定ファイルのうち、この拡張機能に向けた部分である。無ければ nil。
 	Settings json.RawMessage
+	// NoBufferSync は、本体がこの拡張機能へバッファの同期を送らない（宣言ファイルの noBufferSync）ことを表す。
+	// true なら、ハンドラーの b はいつも nil で、WaitBuffer は ErrNoBufferSync を返す。
+	NoBufferSync bool
 }
 
 // BufferOpenEvent は、buffer/open で全文を受け取り、複製を作り直したことを表す。

@@ -28,6 +28,13 @@ type Manifest struct {
 	// SaveHook は、true なら、稼働中のときに保存の直前の buffer/willSave を受け取る（基本設計 6.7 の保存の流れ）。
 	// 保存の前に整形する LSP の拡張機能が使う。
 	SaveHook bool `json:"saveHook,omitempty"`
+	// NoBufferSync は、true なら、本体がこの拡張機能へバッファの同期（buffer/open、buffer/change、buffer/close、buffer/didSave）を
+	// 送らないことを表す（API 0.16.0 で足した。基本設計 5.3。#367）。
+	// バッファのテキストを使わずに常に動く拡張機能（メモリの使用量など）が、開いたすべてのバッファの複製を持たないためのものである。
+	// 本体は、この拡張機能への command/execute と provider/invoke の params の Withheld を立てるので、ext/server はハンドラーへ
+	// バッファの代わりに nil を渡す。バッファの複製を要る操作（operators、motions、textObjects）と SaveHook とは併せて書けない（Validate）。
+	// 古い本体（0.15.0 まで）は未知の項目として無視し、バッファを送る。
+	NoBufferSync bool `json:"noBufferSync,omitempty"`
 	// Activation は、起動の契機の一覧である。どれか 1 つが成り立った時点で起動する。
 	Activation []Activation `json:"activation"`
 	// Contributes は、拡張機能が追加する操作である。
@@ -92,6 +99,12 @@ type ActivationKind string
 // 利用者が設定に書いたファイルの種類を、設定の extensions.activation にもう一度書かずに済ませるためのものである。
 // "*" が当たった項目の下にその先の値が無いか、文字列か文字列を含む配列でなければ、本体はその項目を設定の誤りとして知らせる（項目の名前の綴りの誤りのため）。
 // 例: tree-sitter の拡張機能の {"on": "settingsFileType", "pattern": "/parsers/*/fileTypes"}。
+//
+// ActivationStartup は、本体が起動して最初の画面を描き終えた後に成り立つ（API 0.16.0 で足した。基本設計 5.2。#367）。
+// ID と Pattern は使わない。利用者の操作もファイルを開くことも待たずに、起動している間は常に動かしておく拡張機能
+// （開いたバッファすべてに色を付けるものなど）が使う。最初の画面を描く前には起動しないので、本体の起動の速さ（NFR-05）を損なわない。
+// 利用者は、設定の extensions.disabled にその拡張機能の ID を書けば、起動させない（宣言ファイルを読まない）。
+// 古い本体（0.15.0 まで）は知らない契機として警告にして無視するので、この契機だけを持つ拡張機能は起動しない。
 const (
 	ActivationOperator         ActivationKind = "operator"
 	ActivationMotion           ActivationKind = "motion"
@@ -100,13 +113,14 @@ const (
 	ActivationFileType         ActivationKind = "filetype"
 	ActivationSocket           ActivationKind = "socket"
 	ActivationSettingsFileType ActivationKind = "settingsFileType"
+	ActivationStartup          ActivationKind = "startup"
 )
 
 // Known は、k がこの版の API の知っている契機の種類かどうかを返す。
 func (k ActivationKind) Known() bool {
 	switch k {
 	case ActivationOperator, ActivationMotion, ActivationTextObject, ActivationCommand, ActivationFileType, ActivationSocket,
-		ActivationSettingsFileType:
+		ActivationSettingsFileType, ActivationStartup:
 		return true
 	}
 	return false
@@ -237,6 +251,7 @@ func (m *Manifest) HandlesFileType(ft string) bool {
 //   - Contributes の各操作の ID が空でなく、種類をまたいで重複しないこと
 //   - Contributes.StatusLine の各部品の ID が、拡張機能の ID と "." で始まり、その後が空でなく "." を含まず、空白を含まず、重複しないこと
 //   - Contributes.PopupKeys の各項目の ID とキーが空でなく、ID が PopupKeys の中で重複しないこと
+//   - NoBufferSync が true なら、SaveHook と、Contributes の operators、motions、textObjects が無いこと
 //
 // 未知の種類の契機と、未知の操作の名前の provides と、Contributes.PopupKeys の未知の Action は、誤りにせず、warnings に 1 件ずつ返す。
 // API の後の版で契機の種類を足しても、古い本体が新しい拡張機能の宣言ファイルを丸ごと拒まないようにするためである。
@@ -304,6 +319,22 @@ func (m *Manifest) Validate() (warnings []error, err error) {
 		popupIDs[c.ID] = true
 	}
 
+	if m.NoBufferSync {
+		for _, c := range []struct {
+			name string
+			set  bool
+		}{
+			{"saveHook", m.SaveHook},
+			{"contributes.operators", len(m.Contributes.Operators) > 0},
+			{"contributes.motions", len(m.Contributes.Motions) > 0},
+			{"contributes.textObjects", len(m.Contributes.TextObjects) > 0},
+		} {
+			if c.set {
+				errs = append(errs, fmt.Errorf("noBufferSync とバッファの複製が要る %s は併せて書けない", c.name))
+			}
+		}
+	}
+
 	if len(m.Activation) == 0 && len(m.Provides) == 0 && len(m.Contributes.StatusLine) == 0 {
 		errs = append(errs, errors.New("activation と provides と contributes.statusline がどれも空である"))
 	}
@@ -335,7 +366,7 @@ func (m *Manifest) Validate() (warnings []error, err error) {
 			if !strings.HasPrefix(a.Pattern, "/") {
 				errs = append(errs, fmt.Errorf("%s.pattern %q が / で始まる JSON Pointer でない", path, a.Pattern))
 			}
-		case ActivationSocket:
+		case ActivationSocket, ActivationStartup:
 		default:
 			warnings = append(warnings, fmt.Errorf("%s.on %q は未知の契機なので無視する", path, a.On))
 		}
