@@ -1,8 +1,10 @@
 package command
 
 import (
+	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
 	"github.com/piplupflipper/vi-imitation/internal/command/target"
@@ -345,9 +347,6 @@ func toggleCase(r rune) rune {
 	return r
 }
 
-// mapCase は、文字列の文字を 1 つずつ f で変える。
-func mapCase(str string, f func(rune) rune) string { return strings.Map(f, str) }
-
 // opCase は、g~、gu、gU（ビジュアルモードの ~、u、U）である。カーソルは範囲の始まりへ移る。
 func opCase(f func(rune) rune) operatorFunc {
 	return func(s *State, _ editcmd.Command, rg region, _ opOptions) error {
@@ -359,14 +358,52 @@ func opCase(f func(rune) rune) operatorFunc {
 		if err != nil {
 			return err
 		}
-		if t := mapCase(text, f); t != text {
-			if err := s.apply(buffer.Edit{Range: rg.r, Text: t}); err != nil {
-				return err
-			}
+		if err := s.apply(caseEdits(rg.r.Start, text, f)...); err != nil {
+			return err
 		}
 		s.setCursorNormal(rg.start)
 		return nil
 	}
+}
+
+// caseEdits は、位置 start から始まるテキスト text の文字を f で変える編集を、変わる文字の続きごとに分けて返す。何も変わらなければ空である。
+// 範囲の全体を 1 つの編集で置き換えると、範囲の中の拡張機能の仮想テキスト、診断、印の位置が、ずらすときに範囲の端へ寄るので、
+// 変わらない文字は編集に含めない（PR #378 のレビューの推奨 1）。Neovim 0.12.5 も変わる文字の続きごとに extmark をずらす
+// （abc def の b の前の extmark は gUU で ABC の後ろへ、d の前の extmark は DEF の後ろへ動く。2026-11-22 に確かめた）。編集は後ろの続きから並べ、前の編集で後の編集の位置がずれないようにする
+// （Transaction の編集は前から順に適用する）。改行は変わらないので、続きは行をまたがない。
+func caseEdits(start buffer.Position, text string, f func(rune) rune) []buffer.Edit {
+	var eds []buffer.Edit
+	p := start
+	run := -1 // 変わる文字の続きの始まりの、text の中のバイト
+	var runPos buffer.Position
+	var sb strings.Builder
+	flush := func(end int) {
+		if run >= 0 {
+			eds = append(eds, buffer.Edit{Range: buffer.Range{Start: runPos, End: buffer.Position{Line: runPos.Line, Byte: runPos.Byte + end - run}}, Text: sb.String()})
+			run = -1
+			sb.Reset()
+		}
+	}
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if m := f(r); m != r && (r != utf8.RuneError || size != 1) {
+			if run < 0 {
+				run, runPos = i, p
+			}
+			sb.WriteRune(m)
+		} else {
+			flush(i)
+		}
+		if r == '\n' {
+			p = buffer.Position{Line: p.Line + 1}
+		} else {
+			p.Byte += size
+		}
+		i += size
+	}
+	flush(len(text))
+	slices.Reverse(eds)
+	return eds
 }
 
 // noLines は、バッファが Vim の「行が無い」バッファ（buffer.Buffer の NoLines）かどうかを返す。

@@ -1,12 +1,6 @@
 package ui
 
-import (
-	"cmp"
-	"slices"
-	"strings"
-
-	"github.com/piplupflipper/vi-imitation/internal/buffer"
-)
+import "github.com/piplupflipper/vi-imitation/internal/buffer"
 
 // 仮想テキスト（FR-231〜FR-234。基本設計 6.1 の「仮想テキスト」）。
 //
@@ -22,7 +16,9 @@ import (
 //   - eol: 行末のセル（行の区切りを表すセル。空白の記号を描くときは行末の記号）の次の列から描く。同じ行に複数あれば、位置のバイトの順
 //     （同じなら一覧の順）に 1 列ずつ空けて並べる。行を折り返すときも見た目の行を増やさず、右の端で切る。
 //     横にスクロールして行が画面の左の端より短いときは、行末のセルと同じく画面の 0 列目の次から描く（Neovim と同じ）
-//   - overlay: 位置の文字の最初のセルから、本文を右へずらさずに上に重ねて描く。同じ位置の inline の後ろの文字に重ねる。行末より右にも
+//   - overlay: 位置の文字の最初のセルから、本文を右へずらさずに上に重ねて描く。同じ位置の inline とは一覧の順に描き、inline より先の
+//     overlay は inline の文字の上に、後の overlay は inline の後ろの文字に重ねる（Neovim と同じ。overlayAnchors）。行末の位置の overlay の
+//     上には eol を描く（Neovim と同じ）。行末より右にも
 //     はみ出して描き、見た目の行の右の端で切る（次の見た目の行へは続けない）。横にスクロールして画面の左の端より左に出た部分は描かない。
 //     Neovim 0.12.5 は左の端より左の overlay を左の端に寄せて描くが、拡張機能は左の端の位置を知らないので、本文と一緒に隠す方にした
 //
@@ -62,125 +58,10 @@ type VirtualText struct {
 	Chunks    []VirtualChunk
 }
 
-// VirtualTexts は、仮想テキストの一覧を、行で引けるように分けたものである。NewVirtualTexts で作る。
-// 作った後は変えないので、同じ値を何度の描画と列の数え方に渡してよい。nil は仮想テキストが無いことを表す。
-//
-// LineLayout.Virtual に入れて渡し、描画、望みの列、折り返しの数え方が同じ値を読む。比べられるポインターなので、
-// 表示の位置を決め直すかの判定（topKey）は、一覧を作り直したときにだけ決め直す。
-type VirtualTexts struct {
-	lines  map[int]*lineVirtual
-	styles []decoStyle
-}
-
-// lineVirtual は、1 行の仮想テキストである。
-type lineVirtual struct {
-	// inline は、inline の文字列を、位置のバイトの順（同じなら一覧の順）に並べたものである。
-	inline []virtPiece
-	// eol と overlay は、eol と overlay の仮想テキストを、位置のバイトの順（同じなら一覧の順）に並べたものである。
-	eol, overlay []virtGroup
-}
-
-// virtPiece は、仮想テキストの 1 つの文字列（VirtualChunk）である。
-type virtPiece struct {
-	byte  int    // 位置のバイト（0 以上）
-	text  string // 描く文字列。空でない
-	style int    // VirtualTexts.styles の添字
-}
-
-// virtGroup は、eol か overlay の 1 つの仮想テキストの文字列の並びである。
-type virtGroup struct {
-	byte   int
-	pieces []virtPiece
-}
-
-// NewVirtualTexts は、vts を行ごとに分けた VirtualTexts を返す。lines は描くテキストの行数で、その外の行の仮想テキストは捨てる。
-// 文字列の空な VirtualChunk は捨て、どの文字列も空な仮想テキストも捨てる。一覧が空になれば nil を返す。
-//
-// req: FR-231
-func NewVirtualTexts(vts []VirtualText, lines int) *VirtualTexts {
-	order := make([]int, 0, len(vts))
-	for i, vt := range vts {
-		if vt.Position.Line >= 0 && vt.Position.Line < lines {
-			order = append(order, i)
-		}
-	}
-	slices.SortStableFunc(order, func(a, b int) int {
-		pa, pb := vts[a].Position, vts[b].Position
-		return cmp.Or(cmp.Compare(pa.Line, pb.Line), cmp.Compare(max(pa.Byte, 0), max(pb.Byte, 0)))
-	})
-	v := &VirtualTexts{lines: map[int]*lineVirtual{}}
-	var st styleTable
-	for _, i := range order {
-		vt := vts[i]
-		b := max(vt.Position.Byte, 0)
-		var ps []virtPiece
-		for _, c := range vt.Chunks {
-			if t := virtualTextOf(c.Text); t != "" {
-				ds := decoStyle{name: c.Style}
-				if c.Attr != (Attr{}) {
-					a := c.Attr
-					ds.attr = &a
-				}
-				ps = append(ps, virtPiece{byte: b, text: t, style: st.index(ds)})
-			}
-		}
-		if len(ps) == 0 {
-			continue
-		}
-		lv := v.lines[vt.Position.Line]
-		if lv == nil {
-			lv = &lineVirtual{}
-			v.lines[vt.Position.Line] = lv
-		}
-		switch vt.Placement {
-		case VirtualInline:
-			lv.inline = append(lv.inline, ps...)
-		case VirtualEOL:
-			lv.eol = append(lv.eol, virtGroup{byte: b, pieces: ps})
-		case VirtualOverlay:
-			lv.overlay = append(lv.overlay, virtGroup{byte: b, pieces: ps})
-		}
-	}
-	if len(v.lines) == 0 {
-		return nil
-	}
-	v.styles = st.names
-	return v
-}
-
-// virtualTextOf は、仮想テキストの文字列の改行、復帰、タブ文字を空白にする。
-// タブ文字の幅は置く列で変わり、改行は 1 行に描けないので、どちらも幅の決まった空白 1 つにする。
-func virtualTextOf(s string) string {
-	if !strings.ContainsAny(s, "\t\n\r") {
-		return s
-	}
-	return strings.Map(func(r rune) rune {
-		if r == '\t' || r == '\n' || r == '\r' {
-			return ' '
-		}
-		return r
-	}, s)
-}
-
-// line は、n 行目の仮想テキストを返す。無ければ nil を返す。v が nil でもよい。
-func (v *VirtualTexts) line(n int) *lineVirtual {
-	if v == nil {
-		return nil
-	}
-	return v.lines[n]
-}
-
-// attr は、文字列の色（名前の色の上に直に重ねる色を重ねたもの）を返す。style は virtPiece.style である。
-//
-// req: FR-234
-func (v *VirtualTexts) attr(theme Theme, style int) Attr {
-	return v.styles[style].over(theme)
-}
-
 // lineWalk は、1 行の文字と inline の仮想テキストの文字を、画面に並べる順に 1 つずつ返す走査である（lineRule.walk で作る）。
 // 本文、カーソルの位置、折り返し、望みの列、検索の一致を集める範囲は、どれもこの走査で文字を並べるので、仮想テキストの列を同じに数える。
 //
-// 仮想テキストの文字は、glyph.virt が 0 でなく（virt-1 が VirtualTexts.styles の添字）、size が 0 で、off が後ろの本文の文字の位置
+// 仮想テキストの文字は、glyph.virt が 0 でなく（virt-1 がその行の lineVirtual.inline の添字）、size が 0 で、off が後ろの本文の文字の位置
 // （行末の位置の仮想テキストなら行の長さ）の glyph として返す。位置が文字の途中を指す仮想テキストは、その文字の前に返す。
 type lineWalk struct {
 	m   *lineRule
@@ -240,14 +121,14 @@ func (w *lineWalk) nextMixed(col int) glyph {
 
 // virtual は、次の inline の仮想テキストの文字を、列 col に置いた配置を返す。
 func (w *lineWalk) virtual(col int) glyph {
-	p := w.inl[w.vi]
-	g := nextGlyph(p.text, w.vo, col, tabStopOr(w.m.tabStop))
+	p := &w.inl[w.vi]
+	g := nextGlyph(p.text, w.vo, col, w.tab)
 	w.vo += g.size
+	g.off, g.size, g.virt = w.off, 0, w.vi+1
 	if w.vo >= len(p.text) {
 		w.vi++
 		w.vo = 0
 	}
-	g.off, g.size, g.virt = w.off, 0, p.style+1
 	return g
 }
 
@@ -269,7 +150,7 @@ func (d *drawer) drawVirtual(row, x, limit int, ps []virtPiece) int {
 		clearSplit(d.g, row, x0+max(x, 0), x0+end)
 	}
 	for _, p := range ps {
-		a := d.r.rule.virt.attr(d.theme, p.style)
+		a := p.style.over(d.theme)
 		for off := 0; off < len(p.text) && x < limit; {
 			gl := nextGlyph(p.text, off, 0, DefaultTabStop)
 			off += gl.size
@@ -315,13 +196,25 @@ type virtAnchor struct {
 	pos   wrapPos // 折り返すときの、位置の文字の最初のセルの位置
 }
 
-// overlayAnchors は、lv の overlay のうち、本文の文字 gl（仮想テキストでない）の位置に重ねるものの所を dst に足し、次に見る添字を返す。
-// 位置が gl の範囲に入る（文字の途中を指すものを含む）ものと、gl より前の位置のものを、gl に重ねる。
+// overlayAnchors は、lv の overlay のうち、走査の文字 gl の最初のセルに重ねるものの所を dst に足し、次に見る添字を返す。
+//
+// gl が本文の文字なら、位置が gl の範囲に入る（文字の途中を指すものを含む）ものと、gl より前の位置のものを重ねる。
+// gl が inline の仮想テキストの文字なら、gl の位置かそれより前の位置で、一覧の順が gl の文字列より前のものを重ねる。
+// Neovim 0.12.5 は同じ位置の extmark を置いた順に描くので、inline より先に置いた overlay は inline の文字の上に重なり、
+// 後に置いた overlay は inline の後ろの文字に重なる。
 func overlayAnchors(dst []virtAnchor, lv *lineVirtual, oi int, gl glyph, col int, pos wrapPos) ([]virtAnchor, int) {
 	if lv == nil {
 		return dst, oi
 	}
-	for oi < len(lv.overlay) && lv.overlay[oi].byte < gl.off+gl.size {
+	for oi < len(lv.overlay) {
+		o := lv.overlay[oi]
+		if gl.virt != 0 {
+			if o.byte > gl.off || o.order > lv.inline[gl.virt-1].order {
+				break
+			}
+		} else if o.byte >= gl.off+gl.size {
+			break
+		}
 		dst = append(dst, virtAnchor{group: oi, col: col, pos: pos})
 		oi++
 	}

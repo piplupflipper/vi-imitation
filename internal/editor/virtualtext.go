@@ -2,6 +2,7 @@ package editor
 
 import (
 	"maps"
+	"math"
 	"slices"
 
 	"github.com/piplupflipper/vi-imitation/ext"
@@ -11,13 +12,18 @@ import (
 
 // 拡張機能の仮想テキスト（virtualText/set。基本設計 6.1 の「仮想テキスト」。FR-231〜FR-234）と、範囲に直に付ける色（FR-230）。
 //
-// 仮想テキストの一覧は、診断と同じく拡張機能とバッファの組ごとに持ち（bufferState.virtualTexts）、バッファへ編集を適用するたびに
-// 位置をずらす（commitChange）。描画と列の数え方に渡す表（bufferState.virtView。ui.VirtualTexts）は、一覧かバッファが変わるたびに
-// イベントループの上で作り直す。仮想テキストはインレイヒントや行ごとの注記で、構文の色（decoration/set）ほど数が多くならない前提で、
-// 構文の色のように別の goroutine では作らない。作り直したら表のポインターが変わるので、描画は表示の位置を決め直す（ui.topKey）。
+// 仮想テキストは、拡張機能とバッファの組ごとに ui.VirtualLayer で持ち（bufferState.virtLayers）、バッファの全体の並び
+// （bufferState.virtView。ui.VirtualTexts）を描画と列の数え方に渡す。持ち方は ui の virtuallayer.go の doc にある。
+//
+//   - 一覧が届いたら、その拡張機能の VirtualLayer だけを作り直す。版の番号の扱いは診断と同じで、古い版の一覧は今の版へずらす（displayEdits）
+//   - 編集のたびに、どの VirtualLayer も、編集の範囲の行だけをずらし、後ろの行は行の番号を足す（commitChange の shiftAllVirtualTexts）
+//
+// 前は、編集のたびと一覧が届くたびに、全部の拡張機能の一覧から表を一から作り直し、3 万行に 9 万個のインレイヒントで 1 文字ごとに約 58 ms
+// かかった（PR #378 のレビューの必須 1）。
 
 // setVirtualTexts は、virtualText/set の一覧を、diagnostic/set と同じ規則で、バージョン番号に応じてずらすか捨てて持つ（displayEdits）。
 // 空の一覧はその組の一覧を消す。持ったかを返す。拡張機能へ送っていないバッファの一覧は捨てる（withheldBuffer）。
+// 作り直すのは、送ってきた拡張機能の VirtualLayer だけである。
 //
 // req: FR-231
 func (e *Editor) setVirtualTexts(extID string, p ext.VirtualTextSetParams) bool {
@@ -30,81 +36,99 @@ func (e *Editor) setVirtualTexts(extID string, p ext.VirtualTextSetParams) bool 
 		return false
 	}
 	if len(p.VirtualTexts) == 0 {
-		if _, had := bs.virtualTexts[extID]; !had {
-			return true
-		}
-		delete(bs.virtualTexts, extID)
-	} else {
-		if bs.virtualTexts == nil {
-			bs.virtualTexts = map[string][]ext.VirtualText{}
-		}
-		bs.virtualTexts[extID] = shiftVirtualTexts(p.VirtualTexts, eds)
+		bs.removeVirtualTexts(extID)
+		return true
 	}
-	bs.rebuildVirtualTexts()
+	// 古い版の位置は、ずらす前は今の行の数より後ろの行を指しうるので、行の数で切るのはずらした後にする。
+	lines := bs.buf.LineCount()
+	if len(eds) > 0 {
+		lines = math.MaxInt
+	}
+	l := ui.NewVirtualLayer(uiVirtualTexts(p.VirtualTexts), lines)
+	for _, ed := range eds {
+		l.ApplyEdit(ed)
+	}
+	l.Clip(bs.buf.LineCount())
+	if bs.virtLayers == nil {
+		bs.virtLayers = map[string]*ui.VirtualLayer{}
+	}
+	bs.virtLayers[extID] = l
+	bs.setVirtLayers()
 	return true
 }
 
-// shiftVirtualTexts は、仮想テキストの位置を編集の列でずらした写しを返す。編集が無ければ vs をそのまま返す。
-func shiftVirtualTexts(vs []ext.VirtualText, eds []buffer.Edit) []ext.VirtualText {
-	if len(eds) == 0 {
-		return vs
-	}
-	out := make([]ext.VirtualText, len(vs))
+// uiVirtualTexts は、拡張機能の仮想テキストの一覧を描画の値にする。同じ値の直の色は、色の文字列を 1 回だけ読む。
+func uiVirtualTexts(vs []ext.VirtualText) []ui.VirtualText {
+	attrs := map[ext.TextAttr]ui.Attr{}
+	out := make([]ui.VirtualText, len(vs))
 	for i, v := range vs {
-		v.Position = toExtPos(shiftAll(fromExtPos(v.Position), eds))
-		out[i] = v
+		chunks := make([]ui.VirtualChunk, len(v.Chunks))
+		for j, c := range v.Chunks {
+			chunks[j] = ui.VirtualChunk{Text: c.Text, Style: c.Style}
+			if c.Attr != nil {
+				a, ok := attrs[*c.Attr]
+				if !ok {
+					a = uiAttr(c.Attr)
+					attrs[*c.Attr] = a
+				}
+				chunks[j].Attr = a
+			}
+		}
+		out[i] = ui.VirtualText{Position: fromExtPos(v.Position), Placement: uiPlacement(v.Placement), Chunks: chunks}
 	}
 	return out
 }
 
-// shiftAllVirtualTexts は、バッファ bs のすべての拡張機能の仮想テキストを、適用した編集 eds に合わせてずらし、表を作り直す。
+// shiftAllVirtualTexts は、バッファ bs のすべての拡張機能の仮想テキストを、適用した編集 eds に合わせてずらす。
+// 時間は、編集の範囲の行の仮想テキストの数と、行の数の変わる編集では仮想テキストのある行の数に比例する（ui.VirtualLayer.ApplyEdit）。
+//
+// req: FR-231
 func (bs *bufferState) shiftAllVirtualTexts(eds []buffer.Edit) {
-	if len(bs.virtualTexts) == 0 {
+	if len(bs.virtLayers) == 0 {
 		return
 	}
-	for id, vs := range bs.virtualTexts {
-		bs.virtualTexts[id] = shiftVirtualTexts(vs, eds)
+	changed := false
+	for _, l := range bs.virtLayers {
+		for _, ed := range eds {
+			if l.ApplyEdit(ed) {
+				changed = true
+			}
+		}
 	}
-	bs.rebuildVirtualTexts()
+	if changed {
+		bs.virtView.Changed()
+	}
 }
 
-// removeVirtualTexts は、拡張機能 extID の仮想テキストを消して表を作り直す。消すものが無ければ何もしない。
+// removeVirtualTexts は、拡張機能 extID の仮想テキストを消す。消すものが無ければ何もしない。
 func (bs *bufferState) removeVirtualTexts(extID string) {
-	if _, ok := bs.virtualTexts[extID]; !ok {
+	if _, ok := bs.virtLayers[extID]; !ok {
 		return
 	}
-	delete(bs.virtualTexts, extID)
-	bs.rebuildVirtualTexts()
+	delete(bs.virtLayers, extID)
+	bs.setVirtLayers()
 }
 
 // clearVirtualTexts は、バッファ bs のすべての仮想テキストを消す。
 func (bs *bufferState) clearVirtualTexts() {
-	bs.virtualTexts = nil
+	bs.virtLayers = nil
 	bs.virtView = nil
 }
 
-// rebuildVirtualTexts は、拡張機能ごとの一覧を合わせて、描画に渡す ui.VirtualTexts を作り直す。
-// 拡張機能の ID の順に並べ、同じ位置のものは ID の順、同じ拡張機能の中では一覧の順に描く（decoSources と同じ並べ方）。
-func (bs *bufferState) rebuildVirtualTexts() {
-	if len(bs.virtualTexts) == 0 {
+// setVirtLayers は、拡張機能ごとの VirtualLayer を、拡張機能の ID の順に並べて virtView にする。同じ位置のものは ID の順、
+// 同じ拡張機能の中では一覧の順に描く（decoSources と同じ並べ方）。仮想テキストが無くなれば virtView を nil にする。
+func (bs *bufferState) setVirtLayers() {
+	layers := make([]*ui.VirtualLayer, 0, len(bs.virtLayers))
+	for _, id := range slices.Sorted(maps.Keys(bs.virtLayers)) {
+		layers = append(layers, bs.virtLayers[id])
+	}
+	if bs.virtView == nil {
+		bs.virtView = &ui.VirtualTexts{}
+	}
+	bs.virtView.SetLayers(layers)
+	if bs.virtView.Empty() {
 		bs.virtView = nil
-		return
 	}
-	var vts []ui.VirtualText
-	attrs := map[*ext.TextAttr]*ui.Attr{}
-	for _, id := range slices.Sorted(maps.Keys(bs.virtualTexts)) {
-		for _, v := range bs.virtualTexts[id] {
-			chunks := make([]ui.VirtualChunk, len(v.Chunks))
-			for i, c := range v.Chunks {
-				chunks[i] = ui.VirtualChunk{Text: c.Text, Style: c.Style}
-				if c.Attr != nil {
-					chunks[i].Attr = *cachedAttr(attrs, c.Attr)
-				}
-			}
-			vts = append(vts, ui.VirtualText{Position: fromExtPos(v.Position), Placement: uiPlacement(v.Placement), Chunks: chunks})
-		}
-	}
-	bs.virtView = ui.NewVirtualTexts(vts, bs.buf.LineCount())
 }
 
 // uiPlacement は、仮想テキストの置き方を描画の値にする。知らない置き方は exthost が Validate で断っている。

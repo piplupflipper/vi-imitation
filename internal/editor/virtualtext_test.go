@@ -100,9 +100,6 @@ func TestVirtualTextVersions(t *testing.T) {
 		if !e.setVirtualTexts("x", ext.VirtualTextSetParams{Buffer: bs.id, Version: old, VirtualTexts: []ext.VirtualText{inlineVT(1, "V")}}) {
 			t.Fatal("覚えている古い版の一覧を持たない")
 		}
-		if got := bs.virtualTexts["x"][0].Position; got != (ext.Position{Line: 0, Byte: 3}) {
-			t.Errorf("古い版の位置 = %+v, want 0,3", got)
-		}
 		if e.setVirtualTexts("y", ext.VirtualTextSetParams{Buffer: bs.id, Version: old + 100, VirtualTexts: []ext.VirtualText{inlineVT(0, "N")}}) {
 			t.Error("新しい版の一覧を持った")
 		}
@@ -122,6 +119,25 @@ func TestVirtualTextVersions(t *testing.T) {
 	h.setVT()
 	h.keys("<Esc>")
 	h.screenHas("空の一覧で消える", "ZZabc\n")
+}
+
+// J と gUU は、行の中身を置き換えずに、つなぐ箇所と変わる文字の続きだけを編集するので、行の仮想テキストは行頭へ寄らない
+// （PR #378 のレビューの推奨 1）。2026-11-22 に Neovim 0.12.5 の nvim_buf_get_extmarks で確かめた位置と同じにした
+// （xyz と空の行の J は xyz123。abc def の b の前の inline は、gUU で変わった文字の続き abc の後ろへ動く）。
+//
+// req: FR-231
+func TestVirtualTextJoinAndCase(t *testing.T) {
+	h := start(t, Config{})
+	h.keys("ixyz<CR><CR>abc def<Esc>gg0")
+	h.settle()
+	h.setVT(inlineVT(3, "123"), ext.VirtualText{Position: ext.Position{Line: 2, Byte: 1}, Placement: ext.VirtualTextInline, Chunks: []ext.VirtualTextChunk{{Text: "<b>"}}})
+	h.keys("J")
+	h.screenHas("J の後の行末の inline", "xyz123\na<b>bc def")
+	h.keys("jgUU")
+	h.screenHas("gUU の後", "xyz123\nABC<b> DEF")
+	// 取り消しの編集も変わった文字の続きだけを置き換えるので、仮想テキストはその続きの後ろに残る（行頭へは寄らない）。
+	h.keys("u")
+	h.screenHas("u の後", "xyz123\nabc<b> def")
 }
 
 // decoration/set の範囲に直に付けた色（ext.Decoration.Attr）を、名前の色の上に重ねて描く。名前の無い範囲も直の色で描く。

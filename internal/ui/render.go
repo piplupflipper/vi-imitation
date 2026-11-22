@@ -782,9 +782,7 @@ func (d *drawer) drawLine(row, line, k, n int) {
 	for wk.more() && col < left+w {
 		gl := wk.next(col)
 		col += gl.width
-		if gl.virt == 0 {
-			anchors, oi = overlayAnchors(anchors, lv, oi, gl, gl.col, wrapPos{})
-		}
+		anchors, oi = overlayAnchors(anchors, lv, oi, gl, gl.col, wrapPos{})
 		if gl.col+gl.width <= left {
 			if gl.virt == 0 {
 				d.sweep.advance(gl.off, gl.size)
@@ -793,7 +791,7 @@ func (d *drawer) drawLine(row, line, k, n int) {
 		}
 		var a Attr
 		if gl.virt != 0 {
-			a = d.r.rule.virt.attr(d.theme, gl.virt-1)
+			a = lv.inline[gl.virt-1].style.over(d.theme)
 		} else {
 			var base Attr
 			gl, base = d.look(gl)
@@ -838,11 +836,12 @@ func (d *drawer) drawLine(row, line, k, n int) {
 	}
 	d.diffFillRest(row, line, fill)
 	if lv != nil {
-		if ended {
-			d.drawEOLVirtual(row, max(col-left, 0)+1, w, lv)
-		}
+		// eol は overlay の上に描く（Neovim 0.12.5 と同じ。PR #378 のレビューの推奨 3）。
 		for _, an := range anchors {
 			d.drawVirtual(row, an.col-left, w, lv.overlay[an.group].pieces)
+		}
+		if ended {
+			d.drawEOLVirtual(row, max(col-left, 0)+1, w, lv)
 		}
 	}
 	d.anchors = anchors
@@ -880,9 +879,7 @@ func (d *drawer) drawWrapped(row, line, k, n int) {
 			done = false
 			break
 		}
-		if gl.virt == 0 {
-			anchors, oi = overlayAnchors(anchors, lv, oi, gl, 0, first)
-		}
+		anchors, oi = overlayAnchors(anchors, lv, oi, gl, 0, first)
 		if p.row < k {
 			if gl.virt == 0 {
 				d.sweep.advance(gl.off, gl.size)
@@ -891,7 +888,7 @@ func (d *drawer) drawWrapped(row, line, k, n int) {
 		}
 		var a Attr
 		if gl.virt != 0 {
-			a = d.r.rule.virt.attr(d.theme, gl.virt-1)
+			a = lv.inline[gl.virt-1].style.over(d.theme)
 		} else {
 			var base Attr
 			gl, base = d.look(gl)
@@ -924,26 +921,29 @@ func (d *drawer) drawWrapped(row, line, k, n int) {
 			}
 		}
 	}
+	eolRow := -1
+	var e wrapPos
 	if done {
-		e := w.eol(p)
+		e = w.eol(p)
 		if c, ok := d.eolCell(idx, line, len(s)); ok {
 			put(e, c)
 		}
 		if i := e.row - k; i >= 0 && i < n {
 			d.diffFillRest(row+i, line, e.x+1)
-			if lv != nil {
-				d.drawEOLVirtual(row+i, e.x+1, w.width, lv)
-			}
+			eolRow = row + i
 		}
 		for ; lv != nil && oi < len(lv.overlay); oi++ {
 			anchors = append(anchors, virtAnchor{group: oi, pos: e})
 		}
 	}
-	// overlay は、重ねる文字の見た目の行の右の端で切る（次の見た目の行へは続けない。Neovim 0.12.5 と同じ）。
+	// overlay は、重ねる文字の見た目の行の右の端で切る（次の見た目の行へは続けない。Neovim 0.12.5 と同じ）。eol は overlay の上に描く。
 	for _, an := range anchors {
 		if i := an.pos.row - k; i >= 0 && i < n {
 			d.drawVirtual(row+i, an.pos.x, w.width, lv.overlay[an.group].pieces)
 		}
+	}
+	if lv != nil && eolRow >= 0 {
+		d.drawEOLVirtual(eolRow, e.x+1, w.width, lv)
 	}
 	d.anchors = anchors
 	if w.sbw > 0 {

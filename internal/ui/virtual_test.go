@@ -401,6 +401,126 @@ func TestVirtualTextHit(t *testing.T) {
 	}
 }
 
+// TestVirtualTextDrawOrder は、同じ位置の inline と overlay を一覧の順に描くことと、行末の overlay の上に eol を描くことを、
+// Neovim 0.12.5 の画面と比べる（PR #378 のレビューの推奨 2、3。先に置いた overlay は inline の文字の上に重なり、後に置いた overlay は
+// inline の後ろの文字に重なる。xyz の行末の overlay と eol は xyzOEOLTEXT になる）。
+//
+// req: FR-231
+func TestVirtualTextDrawOrder(t *testing.T) {
+	b := buffer.New("\n\nxyz\n")
+	v := NewVirtualTexts([]VirtualText{
+		vt(0, 0, VirtualOverlay, "    |"),
+		vt(0, 0, VirtualInline, "INL"),
+		vt(1, 0, VirtualInline, "INL"),
+		vt(1, 0, VirtualOverlay, "    |"),
+		vt(2, 3, VirtualOverlay, "OVERLAY"),
+		vt(2, 3, VirtualEOL, "EOLTEXT"),
+	}, b.LineCount())
+	for _, wrap := range []bool{false, true} {
+		r := newRenderer(30, 6)
+		checkRows(t, "順", r.Render(&Frame{Text: b, LineLayout: LineLayout{Virtual: v}, Wrap: wrap}), []string{"    |", "INL    |", "xyzOEOLTEXT"})
+	}
+}
+
+// TestVirtualLayerApplyEdit は、編集に合わせた仮想テキストのずらし方を、PR #378 のレビューの推奨 1 の表の Neovim 0.12.5 の画面と比べる。
+// 編集は、J と gUU が作るもの（つなぐ箇所の改行と空白だけ、変わる文字だけを置き換える。internal/command の actJoin と caseEdits）である。
+// 位置が編集の範囲の中か端にあれば入れたテキストの後ろへ、範囲より後ろにあれば行と列をずらす（Neovim の extmark の right_gravity）。
+//
+// req: FR-231
+func TestVirtualLayerApplyEdit(t *testing.T) {
+	text := "\tif x {\n\t\ty := f(a, b)\n"
+	vts := []VirtualText{
+		vt(1, 3, VirtualInline, ": int"),
+		vt(1, 9, VirtualInline, "x: "),
+		vt(1, 0, VirtualOverlay, "║"),
+		vt(0, 0, VirtualOverlay, "╔══════▶"),
+	}
+	render := func(b *buffer.Buffer, v *VirtualTexts) []string {
+		return rowTexts(newRenderer(60, 6).Render(&Frame{Text: b, LineLayout: LineLayout{Virtual: v}}), 2)
+	}
+	apply := func(eds ...buffer.Edit) (*buffer.Buffer, *VirtualTexts) {
+		b := buffer.New(text)
+		l := NewVirtualLayer(vts, b.LineCount())
+		v := &VirtualTexts{}
+		v.SetLayers([]*VirtualLayer{l})
+		gen := v.Gen()
+		if _, err := b.Apply(buffer.Transaction{BaseVersion: b.Version(), Edits: eds}); err != nil {
+			t.Fatal(err)
+		}
+		for _, ed := range eds {
+			l.ApplyEdit(ed)
+		}
+		v.Changed()
+		if v.Gen() == gen {
+			t.Error("Changed が世代の番号を進めない")
+		}
+		return b, v
+	}
+	b, v := apply(buffer.Edit{Range: buffer.Range{Start: pos(0, 7), End: pos(1, 2)}, Text: " "})
+	if got, want := render(b, v)[0], "╔══════▶if x { ║: int := f(x: a, b)"; got != want {
+		t.Errorf("J = %q, want %q", got, want)
+	}
+	b, v = apply(
+		buffer.Edit{Range: buffer.Range{Start: pos(1, 12), End: pos(1, 13)}, Text: "B"},
+		buffer.Edit{Range: buffer.Range{Start: pos(1, 9), End: pos(1, 10)}, Text: "A"},
+		buffer.Edit{Range: buffer.Range{Start: pos(1, 7), End: pos(1, 8)}, Text: "F"},
+		buffer.Edit{Range: buffer.Range{Start: pos(1, 2), End: pos(1, 3)}, Text: "Y"},
+	)
+	if got, want := render(b, v)[1], "║               Y: int := F(Ax: , B)"; got != want {
+		t.Errorf("gUU = %q, want %q", got, want)
+	}
+	// 行の数の変わる編集は、後ろの行の番号だけを足す。前の行は動かさない。
+	b, v = apply(buffer.Edit{Range: buffer.Range{Start: pos(0, 0), End: pos(0, 0)}, Text: "new\n"})
+	if got := rowTexts(newRenderer(60, 6).Render(&Frame{Text: b, LineLayout: LineLayout{Virtual: v}}), 3); got[1] != "╔══════▶if x {" || got[2] != "║               y: int := f(x: a, b)" {
+		t.Errorf("行を足した後 = %q", got)
+	}
+	// 行の中身だけを変える、仮想テキストの無い行の編集では、何も変えない。
+	l := NewVirtualLayer(vts, 2)
+	if l.ApplyEdit(buffer.Edit{Range: buffer.Range{Start: pos(5, 0), End: pos(5, 1)}, Text: "z"}) {
+		t.Error("仮想テキストの無い行の編集で変えたと答えた")
+	}
+	// xyz と空の行の J（つなぐ箇所の改行を消すだけ）は、行末の inline を行末に残す（Neovim は xyz123）。
+	b2 := buffer.New("xyz\n\n")
+	l2 := NewVirtualLayer([]VirtualText{vt(0, 3, VirtualInline, "123")}, 2)
+	ed := buffer.Edit{Range: buffer.Range{Start: pos(0, 3), End: pos(1, 0)}}
+	if _, err := b2.Apply(buffer.Transaction{BaseVersion: b2.Version(), Edits: []buffer.Edit{ed}}); err != nil {
+		t.Fatal(err)
+	}
+	l2.ApplyEdit(ed)
+	v2 := &VirtualTexts{}
+	v2.SetLayers([]*VirtualLayer{l2})
+	if got := rowTexts(newRenderer(20, 4).Render(&Frame{Text: b2, LineLayout: LineLayout{Virtual: v2}}), 1)[0]; got != "xyz123" {
+		t.Errorf("空の行の J = %q, want xyz123", got)
+	}
+}
+
+// TestVirtualTextsLayers は、複数の拡張機能の仮想テキストを、並びの順（拡張機能の順、同じ拡張機能の中では一覧の順）に合わせて描き、
+// 1 つの拡張機能の一覧を置き換えても、ほかの拡張機能の仮想テキストはそのまま描くことを確かめる。同じ値の直の色は 1 つの値を指す。
+//
+// req: FR-231
+func TestVirtualTextsLayers(t *testing.T) {
+	b := buffer.New("abc\ndef\n")
+	a := NewVirtualLayer([]VirtualText{vt(0, 1, VirtualInline, "A1"), vt(0, 1, VirtualInline, "A2"), vt(1, 3, VirtualEOL, "ae")}, 2)
+	z := NewVirtualLayer([]VirtualText{vt(0, 1, VirtualInline, "Z"), vt(1, 0, VirtualEOL, "ze")}, 2)
+	v := &VirtualTexts{}
+	v.SetLayers([]*VirtualLayer{a, z})
+	render := func() []string {
+		return rowTexts(newRenderer(30, 5).Render(&Frame{Text: b, LineLayout: LineLayout{Virtual: v}}), 2)
+	}
+	if got := render(); got[0] != "aA1A2Zbc" || got[1] != "def ze ae" {
+		t.Errorf("合わせた行 = %q", got)
+	}
+	v.SetLayers([]*VirtualLayer{NewVirtualLayer([]VirtualText{vt(0, 0, VirtualInline, "N")}, 2), z})
+	if got := render(); got[0] != "NaZbc" || got[1] != "def ze" {
+		t.Errorf("置き換えた後 = %q, want NaZbc と def ze", got)
+	}
+	same := NewVirtualLayer([]VirtualText{vt(0, 0, VirtualInline, "x"), vt(0, 1, VirtualInline, "y")}, 1)
+	lv := same.line(0, 0)
+	if lv.inline[0].style.attr != lv.inline[1].style.attr {
+		t.Error("同じ値の直の色が別の値を指す")
+	}
+}
+
 // TestNewVirtualTexts は、行の外の仮想テキスト、空の文字列、改行とタブ文字の扱いを確かめる。
 func TestNewVirtualTexts(t *testing.T) {
 	if v := NewVirtualTexts([]VirtualText{vt(5, 0, VirtualInline, "x"), vt(-1, 0, VirtualInline, "x"), vt(0, 0, VirtualEOL, "")}, 2); v != nil {

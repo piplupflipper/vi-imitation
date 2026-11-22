@@ -60,6 +60,8 @@ func main() {
   待つと詰まるので、これらはリクエストを送らずにこの誤りを返す。
 - `ErrInvalidPosition`: 位置がバッファの外にあるか、UTF-8 の文字の途中を指すことを表す。
 - `ErrInvalidRange`: 範囲の終わりが始まりより前にあることを表す。
+- `ErrMessageTooLarge`: 本体の受信の上限を超えるので送らなかったことを表す（SetVirtualTexts）。
+  上限を超えたメッセージを本体は読まずに接続を閉じるので、送る前に断る。接続は切れず、ほかの通知とリクエストはそのまま使える。
 - `ErrNoBufferSync`: 本体がこの拡張機能へバッファの同期を送らない（宣言ファイルの noBufferSync。ext.InitializeParams の NoBufferSync）ので、
   WaitBuffer がバッファの複製を待たなかったことを表す。待っても buffer/open は届かず、ctx の期限まで戻らなくなるためである。
 - `ErrNotRunning`: Serve の前か後に、本体へメッセージを送ろうとしたことを表す。

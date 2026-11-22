@@ -60,7 +60,9 @@ type VirtualTextSetParams struct {
 	Buffer BufferID `json:"buffer"`
 	// Version は、一覧を計算するもとにしたバージョン番号である。
 	Version Version `json:"version"`
-	// VirtualTexts は、バッファ全体について、この拡張機能が出す仮想テキストの一覧である。同じ位置の inline と overlay は、一覧の順に並べて描く。
+	// VirtualTexts は、バッファ全体について、この拡張機能が出す仮想テキストの一覧である。同じ位置の inline と overlay は、一覧の順に描く
+	// （inline より先の overlay は inline の文字の上に重なり、後の overlay は inline の後ろの文字に重なる。Neovim の extmark を置いた順と同じ）。
+	// 行末の位置の overlay の上には eol を描く。
 	// 空（nil を含む）なら、その組の仮想テキストを消す。
 	VirtualTexts []VirtualText `json:"virtualTexts"`
 }
