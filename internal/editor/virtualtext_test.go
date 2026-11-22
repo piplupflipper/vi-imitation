@@ -140,6 +140,48 @@ func TestVirtualTextJoinAndCase(t *testing.T) {
 	h.screenHas("u の後", "xyz123\nabc<b> def")
 }
 
+// 行を足す操作の後の仮想テキストの位置を、Neovim 0.12.5 の nvim_buf_get_extmarks の位置と比べる（PR #378 の再レビューの必須 1）。
+// xyz、"  abc"、end の 3 行の、xyz の行末に inline の 123 と eol の note、2 行目の先頭に overlay の |、バイト 2 に inline の <a> を置く。
+// o と行単位の p は、行末の仮想テキストを元の行に残す（足す行を次の行の先頭に入れる。internal/command の insertBelowAtNextLine）。
+// 行末での <CR> は、Neovim と同じく次の行へ移す。J の後の u は、取り消しの編集でずらすだけなので、Neovim（123 と note を xyz の行末に、
+// | を 2 行目の先頭に戻す）と違い、4 つとも 2 行目のバイト 2 に集まる（docs/vim-differences.md に書いた違い）。
+//
+// req: FR-231
+func TestVirtualTextLineOps(t *testing.T) {
+	tests := []struct {
+		keys string
+		want string
+	}{
+		{"o<Esc>", "xyz123 note\n\n| <a>abc"},
+		{"ofoo<Esc>", "xyz123 note\nfoo\n| <a>abc"},
+		{"O<Esc>", "\nxyz123 note\n| <a>abc"},
+		{"yyp", "xyz123 note\nxyz\n| <a>abc"},
+		{"jyyP", "xyz123 note\n  abc\n| <a>abc"},
+		{"jyyp", "xyz123 note\n| <a>abc\n  abc"},
+		{"A<CR><Esc>", "xyz\n123 note\n| <a>abc"},
+		{"yypu", "xyz123 note\n| <a>abc"},
+		// J の後は、4 つとも入れた空白の後ろ（バイト 4）に集まる（Neovim も 4 つとも 0,4）。同じ位置は一覧の順に描く。
+		{"J", "xyz 123|a>abc note"},
+		{"Ju", "xyz\n  123|a>abc note"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.keys, func(t *testing.T) {
+			h := start(t, Config{})
+			h.keys("ixyz<CR>  abc<CR>end<Esc>gg0")
+			h.settle()
+			h.setVT(
+				inlineVT(3, "123"),
+				ext.VirtualText{Position: ext.Position{Line: 0, Byte: 3}, Placement: ext.VirtualTextEOL, Chunks: []ext.VirtualTextChunk{{Text: "note"}}},
+				ext.VirtualText{Position: ext.Position{Line: 1, Byte: 0}, Placement: ext.VirtualTextOverlay, Chunks: []ext.VirtualTextChunk{{Text: "|"}}},
+				ext.VirtualText{Position: ext.Position{Line: 1, Byte: 2}, Placement: ext.VirtualTextInline, Chunks: []ext.VirtualTextChunk{{Text: "<a>"}}},
+			)
+			h.screenHas("置いた後", "xyz123 note\n| <a>abc\n")
+			h.keys(tt.keys)
+			h.screenHas(tt.keys, "\n"+tt.want+"\n")
+		})
+	}
+}
+
 // decoration/set の範囲に直に付けた色（ext.Decoration.Attr）を、名前の色の上に重ねて描く。名前の無い範囲も直の色で描く。
 //
 // req: FR-230
