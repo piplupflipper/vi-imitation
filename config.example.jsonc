@@ -265,7 +265,28 @@
       // LSP の言語サーバーを足す例（Python の pyright）。説明は docs/usage.md の「LSP」にある。
       // 既定の言語サーバーは Go の gopls だけで、ほかの言語は servers と activation の両方に書く
       "lsp": {
+        // 言語サーバーが対応していれば、インレイヒント（型や引数の名前）を本文の間に出す（本体の既定は出さない。nvim の
+        // vim.lsp.inlay_hint.enable に当たる）。実行中は :lsp.inlayHints.toggle で切り替える。色は colors の inlayHint
+        "inlayHints": true,
         "servers": {
+          // gopls はヒントの種類ごとに有効にする設定が要る（既定はどれも出さない）。servers.go を書くと既定の go の設定を置き換えるので、
+          // command と rootMarkers も書く
+          "go": {
+            "command": "gopls",
+            "rootMarkers": ["go.work", "go.mod", ".git"],
+            "settings": {
+              "gopls": {
+                "hints": {
+                  "assignVariableTypes": true,
+                  "compositeLiteralFields": true,
+                  "constantValues": true,
+                  "functionTypeParameters": true,
+                  "parameterNames": true,
+                  "rangeVariableTypes": true,
+                },
+              },
+            },
+          },
           "python": {
             "command": "pyright-langserver",
             "args": ["--stdio"],

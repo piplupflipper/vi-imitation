@@ -42,8 +42,9 @@ func TestParseColorSchemeName(t *testing.T) {
 
 // 配色は設定ディレクトリの colors/<名前>.jsonc を先に探し、無ければ同梱の配色を使う。同じ名前なら利用者のファイルが勝つ。
 // colorscheme を書かなければ配色を読まない。同梱の iceberg のヤンクの色は、選択と見分けられる背景の色を持つ。
+// 同梱の iceberg のインレイヒントの色は #8b80a8 である。
 //
-// req: FR-125, FR-140
+// req: FR-125, FR-140, FR-258
 func TestLoadColorScheme(t *testing.T) {
 	dir := t.TempDir()
 	writeColorScheme(t, dir, "iceberg", `// 利用者の iceberg

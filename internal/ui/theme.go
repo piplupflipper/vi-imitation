@@ -386,6 +386,8 @@ func DefaultTheme() Theme {
 //     本体の浮かべた窓（ホバーなど）の色の名前は StylePopup である）
 //   - StyleBandLineNr は StyleLineNr（TreesitterContextLineNumber は LineNr へのリンク）
 //   - StyleInlayHint は StyleNonText（Neovim 0.12.5 の LspInlayHint は NonText へのリンク。2026-11-22 に nvim --clean の :hi LspInlayHint で確かめた）
+//
+// req: FR-258
 var styleLinks = map[string]string{
 	StyleBand:       StylePopup,
 	StyleBandLineNr: StyleLineNr,

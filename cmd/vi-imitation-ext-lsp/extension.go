@@ -52,7 +52,7 @@ type extension struct {
 
 	// byBuffer は、バッファの番号から、そのバッファを同期している client への対応である。ループだけが触る。
 	byBuffer map[ext.BufferID]*client
-	// inlayOverride は、lsp.inlayHints.toggle で切り替えたインレイヒントの出し入れである（inlayFromConfig、inlayOn、inlayOff。inlay.go）。
+	// inlayOverride は、lsp.inlayHints.toggle で切り替えたインレイヒントの出し入れである（0 なら設定に従う。inlayOn、inlayOff。inlay.go）。
 	inlayOverride atomic.Int32
 }
 

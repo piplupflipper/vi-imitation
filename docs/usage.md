@@ -635,6 +635,7 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 | `band` | 拡張機能が窓の上端に重ねる帯（[窓の上端の帯](#窓の上端の帯)）の本文の列。帯の行の範囲の色はこの上に重ねる | 書かなければ `popup` の今の色を引き継ぐ（nvim-treesitter-context の既定の `TreesitterContext` は浮かべた窓の `NormalFloat` へのリンク）。同梱の iceberg も書かないので、`popup`（iceberg.vim の `Pmenu`）の色になる |
 | `band.linenr` | 帯の行の、印の列と行番号の列 | 書かなければ `linenr` の今の色を引き継ぐ（nvim-treesitter-context の既定の `TreesitterContextLineNumber` は `LineNr` へのリンク）。同梱の iceberg も書かないので、`linenr`（iceberg.vim の `LineNr`）の色になる |
 | `band.bottom` | 帯の最後の行の全体に重ねる色（帯と本文の境目に下線を引くときに書く。nvim-treesitter-context の `TreesitterContextBottom`） | なし |
+| `inlayHint` | LSP のインレイヒント（[インレイヒント](#インレイヒント)）の文字列（Neovim の `LspInlayHint`）。前後の空白には付けない | 書かなければ `nontext` の今の色を引き継ぐ（Neovim の `LspInlayHint` は `NonText` へのリンク）。同梱の iceberg では `#8b80a8`（iceberg.vim の `NonText` の色は背景との比が 1.24 で読めないため） |
 | `sign.executionPoint`、`sign.breakpoint`、`sign.breakpointUnverified` | 印の列のデバッガーの印 | 順に黄色、赤、灰色 |
 | `sign.diagnostic.error`、`sign.diagnostic.warning`、`sign.diagnostic.info`、`sign.diagnostic.hint` | 印の列の診断の印 | 順に赤、黄色、青、灰色 |
 | `tabline`、`tabline.selected`、`tabline.fill` | タブの行の、ほかのタブ、いまのタブ、タブの右の空いた列 | 順に灰色の背景と下線、太字、反転 |
@@ -2257,7 +2258,7 @@ vi-imitation --docs --headings usage                 # 話題の文書の見出�
 |---|---|---|---|---|
 | `treesitter` | 構文ハイライト（同梱は Go、JSON、JSONC。設定でほかの言語のパーサを足せる）、構文に沿ったテキストオブジェクト（構文のまとまりはすべての言語、引数は Go） | Go か JSON か JSONC（`.jsonc`）のファイルか、設定でパーサを足したファイルの種類のファイルを開いたとき | `an`、`in`、`aa`、`ia` | 同梱の言語はなし。パーサを足すなら PATH の `git` と C コンパイラ（`cc`） |
 | `line` | 行のテキストオブジェクト | `il`、`al` を打ったとき | `il`、`al` | なし |
-| `lsp` | 診断と、LSP の操作（定義へ移動、ホバー、参照、シンボル、整形、名前の変更） | Go のファイルを開いたとき | [LSP と DAP の既定のキー](#lsp-と-dap-の既定のキー) | PATH の `gopls`。ほかの言語の言語サーバーは、設定で足して入れる（[LSP](#lsp)） |
+| `lsp` | 診断と、LSP の操作（定義へ移動、ホバー、参照、シンボル、整形、名前の変更）と、インレイヒント | Go のファイルを開いたとき | [LSP と DAP の既定のキー](#lsp-と-dap-の既定のキー)、`:lsp.inlayHints.toggle`（[インレイヒント](#インレイヒント)） | PATH の `gopls`。ほかの言語の言語サーバーは、設定で足して入れる（[LSP](#lsp)） |
 | `dap` | デバッグ（DAP の操作） | 操作を呼んだとき | [LSP と DAP の既定のキー](#lsp-と-dap-の既定のキー) | PATH の `dlv` |
 | `acp` | コーディングエージェントとの対話（ACP のクライアント） | コマンドを呼んだとき | `:acp.prompt`、`:acp.cancel` | ACP で話すエージェントと、その設定 |
 | `mcp` | エディタの状態と編集を MCP のツールとして提供する | MCP のクライアントが最初に接続したとき | `:mcp.start` | MCP のクライアント |
@@ -2441,6 +2442,52 @@ nvim と違う点は次のとおりである。
 - nvim の窓は `i` や `v` を打っても、文字を打つかカーソルを動かすまで残る。ここでは次のキーで閉じる
 
 印の列の診断の印を nvim と同じ記号にするには、`symbols` に `"sign.diagnostic.error": "✘"` などと書く（[記号](#記号)。同梱の `config.example.jsonc` に例がある）。
+
+#### インレイヒント
+
+言語サーバーが対応していれば、変数の型や引数の名前（インレイヒント）を本文の間に出せる（nvim の `vim.lsp.inlay_hint.enable` に当たる）。
+本体の既定は nvim と同じく出さない。
+`extensions.settings.lsp.inlayHints` を `true` にすると出す。
+言語サーバーごとに変えるときは、`servers` の言語サーバーの設定に `inlayHints` を書く（最上位の値より優先する）。
+同梱の `config.example.jsonc` は出す設定にしている。
+
+gopls は、ヒントの種類ごとに有効にする設定が要る（既定はどれも出さない）。
+gopls の設定は、言語サーバーの設定の `settings.gopls` に書く。
+`servers.go` を書くと既定の go の設定を置き換えるので、`command` と `rootMarkers` も書く。
+
+```jsonc
+{
+  "extensions": {
+    "settings": {
+      "lsp": {
+        "inlayHints": true,
+        "servers": {
+          "go": {
+            "command": "gopls",
+            "rootMarkers": ["go.work", "go.mod", ".git"],
+            "settings": {
+              "gopls": { "hints": { "assignVariableTypes": true, "parameterNames": true, "rangeVariableTypes": true } },
+            },
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+この設定で gopls（v0.21.0）を使うと、次のように出る（2026-11-22 に tmux の中で確かめた）。
+
+```text
+  13 →   n int := add(a: 1, b: 2)↲
+  14 →   s int, err error := strconv.Atoi(s: "42")↲
+  16 →   for i int, v string := range []string{"日本", "b"} {↲
+```
+
+- ヒントは文書を開いたとき、変えたとき（150 ミリ秒ごとにまとめる）、言語サーバーが問い合わせ直しを求めたときに問い合わせる。問い合わせている間に打った編集では、ヒントは前の結果のまま、本文と一緒に動く
+- カーソルはヒントの上に置かない。`j` と `k` の列はヒントの幅も数える（nvim 0.12.5 と同じ）
+- 色は `colors` の `inlayHint` で変える（[配色](#配色)）。書かなければ `nontext` の色になる
+- 実行中は `:lsp.inlayHints.toggle` で、出す、出さないを切り替える。今のバッファで出していれば、どの言語サーバーでも出さないことにする。切り替えた値は、後から開くファイルにも効く。キーに割り当てるには、`keymap` に `{ "command": "lsp.inlayHints.toggle" }` を書く（[keymap から Ex コマンドを呼ぶ](#keymap-から-ex-コマンドを呼ぶ)）
 
 #### 言語を足し、言語サーバーを mise で入れる
 

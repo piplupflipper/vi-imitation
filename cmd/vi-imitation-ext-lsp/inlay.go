@@ -42,12 +42,10 @@ const styleInlayHint = "inlayHint"
 // cmdInlayHintsToggle は、インレイヒントを出すかどうかを切り替えるコマンドの ID である（FR-257）。宣言ファイルの contributes.commands に書く。
 const cmdInlayHintsToggle = "lsp.inlayHints.toggle"
 
-// inlay の切り替えの状態（extension.inlayOverride）。
+// inlay の切り替えの状態（extension.inlayOverride）。ゼロ値は、切り替えていない（設定の inlayHints に従う）ことを表す。
 const (
-	// inlayFromConfig は、切り替えていない（設定の inlayHints に従う）ことを表す。
-	inlayFromConfig int32 = iota
 	// inlayOn と inlayOff は、lsp.inlayHints.toggle で、どの言語サーバーでも出す、出さないに切り替えたことを表す。
-	inlayOn
+	inlayOn int32 = iota + 1
 	inlayOff
 )
 
@@ -280,11 +278,11 @@ func (c *client) sendInlay(d *document, v ext.Version, vts []ext.VirtualText) {
 }
 
 // resetInlay は、mu を持った状態で、文書 d の予約と、応答を待っている問い合わせを取り消す（言語サーバーへ $/cancelRequest を送る）。
-// clear が true で、ヒントを出していれば、空の一覧を送って消す。
+// erase が true で、ヒントを出していれば、空の一覧を送って消す。
 // 出さないことに切り替えたとき、言語サーバーが終わったとき、文書を言語サーバーから外したときに呼ぶ。
 //
 // req: FR-257
-func (c *client) resetInlay(d *document, clear bool) {
+func (c *client) resetInlay(d *document, erase bool) {
 	st := &d.inlay
 	if st.timer != nil {
 		st.timer.Stop()
@@ -297,7 +295,7 @@ func (c *client) resetInlay(d *document, clear bool) {
 	}
 	st.dirty = false
 	st.seq++
-	if clear && st.shown {
+	if erase && st.shown {
 		c.sendInlay(d, d.current().version, nil)
 	}
 }

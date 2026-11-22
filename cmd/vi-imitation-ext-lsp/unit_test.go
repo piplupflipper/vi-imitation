@@ -327,6 +327,14 @@ func TestConfigExample(t *testing.T) {
 	if c.servers["go"] == nil {
 		t.Error("the default go server is dropped")
 	}
+	// オーナーの nvim と同じく、インレイヒントを出す。gopls にはヒントの種類を有効にする設定を渡す（#387）。
+	if gocfg := c.servers["go"]; gocfg == nil || gocfg.Command != "gopls" || !gocfg.inlayHints() || len(gocfg.Settings["gopls"]) == 0 ||
+		!slices.Contains(gocfg.RootMarkers, "go.mod") {
+		t.Errorf("go = %+v, want gopls with inlay hints and the gopls hints settings", gocfg)
+	}
+	if !py.inlayHints() {
+		t.Error("python: inlayHints = false, want true from the top-level value")
+	}
 	if !slices.Contains(cfg.ExtensionActivation["lsp"], ext.Activation{On: ext.ActivationFileType, Pattern: "python"}) {
 		t.Errorf("activation.lsp = %+v, want filetype python", cfg.ExtensionActivation["lsp"])
 	}
