@@ -60,6 +60,67 @@ type treesitterSettings struct {
 	// listed は、parsers の項目の名前の集合で、誤りのある項目の名前も含む。
 	// ロックファイルから、設定に並べなくなったパーサの記録を消すのに使う（誤りのある項目の記録は残す）。
 	listed map[string]bool
+	// context は、見出しの帯（sticky.go）の設定である。
+	context contextSettings
+}
+
+// contextSettings は、設定の extensions.settings.treesitter.context の値である（FR-247。項目の名前は仮）。
+//
+//	"context": {
+//	  // 見出しの帯を出すか。既定は出す（nvim-treesitter-context の enable の既定）
+//	  "enable": true,
+//	  // 帯の行数の上限。0 は上限なし（nvim-treesitter-context の max_lines の既定）
+//	  "maxLines": 0,
+//	  // 1 つの見出しに使う行数の上限（nvim-treesitter-context の multiline_threshold。既定は 20）
+//	  "multilineThreshold": 20
+//	}
+type contextSettings struct {
+	enable             bool
+	maxLines           int
+	multilineThreshold int
+}
+
+// defaultContextSettings は、設定に context が無いときの値である。nvim-treesitter-context（コミット 8decd73460d26ef0a0befb745d022dd1fc2c38b8）の
+// lua/treesitter-context/config.lua の既定（enable = true、max_lines = 0、multiline_threshold = 20）に合わせた。
+var defaultContextSettings = contextSettings{enable: true, maxLines: 0, multilineThreshold: 20}
+
+// contextJSON は、context の JSON の形である。省いた項目は nil で、既定の値を使う。
+type contextJSON struct {
+	Enable             *bool `json:"enable"`
+	MaxLines           *int  `json:"maxLines"`
+	MultilineThreshold *int  `json:"multilineThreshold"`
+}
+
+// parseContext は、context の値を読む。誤りのある項目は既定の値のままにし、誤りを返す。
+//
+// req: FR-247
+func parseContext(raw json.RawMessage) (contextSettings, []string) {
+	out := defaultContextSettings
+	var j contextJSON
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&j); err != nil {
+		return out, []string{fmt.Sprintf("設定の extensions.settings.treesitter.context を読めない: %v", err)}
+	}
+	var problems []string
+	if j.Enable != nil {
+		out.enable = *j.Enable
+	}
+	if j.MaxLines != nil {
+		if *j.MaxLines < 0 {
+			problems = append(problems, "設定の extensions.settings.treesitter.context.maxLines は 0 以上にする")
+		} else {
+			out.maxLines = *j.MaxLines
+		}
+	}
+	if j.MultilineThreshold != nil {
+		if *j.MultilineThreshold < 1 {
+			problems = append(problems, "設定の extensions.settings.treesitter.context.multilineThreshold は 1 以上にする")
+		} else {
+			out.multilineThreshold = *j.MultilineThreshold
+		}
+	}
+	return out, problems
 }
 
 // defaultCompiler は、設定に compiler が無いときの C コンパイラである。
@@ -82,7 +143,7 @@ var parserName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 //
 // req: FR-142
 func parseSettings(settings json.RawMessage) (treesitterSettings, []string) {
-	out := treesitterSettings{compiler: defaultCompiler, listed: map[string]bool{}}
+	out := treesitterSettings{compiler: defaultCompiler, listed: map[string]bool{}, context: defaultContextSettings}
 	if len(bytes.TrimSpace(settings)) == 0 || bytes.Equal(bytes.TrimSpace(settings), []byte("null")) {
 		return out, nil
 	}
@@ -101,6 +162,10 @@ func parseSettings(settings json.RawMessage) (treesitterSettings, []string) {
 				continue
 			}
 			out.compiler = c
+		case "context":
+			c, ps := parseContext(top[k])
+			out.context = c
+			problems = append(problems, ps...)
 		case "parsers":
 		default:
 			problems = append(problems, fmt.Sprintf("設定の extensions.settings.treesitter に知らない項目 %s がある", k))

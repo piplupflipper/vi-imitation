@@ -1,6 +1,7 @@
 {
   "id": "treesitter",
   "command": "./vi-imitation-ext-treesitter",
+  "windowEvents": true,
   "activation": [
     { "on": "filetype", "pattern": "go" },
     { "on": "filetype", "pattern": "json" },
@@ -13,6 +14,9 @@
       { "id": "treesitter.block.inner", "keys": "in", "description": "構文のまとまりの中身（括弧の内側、本体）。ビジュアルモードで繰り返すと外へ広げる（tree-sitter）" },
       { "id": "treesitter.parameter.around", "keys": "aa", "description": "引数と区切りの ,（tree-sitter）" },
       { "id": "treesitter.parameter.inner", "keys": "ia", "description": "引数 1 つ（tree-sitter）" }
+    ],
+    "commands": [
+      { "id": "treesitter.context.toggle", "description": "関数とクラスの見出しを窓の上端に出すかを切り替える（tree-sitter。:TSContext toggle）" }
     ]
   }
 }

@@ -87,6 +87,8 @@ type highlighter struct {
 	// trees は、解析の goroutine が解析した構文木の複製を、テキストオブジェクトの問い合わせ（objects）へ渡す。
 	trees   *treeStore
 	objects *textObjects
+	// sticky は、見出しの帯（sticky.go）を作って送る。trees の構文木を使う。
+	sticky *sticky
 
 	// 以下は解析の goroutine だけが触る。
 	docs map[ext.BufferID]*document
@@ -139,6 +141,7 @@ func newHighlighter() (*highlighter, error) {
 		l, _ := h.languageForLocked(ft)
 		return l
 	})
+	h.sticky = newSticky(h.trees, h.log)
 	return h, nil
 }
 
@@ -157,6 +160,10 @@ func (h *highlighter) close() {
 	}
 	if h.objects != nil {
 		h.objects.close()
+	}
+	// 帯を作る goroutine は trees の構文木を使うので、trees より先に止める。
+	if h.sticky != nil {
+		h.sticky.close()
 	}
 	if h.trees != nil {
 		h.trees.close()
@@ -191,6 +198,7 @@ func (h *highlighter) server() *server.Server {
 	s.OnBufferChange(func(_ context.Context, e *server.BufferChangeEvent) { h.change(e) })
 	s.OnBufferClose(func(_ context.Context, e *server.BufferCloseEvent) { h.closeBuffer(e.Buffer) })
 	h.objects.register(s)
+	h.sticky.register(s)
 	h.send = s.SetDecorations
 	h.notify = s.ShowMessage
 	h.report = s.ReportProgress
@@ -380,6 +388,7 @@ func (h *highlighter) process(id ext.BufferID, j *job) {
 		}
 		delete(h.warned, id)
 		h.trees.drop(id)
+		h.sticky.parsed(id)
 		if j.clear {
 			h.publish(id, j.version, []ext.Decoration{})
 		}
@@ -407,7 +416,8 @@ func (h *highlighter) process(id ext.BufferID, j *job) {
 			d.reset(j.latest.Text())
 		}
 	}
-	h.trees.put(id, j.version, d.lang, d.tree.Clone())
+	h.trees.put(id, j.version, d)
+	h.sticky.parsed(id)
 	decs := d.decorations()
 	if h.superseded(id) {
 		return

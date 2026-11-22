@@ -47,6 +47,7 @@ type waitingBuffer struct {
 func (h *highlighter) configure(raw json.RawMessage) {
 	s, problems := parseSettings(raw)
 	h.problems = problems
+	h.sticky.configure(s.context)
 	h.prep = &preparer{
 		env:      h.env,
 		compiler: s.compiler,
