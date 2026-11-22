@@ -26,6 +26,9 @@
 // nvim-treesitter-context に当たる）。帯は、解析の goroutine が最後に解析した構文木の複製から、帯を作る goroutine で作る。
 // 出すかどうかは、設定の context と、コマンド treesitter.context.toggle で変える。
 //
+// 設定の chunk で有効にすると、同じ window/change で、カーソルを含むブロックの範囲を、行頭の字下げに重ねる罫線
+// （virtualText/set の overlay）で示す（chunk.go。hlchunk.nvim に当たる）。罫線は、罫線を作る goroutine で決めて送る。
+//
 // ほかの言語は、利用者の設定（extensions.settings.treesitter.parsers。settings.go の parserSpec）に並べたパーサを、
 // そのファイルの種類のバッファを初めて開いたときに git で取得し、C コンパイラで共有ライブラリにビルドし、dlopen で読み込む（FR-142。parsers.go）。
 // 取得したコミットはロックファイルに記録し、次からは同じコミットとビルドしたものを使う。

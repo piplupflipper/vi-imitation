@@ -92,10 +92,10 @@ func newSticky(trees *treeStore, logger *log.Logger) *sticky {
 // stickyToggleCommand は、見出しの帯を出すかを切り替えるコマンドの ID である（FR-248。nvim-treesitter-context の :TSContext toggle）。
 const stickyToggleCommand = "treesitter.context.toggle"
 
-// register は、window/change のフックと、切り替えのコマンドを s に登録し、帯を作る goroutine を動かし始める。
+// register は、切り替えのコマンドを s に登録し、帯を作る goroutine を動かし始める。
+// window/change のフック（windowChanged）は、罫線（chunk.go）と 1 つのフックを分け合うので、highlighter.server が登録する。
 func (k *sticky) register(s *server.Server) {
 	k.send = s.SetBand
-	s.OnWindowChange(func(_ context.Context, e *server.WindowChangeEvent) { k.windowChanged(e.Params) })
 	s.Command(stickyToggleCommand, func(context.Context, *server.Buffer, *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
 		k.toggle()
 		return ext.CommandExecuteResult{OK: true}, nil

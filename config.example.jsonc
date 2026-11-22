@@ -272,6 +272,17 @@
           // 複数の行にまたがる見出しも 1 行に切り詰める（拡張機能の既定は 20）
           "multilineThreshold": 1,
         },
+        // カーソルを含むブロックの範囲を、字下げに重ねる罫線で示す（オーナーの nvim の hlchunk.nvim の chunk と同じ記号と時間）。
+        // 説明は docs/usage.md の「ブロックの範囲を罫線で示す」にある
+        "chunk": {
+          // 拡張機能の既定は出さない
+          "enable": true,
+          // カーソルが止まってから 100 ミリ秒で描き直し、100 ミリ秒で描く（拡張機能の既定は hlchunk.nvim と同じ 300 と 200）
+          "delay": 100,
+          "duration": 100,
+          // 始まりの行の本文の側の端（leftArrow）は、hlchunk.nvim の既定と同じ ─ のまま
+          "symbols": { "horizontalLine": "═", "verticalLine": "║", "leftTop": "╔", "leftBottom": "╚", "rightArrow": "▶" },
+        },
       },
       // LSP の言語サーバーを足す例（Python の pyright）。説明は docs/usage.md の「LSP」にある。
       // 既定の言語サーバーは Go の gopls だけで、ほかの言語は servers と activation の両方に書く
