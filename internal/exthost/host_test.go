@@ -319,6 +319,68 @@ func TestStartupActivation(t *testing.T) {
 	hs.waitState("res", StateRunning)
 }
 
+// 宣言ファイルの noBufferSync の拡張機能へは、稼働中になったときの全文も、その後のバッファの開閉と差分と保存も送らない。
+// command/execute は Withheld を立てて送る。同じ Host の他の拡張機能へは、今までどおり送る。
+//
+// req: FR-229
+func TestNoBufferSync(t *testing.T) {
+	m := ext.Manifest{
+		ID: "nb", Command: fakeCommand(t, modeNormal), NoBufferSync: true,
+		Activation:  []ext.Activation{{On: ext.ActivationCommand, ID: "nb.cmd"}},
+		Contributes: ext.Contributes{Commands: []ext.Contribution{{ID: "nb.cmd"}}},
+	}
+	if _, err := ext.ValidateManifests([]ext.Manifest{m}); err != nil {
+		t.Fatal(err)
+	}
+	hs := newHarness(t, []Spec{{Manifest: m}, fakeSpec(t, "x", modeNormal, "")}, nil, true)
+	b := buffer.New("abc\n")
+	if err := hs.h.OpenBuffer(snapshot(1, "", b)); err != nil {
+		t.Fatal(err)
+	}
+	hs.h.Activate(ext.ActivationCommand, "nb.cmd")
+	hs.h.Activate(ext.ActivationTextObject, "x.obj")
+	hs.waitState("nb", StateRunning)
+	hs.waitState("x", StateRunning)
+
+	c, err := b.Apply(buffer.Transaction{BaseVersion: b.Version(), Edits: []buffer.Edit{{Text: "z"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.ChangeBuffer(1, c); err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.DidSave(ext.BufferDidSaveParams{Buffer: 1, Version: ext.Version(b.Version())}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.OpenBuffer(snapshot(2, "", buffer.New("second"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.CloseBuffer(2); err != nil {
+		t.Fatal(err)
+	}
+	var res ext.CommandExecuteResult
+	if err := hs.h.Call(ctx, "nb", ext.MethodCommandExecute, ext.CommandExecuteParams{Buffer: 1, Version: ext.Version(b.Version()), ID: "nb.cmd"}, callTimeout, &res); err != nil {
+		t.Fatal(err)
+	}
+
+	var nb, x fakeState
+	if err := hs.h.Call(ctx, "nb", methodState, nil, callTimeout, &nb); err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.h.Call(ctx, "x", methodState, nil, callTimeout, &x); err != nil {
+		t.Fatal(err)
+	}
+	if msgs := bufferMessages(nb.Log); len(nb.Buffers) != 0 || len(msgs) != 0 {
+		t.Errorf("noBufferSync の拡張機能がバッファを受け取った: %v %v", nb.Buffers, msgs)
+	}
+	if !slices.Contains(nb.Log, "command:nb.cmd:withheld=true") {
+		t.Errorf("command/execute の Withheld が立っていない: %v", nb.Log)
+	}
+	if got := bufferMessages(x.Log); len(got) != 5 {
+		t.Errorf("他の拡張機能が受け取ったバッファの知らせ = %v, want 5 件", got)
+	}
+}
+
 // 起動は非同期で、初期化が終わらなくても呼び出し側は待たされない。
 //
 // req: NFR-04

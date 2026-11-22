@@ -343,6 +343,28 @@ type extension struct {
 	reload bool
 }
 
+// syncsBuffers は、拡張機能 e へバッファの同期（buffer/open、buffer/change、buffer/close、buffer/didSave）を送るかを返す。
+// 宣言ファイルの noBufferSync（ext.Manifest.NoBufferSync）が true なら送らない（基本設計 5.3。#367）。
+func (e *extension) syncsBuffers() bool { return !e.spec.Manifest.NoBufferSync }
+
+// withheldParams は、バッファの同期を送らない拡張機能 e への問い合わせ params の Withheld を立てる。
+// e はバッファの複製を持たないので、ext/server はハンドラーへ複製の代わりに nil を渡す（ext.CommandExecuteParams の Withheld）。
+// Withheld を持たない問い合わせ（motion/resolve など）は、その拡張機能が宣言できない（ext.Manifest.Validate）ので変えない。
+func withheldParams(e *extension, params any) any {
+	if e.syncsBuffers() {
+		return params
+	}
+	switch p := params.(type) {
+	case ext.CommandExecuteParams:
+		p.Withheld = true
+		return p
+	case ext.ProviderInvokeParams:
+		p.Withheld = true
+		return p
+	}
+	return params
+}
+
 // New は、specs の拡張機能を管理する Host を作る。子プロセスは起動しない（FR-14、NFR-04）。
 // 起動の契機 socket（ext.ActivationSocket）を宣言した拡張機能があれば、[Config.SocketPath] で待ち受けを始め、
 // 最初の接続でその拡張機能を起動する（基本設計 6.2）。待ち受けられなくても誤りにせず、記録だけする。

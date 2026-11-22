@@ -720,6 +720,8 @@ type fakeTerm struct {
 	clips []string
 	// w と h は、Size が返す大きさである。w が 0 なら 120 列と 6 行である。
 	w, h int
+	// onDraw は、nil でなければ、Draw のたびに（描いた画面を持った後、mu を持たずに）呼ぶ。Run の前に入れる。
+	onDraw func()
 }
 
 // closeInput は、端末の入力を閉じる（端末が失われた）。何度呼んでもよい。
@@ -752,8 +754,11 @@ func (f *fakeTerm) Size() (int, int) {
 
 func (f *fakeTerm) Draw(s ui.Screen) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.last = s
+	f.mu.Unlock()
+	if f.onDraw != nil {
+		f.onDraw()
+	}
 	return nil
 }
 

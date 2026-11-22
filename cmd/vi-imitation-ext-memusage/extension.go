@@ -85,20 +85,23 @@ type extension struct {
 // newExtension は、コマンドとフックを登録した拡張機能を作る。
 func newExtension() *extension {
 	x := &extension{
-		server: server.New(), ctx: context.Background(), root: os.Getppid, newSource: defaultSource, ids: manifestIDs{},
+		server: server.New(), ctx: context.Background(), root: os.Getppid, ids: manifestIDs{},
 	}
+	x.newSource = defaultSource()
 	x.server.OnInitialize(x.initialize)
 	x.server.OnShutdown(func(context.Context, *server.ShutdownEvent) { x.stop() })
 	x.server.Command(cmdShow, x.show)
 	return x
 }
 
-// defaultSource は、Linux で /proc から子を辿れれば procSource を、そうでなければ ps の出力を使う。
-func defaultSource(ctx context.Context) (source, error) {
+// defaultSource は、Linux で /proc から子を辿れれば、使い回す 1 つの procSource（見分けた拡張機能を覚える）を返す関数を、
+// そうでなければ集計のたびに ps を実行する関数を返す。
+func defaultSource() func(ctx context.Context) (source, error) {
 	if hasProcChildren() {
-		return procSource{root: "/proc"}, nil
+		src := newProcSource("/proc")
+		return func(context.Context) (source, error) { return src, nil }
 	}
-	return newPSSource(ctx)
+	return func(ctx context.Context) (source, error) { return newPSSource(ctx) }
 }
 
 // initialize は、設定を読み、部品を更新する goroutine を始める。設定の誤りは message/show で知らせる。
@@ -166,6 +169,9 @@ func (x *extension) collect(ctx context.Context) (report, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	r, ok := collect(src, x.root(), x.ids)
+	if p, isProc := src.(*procSource); isProc {
+		p.prune()
+	}
 	if !ok {
 		return report{}, errors.New("本体のプロセスを読めない")
 	}

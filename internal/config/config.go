@@ -31,6 +31,7 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/tailscale/hujson"
@@ -337,7 +338,46 @@ func Parse(path string, data []byte) (Config, []error) {
 			}
 		}
 	}
+	cfg.dropDisabledParts()
 	return cfg, s.problems
+}
+
+// disabledOwner は、名前 name（部品の ID かコマンドの ID）が、extensions.disabled に書いた拡張機能のものかを返す。
+// 部品とコマンドの ID は拡張機能の ID と "." で始まる（部品は宣言ファイルの検査で守らせ、コマンドは標準の拡張機能がそう名付ける）ので、
+// name の "." の前までのどれかが止めた拡張機能の ID なら、その拡張機能のものとみなす。
+func (c *Config) disabledOwner(name string) bool {
+	for i := range len(name) {
+		if name[i] == '.' && c.ExtensionDisabled[name[:i]] {
+			return true
+		}
+	}
+	return false
+}
+
+// dropDisabledParts は、statusline と tabline の並びから、extensions.disabled に書いた拡張機能の部品の ID を黙って除く（FR-226）。
+// 利用者が自分で止めた拡張機能の部品を、どの拡張機能も足していない ID として知らせないためである（PR #375 のレビューの推奨 1）。
+// 部品の ID の最後の "." の前は拡張機能の ID に決まる（ext.Manifest.Validate）ので、止めていない拡張機能の部品を除くことは無い。
+//
+// req: FR-226
+func (c *Config) dropDisabledParts() {
+	if len(c.ExtensionDisabled) == 0 {
+		return
+	}
+	keep := func(ids []string) []string {
+		var out []string
+		for _, id := range ids {
+			if i := strings.LastIndexByte(id, '.'); i >= 0 && c.ExtensionDisabled[id[:i]] {
+				continue
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	for _, sl := range []*StatusLine{c.StatusLine, c.TabLineParts} {
+		if sl != nil {
+			sl.Left, sl.Right = keep(sl.Left), keep(sl.Right)
+		}
+	}
 }
 
 // keymap は、keymap の値を読む。右辺が文字列の項目を Keymap に、オブジェクトの項目（{ "action": "<ID>" }。FR-126）を
@@ -503,8 +543,12 @@ func (c *Config) CheckKeymapCommands(check func(mode, lhs string, cmd KeymapComm
 	for mode, maps := range c.KeymapCommands {
 		for lhs, cmd := range maps {
 			if err := check(mode, lhs, cmd); err != nil {
-				errs = append(errs, c.keymapPos[mode][lhs].with("%s: コマンド %s を使えない: %v", join(join("keymap", mode), lhs), cmd.Name, err))
 				delete(maps, lhs)
+				if c.disabledOwner(cmd.Name) {
+					// extensions.disabled で止めた拡張機能のコマンドは、無いものとして知らせずに使わない（PR #375 のレビューの推奨 1）。
+					continue
+				}
+				errs = append(errs, c.keymapPos[mode][lhs].with("%s: コマンド %s を使えない: %v", join(join("keymap", mode), lhs), cmd.Name, err))
 			}
 		}
 	}

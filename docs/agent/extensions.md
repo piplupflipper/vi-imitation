@@ -136,6 +136,12 @@ f の対象の文字が見つからない場合のように該当が無いとき
   本体は解決せずにそのまま渡す。相対パスの引数は、拡張機能が EnvExtensionDir（VI_IMITATION_EXTENSION_DIR） のディレクトリから解決する。
 - `saveHook`（`bool`、省ける）: true なら、稼働中のときに保存の直前の buffer/willSave を受け取る。
   保存の前に整形する LSP の拡張機能が使う。
+- `noBufferSync`（`bool`、省ける）: true なら、本体がこの拡張機能へバッファの同期（buffer/open、buffer/change、buffer/close、buffer/didSave）を
+  送らないことを表す（API 0.16.0 で足した）。
+  バッファのテキストを使わずに常に動く拡張機能（メモリの使用量など）が、開いたすべてのバッファの複製を持たないためのものである。
+  本体は、この拡張機能への command/execute と provider/invoke の params の Withheld を立てるので、ext/server はハンドラーへ
+  バッファの代わりに nil を渡す。バッファの複製を要る操作（operators、motions、textObjects）と SaveHook とは併せて書けない（Validate）。
+  古い本体（0.15.0 まで）は未知の項目として無視し、バッファを送る。
 - `activation`（`[]Activation`）: 起動の契機の一覧である。どれか 1 つが成り立った時点で起動する。
 - `contributes`（`Contributes`）: 拡張機能が追加する操作である。
 - `provides`（`[]Operation`、省ける）: 拡張機能が引き受ける本体の操作（提供者として名乗る操作）の列である。

@@ -122,6 +122,23 @@ func TestManifestValidate(t *testing.T) {
 			warn:   []string{`provides[1] "peek" は未知の操作なので無視する`},
 		},
 		{
+			name: "noBufferSync とバッファの要る操作と saveHook は併せて書けない",
+			modify: func(m *Manifest) {
+				m.NoBufferSync = true
+				m.SaveHook = true
+			},
+			want: []string{"noBufferSync とバッファの複製が要る saveHook", "noBufferSync とバッファの複製が要る contributes.operators", "contributes.textObjects"},
+		},
+		{
+			name: "noBufferSync はコマンドと部品となら書ける",
+			modify: func(m *Manifest) {
+				m.NoBufferSync = true
+				m.Contributes.Operators, m.Contributes.TextObjects = nil, nil
+				m.Activation = []Activation{{On: ActivationCommand, ID: "c"}}
+				m.Contributes.Commands = []Contribution{{ID: "c"}}
+			},
+		},
+		{
 			name:   "provides の重複は誤り",
 			modify: func(m *Manifest) { m.Provides = []Operation{OpHover, OpFormat, OpHover} },
 			want:   []string{`provides[2] "hover" が重複する`},

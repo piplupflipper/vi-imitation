@@ -211,13 +211,11 @@ func TestSettingsWarning(t *testing.T) {
 // req: FR-228
 func TestShow(t *testing.T) {
 	h := connect(t, newTestExtension(t), "")
-	if err := h.conn.Notify(ext.MethodBufferOpen, ext.BufferOpenParams{Buffer: 1, Version: 1, Text: "x"}); err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
+	// 宣言ファイルの noBufferSync のとおり、本体はバッファを送らず、command/execute の Withheld を立てる。
 	var res ext.CommandExecuteResult
-	if err := h.conn.Call(ctx, ext.MethodCommandExecute, ext.CommandExecuteParams{Buffer: 1, Version: 1, ID: cmdShow}, &res); err != nil || !res.OK {
+	if err := h.conn.Call(ctx, ext.MethodCommandExecute, ext.CommandExecuteParams{Buffer: 1, Version: 1, ID: cmdShow, Withheld: true}, &res); err != nil || !res.OK {
 		t.Fatalf("command/execute = %+v, %v", res, err)
 	}
 	h.wait(t, "ポップアップ", func() bool { return len(h.popups) == 1 })

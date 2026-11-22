@@ -37,6 +37,11 @@ func (h *Host) Call(ctx context.Context, id, method string, params any, timeout 
 	}
 	ctx, cancel := h.queryContext(ctx, timeout)
 	defer cancel()
+	h.mu.Lock()
+	if e, ok := h.exts[id]; ok {
+		params = withheldParams(e, params)
+	}
+	h.mu.Unlock()
 	conn, err := h.waitRunning(ctx, id)
 	if err != nil {
 		return fmt.Errorf("exthost: call %s on %q: %w", method, id, err)
@@ -162,6 +167,7 @@ func (h *Host) send(id, method string, params any, opts SendOptions, defaultTime
 	h.mu.Lock()
 	e, err := h.lookupLocked(id)
 	if err == nil {
+		params = withheldParams(e, params)
 		err = check(e)
 		starting := e.state == StateNotStarted || e.state == StateStarting || h.kickedLocked(e)
 		if err == nil && starting && opts.StartTimeout > timeout {

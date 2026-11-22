@@ -251,6 +251,41 @@ func TestLoadExtensionsDisabled(t *testing.T) {
 	}
 }
 
+// 止めた拡張機能の部品を並べた statusline と tabline、そのコマンドを呼ぶ keymap と commandAliases は、誤りにせず黙って使わない
+// （PR #375 のレビューの推奨 1）。止めていない拡張機能の ID の誤りは、今までどおり知らせる。
+//
+// req: FR-226
+func TestDisabledReferences(t *testing.T) {
+	cfg, errs := Parse("config.jsonc", []byte(`{
+  "statusline": { "left": ["mode", "mem.rss"], "right": ["a.b.part", "other.part"] },
+  "tabline": { "right": ["mem.tab", "tabs"] },
+  "keymap": { "normal": { "<Space>m": { "command": "mem.show" }, "<Space>o": { "command": "other.show" } } },
+  "commandAliases": { "memshow": { "command": "mem.show" }, "oshow": { "command": "other.show" } },
+  "extensions": { "disabled": ["mem", "a.b"] },
+}`))
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	if got := *cfg.StatusLine; !reflect.DeepEqual(got, StatusLine{Left: []string{"mode"}, Right: []string{"other.part"}}) {
+		t.Errorf("statusline = %+v", got)
+	}
+	if got := cfg.TabLineParts.Right; !reflect.DeepEqual(got, []string{"tabs"}) {
+		t.Errorf("tabline.right = %v", got)
+	}
+	unknown := errors.New("拡張機能のコマンドの ID でない")
+	kerrs := cfg.CheckKeymapCommands(func(string, string, KeymapCommand) error { return unknown })
+	if len(kerrs) != 1 || !strings.Contains(kerrs[0].Error(), "other.show") {
+		t.Errorf("CheckKeymapCommands = %v", kerrs)
+	}
+	if len(cfg.KeymapCommands["normal"]) != 0 {
+		t.Errorf("使えない keymap を残した: %v", cfg.KeymapCommands)
+	}
+	aerrs := cfg.CheckCommandAliases(func(CommandAlias) error { return unknown })
+	if len(aerrs) != 1 || !strings.Contains(aerrs[0].Error(), "oshow") || len(cfg.CommandAliases) != 0 {
+		t.Errorf("CheckCommandAliases = %v, 残り %v", aerrs, cfg.CommandAliases)
+	}
+}
+
 // 宣言ファイルの settingsFileType の契機は、その拡張機能に向けた extensions.settings の中のファイルの種類から filetype の契機を作る。
 // 利用者は、設定に書いたファイルの種類を extensions.activation にもう一度書かずに済む（#277）。
 func TestLoadExtensionsSettingsFileType(t *testing.T) {

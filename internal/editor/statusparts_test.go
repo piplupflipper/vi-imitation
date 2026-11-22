@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/piplupflipper/vi-imitation/ext"
@@ -196,26 +197,50 @@ func TestExtensionStatusLineParts(t *testing.T) {
 func TestStartupExtensionAfterFirstRender(t *testing.T) {
 	specs := fakeSpecs(t)
 	specs[1].Manifest.Activation = append(specs[1].Manifest.Activation, ext.Activation{On: ext.ActivationStartup})
+	// slow は部品だけを足し、設定の並びに置く（#238 の、並べた部品の拡張機能を起動時に起動する経路）。
+	specs[2].Manifest.Contributes.StatusLine = []ext.StatusLinePart{{ID: "slow.part"}}
 	dir := writeFiles(t, map[string]string{"a.txt": "abc\n"})
-	var before exthost.State
-	h := startWith(t, Config{WorkDir: dir, Extensions: specs}, func(e *Editor) error {
-		if err := e.Open("a.txt"); err != nil {
-			return err
+
+	// 最初の Draw の時点の状態を記録する。Draw はイベントループの goroutine で描いた直後に呼ばれるので、
+	// 最初の画面より前に起動を始めていれば（Run の先頭や New で起動すれば）、ここで起動中か稼働中になっている（PR #375 のレビューの推奨 2）。
+	term := newFakeTerm()
+	var ed *Editor
+	var (
+		mu    sync.Mutex
+		first map[string]exthost.State
+		draws int
+	)
+	term.onDraw = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		draws++
+		if first == nil {
+			first = map[string]exthost.State{}
+			for _, id := range []string{"ftx", "slow"} {
+				first[id], _ = ed.host.State(id)
+			}
 		}
-		before, _ = e.host.State("ftx")
-		return nil
+	}
+	h := startTermWith(t, term, Config{
+		WorkDir: dir, Extensions: specs, StatusLine: &ui.StatusLine{Left: []string{ui.StatusPartName}, Right: []string{"slow.part"}},
+	}, func(e *Editor) error {
+		ed = e
+		return e.Open("a.txt")
 	})
-	if before != exthost.StateNotStarted {
-		t.Fatalf("Run の前の ftx の状態 = %s, want not-started", before)
-	}
 	h.eventually("startup の拡張機能が稼働中", func() bool { return h.state("ftx") == exthost.StateRunning })
-	if !strings.Contains(h.term.screen(), "abc") {
-		t.Errorf("startup の拡張機能が動いた時点で最初の画面が無い: %q", h.term.screen())
+	h.eventually("部品の拡張機能が起動", func() bool { return h.state("slow") != exthost.StateNotStarted })
+	mu.Lock()
+	defer mu.Unlock()
+	if draws == 0 {
+		t.Fatal("Draw が呼ばれていない")
 	}
-	for _, id := range []string{"fake", "slow"} {
-		if st := h.state(id); st != exthost.StateNotStarted {
-			t.Errorf("%s の状態 = %s, want not-started", id, st)
+	for id, st := range first {
+		if st != exthost.StateNotStarted {
+			t.Errorf("最初の画面を描いた時点の %s の状態 = %s, want not-started", id, st)
 		}
+	}
+	if st := h.state("fake"); st != exthost.StateNotStarted {
+		t.Errorf("fake の状態 = %s, want not-started", st)
 	}
 }
 

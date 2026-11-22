@@ -1,6 +1,7 @@
 {
   "id": "memusage",
   "command": "./vi-imitation-ext-memusage",
+  "noBufferSync": true,
   "activation": [
     { "on": "command", "id": "memusage.show" }
   ],

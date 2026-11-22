@@ -93,6 +93,10 @@ func (c *Config) CheckCommandAliases(add func(CommandAlias) error) []error {
 			pos = c.aliasPos[i]
 		}
 		if err := add(a); err != nil {
+			if c.disabledOwner(a.Command) {
+				// extensions.disabled で止めた拡張機能のコマンドへの別名は、知らせずに使わない（CheckKeymapCommands と同じ）。
+				continue
+			}
 			errs = append(errs, pos.with("%s: 別名を使えない: %v", join("commandAliases", a.Name), err))
 			continue
 		}

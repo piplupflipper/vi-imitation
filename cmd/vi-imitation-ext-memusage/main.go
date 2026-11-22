@@ -20,6 +20,9 @@
 // 拡張機能のプロセスは、本体が渡す環境変数 VI_IMITATION_EXTENSION_DIR（ext.EnvExtensionDir）の宣言ファイルの ID で名前を付ける。
 // 環境変数を読めない ps の出力では、実行ファイルの名前から vi-imitation-ext- を除いたものを名前にする。
 //
+// バッファのテキストは使わないので、宣言ファイルに noBufferSync を書き、本体からバッファの全文と差分を受け取らない
+// （ext.Manifest.NoBufferSync。PR #375 のレビューの必須 1。受け取ると、開いたファイルの大きさに比例してこの拡張機能の RSS が膨らむ）。
+//
 // 宣言ファイルの起動の契機は、コマンドの契機だけにした。起動の契機 startup（ext.ActivationStartup）にしないのは、
 // 部品を並べていない利用者（本体の既定）の本体でも常に動いて、使わないメモリを使うためである。
 package main

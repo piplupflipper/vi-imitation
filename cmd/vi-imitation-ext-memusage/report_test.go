@@ -6,11 +6,27 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
+	"github.com/piplupflipper/vi-imitation/internal/config"
 )
+
+// 同梱の宣言ファイルは誤りも警告も無く読め、バッファの同期を受け取らない（noBufferSync）。
+// 使わない全バッファの複製を持つと、開いたファイルの大きさに比例してこの拡張機能の RSS が膨らむため（PR #375 のレビューの必須 1）。
+//
+// req: FR-229
+func TestManifest(t *testing.T) {
+	m, warns, err := config.LoadManifest("manifest.json")
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("LoadManifest = %v, %v", warns, err)
+	}
+	if !m.NoBufferSync || m.ID != "memusage" {
+		t.Errorf("manifest = %+v", m)
+	}
+}
 
 // fakeSource は、テスト用のプロセスの木である。
 type fakeSource struct {
@@ -22,8 +38,11 @@ func (s fakeSource) children(pid int) []int { return s.kids[pid] }
 
 func (s fakeSource) info(pid int) (proc, bool) {
 	p, ok := s.procs[pid]
+	p.extDir = ""
 	return p, ok
 }
+
+func (s fakeSource) extDir(pid int) string { return s.procs[pid].extDir }
 
 // newFakeTree は、本体 100 の下に、LSP の拡張機能（言語サーバー 2 つ）、memusage の拡張機能、:! で起動したシェルを持つ木を作る。
 // LSP の拡張機能は環境変数で宣言ファイルのディレクトリを持ち、memusage は持たない（ps の出力から作ったときの形）。
@@ -167,28 +186,31 @@ func TestProcSource(t *testing.T) {
 	if !hasProcChildren() {
 		t.Skip("/proc/<pid>/task/<tid>/children が無い")
 	}
-	sleep, err := exec.LookPath("sleep")
+	sh, err := exec.LookPath("sh")
 	if err != nil {
-		t.Skip("sleep が無い")
+		t.Skip("sh が無い")
 	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"id": "probe", "command": "x"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	//nolint:gosec // 実行するのは PATH の sleep で、引数は定数である
-	cmd := exec.Command(sleep, "30")
+	// 子の sh と、その子（孫）の sleep を作る。孫の sleep は終わりに、プロセスグループごと止める。
+	//nolint:gosec // 実行するのは PATH の sh で、引数は定数である
+	cmd := exec.Command(sh, "-c", "sleep 30 & wait")
 	cmd.Env = append(os.Environ(), ext.EnvExtensionDir+"="+dir)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Wait()
 	})
 	pid := cmd.Process.Pid
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		r, ok := collect(procSource{root: "/proc"}, os.Getpid(), manifestIDs{})
+	src := newProcSource("/proc")
+	found := func() bool {
+		r, ok := collect(src, os.Getpid(), manifestIDs{})
+		src.prune()
 		if !ok {
 			t.Fatal("テストのプロセスを読めない")
 		}
@@ -196,14 +218,29 @@ func TestProcSource(t *testing.T) {
 			t.Errorf("テストのプロセスの RSS = %d", r.selfKB)
 		}
 		for _, g := range r.groups {
-			// exec の直後は、まだ環境変数とコマンドラインが sleep のものになっていないことがあるので、待つ。
-			if g.rows[0].pid == pid && g.name == "probe" && g.ext && strings.HasPrefix(g.rows[0].cmd, "sleep 30") {
-				return
+			// exec の直後は、まだ環境変数とコマンドラインが sh のものになっていないことがあるので、待つ。
+			if g.rows[0].pid == pid && g.name == "probe" && g.ext && len(g.rows) == 2 && strings.HasPrefix(g.rows[1].cmd, "sleep 30") {
+				return true
 			}
 		}
+		return false
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !found() {
 		if time.Now().After(deadline) {
-			t.Fatalf("子の sleep（%d）が probe として見つからない: %+v", pid, r.groups)
+			t.Fatalf("子の sh（%d）と孫の sleep が probe として見つからない", pid)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+
+	// 見分けた子の environ は読み直さず、孫の environ は読まない（PR #375 のレビューの推奨 3）。
+	reads := src.envReads
+	for range 3 {
+		if !found() {
+			t.Fatal("2 回目からの集計で probe が見つからない")
+		}
+	}
+	if src.envReads != reads {
+		t.Errorf("見分けた後の集計で environ を %d 回読んだ", src.envReads-reads)
 	}
 }

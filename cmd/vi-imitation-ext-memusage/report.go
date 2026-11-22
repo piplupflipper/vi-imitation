@@ -75,6 +75,8 @@ func collect(src source, root int, ids manifestIDs) (r report, ok bool) {
 		if !ok {
 			continue
 		}
+		// 拡張機能かどうかを見分けるのは本体の直接の子だけなので、環境変数はここでだけ読む（PR #375 のレビューの推奨 3）。
+		p.extDir = src.extDir(child)
 		g := group{name: groupName(p, ids), ext: isExtension(p)}
 		g.rows = append(g.rows, row{pid: p.pid, rssKB: p.rssKB, cmd: commandLine(p.args)})
 		g.rssKB = p.rssKB
