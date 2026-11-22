@@ -154,7 +154,9 @@ func TestPingWithLongLine(t *testing.T) {
 	if d > 2*time.Second {
 		t.Errorf("20 回の変更の後の ping の応答まで %v", d)
 	}
-	h.sync()
+	// 5 MB の行を数えて約 24 万の範囲を送り終えるのは、-race と -cover の下で、ほかのテストと並ぶと 5 秒を超えることがある。
+	// 確かめたいのは ping の応答が遅れないことなので、送り終えるのは長めに待つ
+	h.syncWithin(2 * time.Minute)
 	p := h.last()
 	if p.Version != 21 {
 		t.Errorf("最後の一覧の version = %d, want 21", p.Version)
