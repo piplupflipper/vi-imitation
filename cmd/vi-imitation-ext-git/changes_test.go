@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -152,6 +154,15 @@ func TestResolveBaseErrors(t *testing.T) {
 	ctx := context.Background()
 	if _, err := resolveBase(ctx, t.TempDir(), ""); err == nil || !strings.Contains(err.Error(), "git の作業ツリーの中ではありません") {
 		t.Errorf("リポジトリの外: %v", err)
+	} else if _, ok := errors.AsType[*notWorkTreeError](err); !ok {
+		t.Errorf("リポジトリの外の誤りが notWorkTreeError でない: %T", err)
+	}
+	// .git の中（COMMIT_EDITMSG の置き場所）も作業ツリーの外である。呼び出し側は作業ディレクトリで試し直す。
+	inGitDir := newRepo(t, map[string]string{"a.txt": "a\n"})
+	if _, err := resolveBase(ctx, filepath.Join(inGitDir, ".git"), "HEAD"); err == nil {
+		t.Error(".git の中で一覧を作れた")
+	} else if _, ok := errors.AsType[*notWorkTreeError](err); !ok {
+		t.Errorf(".git の中の誤りが notWorkTreeError でない: %v", err)
 	}
 	empty := t.TempDir()
 	runGit(t, empty, "init", "-q", "-b", "main")
@@ -187,6 +198,60 @@ func TestResolveBaseOriginHead(t *testing.T) {
 	}
 	if cmp.label != "origin/main...HEAD" || cmp.rev != gitOut(t, clone, "rev-parse", "origin/main") {
 		t.Errorf("comparison = %+v", cmp)
+	}
+}
+
+// 浅いクローンで merge-base が見えないときは、浅いことと履歴の取り方を案内する。名前は見出しと同じく origin/HEAD の指すブランチにする
+// （PR #382 のレビューの推奨 1）。
+//
+// req: FR-252
+func TestResolveBaseShallow(t *testing.T) {
+	isolateGit(t)
+	upstream := newRepo(t, map[string]string{"a.txt": "a\n"})
+	runGit(t, upstream, "checkout", "-q", "-b", "feature")
+	writeTestFiles(t, upstream, map[string]string{"f.txt": "f\n"})
+	runGit(t, upstream, "add", "-A")
+	runGit(t, upstream, "commit", "-q", "-m", "feature")
+	runGit(t, upstream, "checkout", "-q", "main")
+	writeTestFiles(t, upstream, map[string]string{"m.txt": "m\n"})
+	runGit(t, upstream, "add", "-A")
+	runGit(t, upstream, "commit", "-q", "-m", "main")
+	clone := filepath.Join(t.TempDir(), "clone")
+	runGit(t, filepath.Dir(clone), "clone", "-q", "--depth", "1", "--no-single-branch", "file://"+upstream, clone)
+	runGit(t, clone, "checkout", "-q", "feature")
+	_, err := resolveBase(context.Background(), clone, "")
+	if err == nil || !strings.Contains(err.Error(), "origin/main と HEAD の共通の祖先が見つかりません") || !strings.Contains(err.Error(), "git fetch --unshallow") {
+		t.Errorf("浅いクローン: %v", err)
+	}
+}
+
+// 追跡していない入れ子のリポジトリは、末尾に / の付いた行で出して印を付け、モードだけを変えたファイルは、行にモードの変化を出す
+// （PR #382 のレビューの推奨 2、3）。
+//
+// req: FR-250, FR-252
+func TestListChangesNestedAndMode(t *testing.T) {
+	isolateGit(t)
+	dir := newRepo(t, map[string]string{"exec.sh": "echo\n", "plain.txt": "p\n"})
+	runGit(t, dir, "update-index", "--chmod=+x", "exec.sh")
+	if err := os.Chmod(filepath.Join(dir, "exec.sh"), 0o700); err != nil { //nolint:gosec // テストの一時のファイルに実行の権限を付ける
+		t.Fatal(err)
+	}
+	runGit(t, dir, "commit", "-q", "-m", "chmod")
+	runGit(t, dir, "init", "-q", "-b", "main", "nested")
+	cmp, err := resolveBase(context.Background(), dir, "HEAD~1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := listChanges(context.Background(), cmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"M  exec.sh（モード 100644 -> 100755）", "?  nested/"}
+	if !slices.Equal(labels(got), want) {
+		t.Fatalf("一覧 = %q, want %q", labels(got), want)
+	}
+	if got[0].nested || !got[1].nested {
+		t.Errorf("nested = %v, %v", got[0].nested, got[1].nested)
 	}
 }
 

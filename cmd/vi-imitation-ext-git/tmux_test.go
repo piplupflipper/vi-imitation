@@ -242,7 +242,8 @@ func TestDiffHeadOutsideMuxInTmux(t *testing.T) {
 
 // TestChangesInTmux は、tmux の中で <Leader>gV（git.changes）を打つと、既定のブランチ（main）との merge-base と作業ツリーで
 // 違うファイルの一覧がファインダーに出て、選んだファイルが元のペインのタブに開き、merge-base の版が右に分割したペインで見比べられることを確かめる。
-// 次のファイルを選ぶと、前の見比べのペインは閉じてから新しいペインが開き、ペインは増えない。足したファイルは空の版と見比べ、
+// 選んだ後はフォーカスが右のペインへ移るので、次の一覧は利用者と同じくフォーカスのあるペインで開く。そこから次のファイルを選んでも
+// （左のペインのタブに無いファイルでも）、前の見比べのペインは閉じてから新しいペインが開き、ペインは増えない。足したファイルは空の版と見比べ、
 // 消したファイルは merge-base の版だけを開く。tmux に繋いだ端末が無いので、中央のポップアップはエディタの画面の中に出る（FR-123 の代わりの描き方）。
 //
 // req: FR-250, FR-251
@@ -256,9 +257,9 @@ func TestChangesInTmux(t *testing.T) {
 		t.Skip("tmux が無い")
 	}
 	editor := buildDist(t)
-	repo := newRepo(t, map[string]string{"a.txt": "one\ntwo\nthree\n", "gone.txt": "gone line\n"})
+	repo := newRepo(t, map[string]string{"a.txt": "one\ntwo\nthree\n", "b.txt": "bee\n", "gone.txt": "gone line\n"})
 	runGit(t, repo, "checkout", "-q", "-b", "feature")
-	writeTestFiles(t, repo, map[string]string{"a.txt": "one\nTWO\nthree\n", "fresh.txt": "fresh line\n"})
+	writeTestFiles(t, repo, map[string]string{"a.txt": "one\nTWO\nthree\n", "b.txt": "BEE\n", "fresh.txt": "fresh line\n"})
 	runGit(t, repo, "rm", "-q", "gone.txt")
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-q", "-m", "feature")
@@ -270,47 +271,82 @@ func TestChangesInTmux(t *testing.T) {
 		_ = k.Run()
 	})
 	p0 := ts.run("new-session", "-d", "-s", "t", "-x", "200", "-y", "30", "-c", repo, "-P", "-F", "#{pane_id}", "sleep 600")
-	p1 := ts.run("split-window", "-d", "-h", "-t", p0, "-c", repo, "-P", "-F", "#{pane_id}", fmt.Sprintf("'%s' fresh.txt", editor))
+	p1 := ts.run("split-window", "-h", "-t", p0, "-c", repo, "-P", "-F", "#{pane_id}", fmt.Sprintf("'%s' fresh.txt", editor))
 	ts.waitPane(p1, "fresh.txt を開いた画面", func(s string) bool { return strings.Contains(s, "fresh line") })
 
-	// 一覧を開き、a.txt に絞って選ぶ。
-	ts.run("send-keys", "-t", p1, "-l", " gV")
-	ts.waitPane(p1, "差分の一覧", func(s string) bool {
-		return strings.Contains(s, "git の差分 main...HEAD  3/3") && strings.Contains(s, "M  a.txt") &&
-			strings.Contains(s, "A  fresh.txt") && strings.Contains(s, "D  gone.txt")
+	// pick は、利用者と同じく、いまフォーカスのあるペイン（tmux の active なペイン）で一覧を開き、query で 1 件に絞って選ぶ。
+	pick := func(query string) {
+		t.Helper()
+		active := ts.run("display-message", "-p", "-t", "t", "#{pane_id}")
+		ts.run("send-keys", "-t", active, "-l", " gV")
+		ts.waitPane(active, "差分の一覧", func(s string) bool {
+			return strings.Contains(s, "git の差分 main...HEAD  4/4") && strings.Contains(s, "M  a.txt") && strings.Contains(s, "M  b.txt") &&
+				strings.Contains(s, "A  fresh.txt") && strings.Contains(s, "D  gone.txt")
+		})
+		ts.run("send-keys", "-t", active, "-l", query)
+		ts.waitPane(active, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/4") })
+		ts.run("send-keys", "-t", active, "Enter")
+	}
+	// rightPane は、待つだけのペインと左のペイン（p1）のほかのペインが 1 つだけになり、その画面が cond を満たすまで待って、その ID を返す。
+	rightPane := func(what string, cond func(string) bool) string {
+		t.Helper()
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			var others []string
+			for _, p := range ts.panes() {
+				if p != p0 && p != p1 {
+					others = append(others, p)
+				}
+			}
+			if len(others) == 1 {
+				// 前の見比べのペインが閉じかけていると、一覧に出た後に無くなるので、取り出せなければ待ち直す。
+				if s, ok := ts.tryCapture(others[0]); ok && cond(s) {
+					return others[0]
+				}
+			}
+			if time.Now().After(deadline) {
+				var screens strings.Builder
+				for _, p := range others {
+					s, _ := ts.tryCapture(p)
+					fmt.Fprintf(&screens, "== %s\n%s\n", p, s)
+				}
+				t.Fatalf("右のペインが %s にならない: %v\n%s", what, ts.panes(), screens.String())
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// 左のペインから a.txt を選ぶ。
+	pick("a.t")
+	p2 := rightPane("a.txt の merge-base の版", func(s string) bool {
+		return strings.Contains(s, "main...HEAD:a.txt") && strings.Contains(s, "[RO]") && strings.Contains(s, "two") && strings.Contains(s, "（client 1）を")
 	})
-	ts.run("send-keys", "-t", p1, "-l", "a.t")
-	ts.waitPane(p1, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/3") })
-	ts.run("send-keys", "-t", p1, "Enter")
-	p2 := ts.waitNewPane(p0, p1)
-	base := ts.waitPane(p2, "a.txt の merge-base の版", func(s string) bool {
-		return strings.Contains(s, "main...HEAD:a.txt") && strings.Contains(s, "[RO]") && strings.Contains(s, "two")
-	})
-	if strings.Contains(base, "TWO") {
-		t.Errorf("merge-base の版のペインに作業ツリーの行が出た:\n%s", base)
+	if s := ts.run("capture-pane", "-p", "-t", p2); strings.Contains(s, "TWO") {
+		t.Errorf("merge-base の版のペインに作業ツリーの行が出た:\n%s", s)
 	}
 	ts.waitPane(p1, "a.txt のタブ", func(s string) bool { return strings.Contains(s, "TWO") })
 
-	// 足したファイルを選ぶと、前の見比べのペインが閉じ、空の版と見比べるペインが開く。
-	// 空の版は、空の行 1 つを変えた行として描き、1 行のファイルに対する詰め物は 0 行になる（基本設計 6.8。Vim 9.1 と同じ）。
-	ts.run("send-keys", "-t", p1, "-l", " gV")
-	ts.waitPane(p1, "差分の一覧", func(s string) bool { return strings.Contains(s, "3/3") })
-	ts.run("send-keys", "-t", p1, "-l", "fresh")
-	ts.waitPane(p1, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/3") })
-	ts.run("send-keys", "-t", p1, "Enter")
-	p3 := ts.waitNewPane(p0, p1, p2)
-	ts.waitPane(p3, "fresh.txt の比べる元の版", func(s string) bool {
-		return strings.Contains(s, "main...HEAD:fresh.txt") && strings.Contains(s, "[RO]") && !strings.Contains(s, "fresh line")
+	// 選んだ後はフォーカスが右のペインへ移る。そのまま、どのタブでもない b.txt を選んでも、右のペインが入れ替わるだけで、
+	// b.txt は左のペインに開く（PR #382 のレビューの必須 1）。
+	pick("b.t")
+	p3 := rightPane("b.txt の merge-base の版", func(s string) bool {
+		return strings.Contains(s, "main...HEAD:b.txt") && strings.Contains(s, "bee") && strings.Contains(s, "（client 1）を")
 	})
-	ts.waitPane(p1, "見比べを始めた知らせ", func(s string) bool { return strings.Contains(s, "fresh.txt と main...HEAD:fresh.txt（client") })
-	ts.waitPanes(3)
+	if p3 == p2 {
+		t.Errorf("右のペインが入れ替わらない: %s", p3)
+	}
+	ts.waitPane(p1, "b.txt のタブ", func(s string) bool { return strings.Contains(s, "BEE") })
 
-	// 消したファイルを選ぶと、見比べのペインを閉じ、merge-base の版だけを元のペインのタブに開く。
-	ts.run("send-keys", "-t", p1, "-l", " gV")
-	ts.waitPane(p1, "差分の一覧", func(s string) bool { return strings.Contains(s, "3/3") })
-	ts.run("send-keys", "-t", p1, "-l", "gone")
-	ts.waitPane(p1, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/3") })
-	ts.run("send-keys", "-t", p1, "Enter")
+	// 足したファイル（左のペインのタブにある fresh.txt）を、右のペインから選ぶ。空の版と見比べる。
+	// 空の版は、空の行 1 つを変えた行として描き、1 行のファイルに対する詰め物は 0 行になる（基本設計 6.8。Vim 9.1 と同じ）。
+	pick("fresh")
+	rightPane("fresh.txt の比べる元の版", func(s string) bool {
+		return strings.Contains(s, "main...HEAD:fresh.txt") && strings.Contains(s, "[RO]") && !strings.Contains(s, "fresh line") && strings.Contains(s, "（client 1）を")
+	})
+	ts.waitPane(p1, "fresh.txt のタブ", func(s string) bool { return strings.Contains(s, "fresh line") })
+
+	// 消したファイルを右のペインから選ぶと、見比べのペインを閉じ、merge-base の版だけを左のペインのタブに開く。
+	pick("gone")
 	ts.waitPane(p1, "消したファイルの版", func(s string) bool {
 		return strings.Contains(s, "gone line") && strings.Contains(s, "main...HEAD:gone.txt") && strings.Contains(s, "作業ツリーに無いので")
 	})
@@ -367,7 +403,8 @@ func TestChangesNoDiffInTmux(t *testing.T) {
 
 // TestChangesWorktreeInTmux は、worktree（git worktree add）の中で、別のリポジトリを指す GIT_DIR と GIT_WORK_TREE を残した本体を起動しても
 // （本体を git commit の GIT_EDITOR にしたとき）、<Leader>gV がその worktree のブランチの差分を出すことと、
-// サブモジュールの変更は一覧に出すが、選んでも開かずに知らせることを確かめる。
+// カーソルのあるバッファが作業ツリーの外のファイル（COMMIT_EDITMSG）なら作業ディレクトリのリポジトリで一覧を作ることと、
+// サブモジュールと追跡していない入れ子のリポジトリは一覧に出すが、選んでも開かずに知らせることを確かめる。
 //
 // req: FR-252
 func TestChangesWorktreeInTmux(t *testing.T) {
@@ -393,7 +430,12 @@ func TestChangesWorktreeInTmux(t *testing.T) {
 	runGit(t, sub, "commit", "-q", "-m", "sub")
 	runGit(t, wt, "-c", "advice.addEmbeddedRepo=false", "add", "sub")
 	runGit(t, wt, "commit", "-q", "-m", "feature")
+	// 追跡していない入れ子のリポジトリ（サブモジュールとして登録していないもの）。
+	runGit(t, wt, "init", "-q", "-b", "main", "nested")
 	other := newRepo(t, map[string]string{"x.txt": "x\n"})
+	// git commit が GIT_EDITOR に開かせるコミットのメッセージ（worktree の git のディレクトリの中。作業ツリーの外）。
+	msg := filepath.Join(repo, ".git", "worktrees", "wt", "COMMIT_EDITMSG")
+	writeTestFiles(t, filepath.Dir(msg), map[string]string{"COMMIT_EDITMSG": "commit message\n"})
 
 	ts := &testTmux{t: t, bin: tmuxBin, name: fmt.Sprintf("vi-imitation-git-test-%d-%d", os.Getpid(), time.Now().UnixNano()), env: testEnv(t)}
 	t.Cleanup(func() {
@@ -403,17 +445,27 @@ func TestChangesWorktreeInTmux(t *testing.T) {
 	})
 	p0 := ts.run("new-session", "-d", "-s", "t", "-x", "200", "-y", "30", "-c", wt, "-P", "-F", "#{pane_id}", "sleep 600")
 	p1 := ts.run("split-window", "-d", "-h", "-t", p0, "-c", wt, "-P", "-F", "#{pane_id}",
-		fmt.Sprintf("env GIT_DIR='%s' GIT_WORK_TREE='%s' '%s' a.txt", filepath.Join(other, ".git"), other, editor))
-	ts.waitPane(p1, "a.txt を開いた画面", func(s string) bool { return strings.Contains(s, "ONE") })
+		fmt.Sprintf("env GIT_DIR='%s' GIT_WORK_TREE='%s' '%s' '%s'", filepath.Join(other, ".git"), other, editor, msg))
+	ts.waitPane(p1, "コミットのメッセージを開いた画面", func(s string) bool { return strings.Contains(s, "commit message") })
+	// バッファのファイルは作業ツリーの外なので、作業ディレクトリ（worktree）の差分を出す（PR #382 のレビューの必須 2）。
 	ts.run("send-keys", "-t", p1, "-l", " gV")
 	ts.waitPane(p1, "差分の一覧", func(s string) bool {
-		return strings.Contains(s, "git の差分 main...HEAD  2/2") && strings.Contains(s, "M  a.txt") && strings.Contains(s, "A  sub")
+		return strings.Contains(s, "git の差分 main...HEAD  3/3") && strings.Contains(s, "M  a.txt") && strings.Contains(s, "A  sub") &&
+			strings.Contains(s, "?  nested/")
 	})
 	ts.run("send-keys", "-t", p1, "-l", "sub")
-	ts.waitPane(p1, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/2") })
+	ts.waitPane(p1, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/3") })
 	ts.run("send-keys", "-t", p1, "Enter")
 	ts.waitPane(p1, "サブモジュールを断った知らせ", func(s string) bool {
 		return strings.Contains(s, "sub はサブモジュールなので見比べられません")
+	})
+	ts.run("send-keys", "-t", p1, "-l", " gV")
+	ts.waitPane(p1, "差分の一覧", func(s string) bool { return strings.Contains(s, "3/3") })
+	ts.run("send-keys", "-t", p1, "-l", "nested")
+	ts.waitPane(p1, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/3") })
+	ts.run("send-keys", "-t", p1, "Enter")
+	ts.waitPane(p1, "入れ子のリポジトリを断った知らせ", func(s string) bool {
+		return strings.Contains(s, "nested/ は追跡していない入れ子のリポジトリなので")
 	})
 	if n := len(ts.panes()); n != 2 {
 		t.Errorf("ペイン = %d, want 2", n)
@@ -422,21 +474,14 @@ func TestChangesWorktreeInTmux(t *testing.T) {
 	ts.waitPanes(1)
 }
 
-// waitNewPane は、known に無いペインができるまで待ち、その ID を返す。
-func (ts *testTmux) waitNewPane(known ...string) string {
-	ts.t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		for _, p := range ts.panes() {
-			if !slices.Contains(known, p) {
-				return p
-			}
-		}
-		if time.Now().After(deadline) {
-			ts.t.Fatalf("新しいペインが開かない: %v", ts.panes())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+// tryCapture は、ペインの画面を返す。ペインが無くなっていれば false を返す（テストを落とさない）。
+func (ts *testTmux) tryCapture(pane string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ts.bin, "-L", ts.name, "-f", "/dev/null", "capture-pane", "-p", "-t", pane) //nolint:gosec // テスト用の tmux
+	cmd.Env = ts.env
+	out, err := cmd.Output()
+	return string(out), err == nil
 }
 
 // waitPanes は、ペインの数が n になるまで待つ。

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -123,15 +124,21 @@ func (x *extension) openChanges(ctx context.Context, dir, spec string) bool {
 		_ = x.server.ShowMessage(ext.MessageWarning, "端末多重化ソフト（tmux、herdr）の外では比べる元と見比べられません（見比べには 2 つ目の編集の client が要ります）")
 		return false
 	}
-	if dir == "" {
-		dir = st.WorkDir
-	}
-	if dir == "" {
+	// バッファのファイルが作業ツリーの外（git commit の COMMIT_EDITMSG、/tmp のメモ）なら、作業ディレクトリのリポジトリで試し直す
+	// （diffview.nvim と同じく、バッファから決められなければ作業ディレクトリで決める。PR #382 のレビューの必須 2）。
+	fallback := st.WorkDir
+	if fallback == "" {
 		if d, werr := os.Getwd(); werr == nil {
-			dir = d
+			fallback = d
 		}
 	}
+	if dir == "" {
+		dir = fallback
+	}
 	cmp, err := resolveBase(ctx, dir, spec)
+	if _, outside := errors.AsType[*notWorkTreeError](err); outside && fallback != "" && fallback != dir {
+		cmp, err = resolveBase(ctx, fallback, spec)
+	}
 	if err != nil {
 		_ = x.server.ShowMessage(ext.MessageWarning, err.Error())
 		return false
@@ -236,7 +243,7 @@ func (p *changesPicker) component(query string) ext.ViewComponent {
 			continue
 		}
 		c := p.changes[i]
-		it := ext.ViewItem{ID: strconv.Itoa(i), Label: label, Highlights: spans, File: &ext.ViewFile{Path: p.cmp.absPath(c.path)}}
+		it := ext.ViewItem{ID: strconv.Itoa(i), Label: label, Highlights: spans, File: &ext.ViewFile{Path: p.cmp.absPath(c.path), Dir: c.nested}}
 		if c.kind != kindDeleted && !c.submodule {
 			it.Preview = &ext.ViewPreview{Path: p.cmp.absPath(c.path)}
 		}
@@ -264,9 +271,15 @@ func (p *changesPicker) choose(id string) {
 // 比べる元に無いファイル（足した、未追跡）は、空のバッファと見比べる。作業ツリーに無いファイル（消した）は、比べる元の版だけをタブに開く。
 // サブモジュールとシンボリックリンクは開かずに知らせる。
 //
-// 前に一覧から開いた比べる元の版のバッファは、次のファイルを開いた後に閉じる（buffer/dispose）。見比べのペインの client は、
+// 前に一覧から開いた比べる元の版のバッファは、閉じてから次の見比べを始める（buffer/dispose）。見比べのペインの client は、
 // そのバッファだけをタブに持つので一緒に終わり、ファイルを選ぶたびにペインが増えない（diffview.nvim が 1 つの画面で見比べるファイルを替えるのに当たる）。
-// 開いてから閉じるのは、操作中の client が前の見比べのペインのとき（そこから一覧を開いたとき）に、client のタブを無くして終わらせないためである。
+//
+// 閉じる時機は、操作中の client のカーソルのあるバッファがその版かどうかで分ける。
+//
+//   - その版のとき（見比べのペインから一覧を開いた。選んだ後はカーソルがそのペインへ移るので、続けて選ぶとこちらになる）は、ファイルを開く前に閉じる。
+//     そのペインの client が終わり、ファイルは左のペインの client のタブに開く。開いた後に閉じると、ファイルがそのペインの client のタブになり、
+//     そのペインがもう一度分割されてペインが増える（PR #382 のレビューの必須 1）
+//   - それ以外（左のペインから開いた）は、ファイルを開いた後に閉じる
 //
 // req: FR-251, FR-252
 func (x *extension) openChange(ctx context.Context, cmp comparison, c change) {
@@ -276,9 +289,17 @@ func (x *extension) openChange(ctx context.Context, cmp comparison, c change) {
 	case c.submodule:
 		_ = x.server.ShowMessage(ext.MessageWarning, c.path+" はサブモジュールなので見比べられません")
 		return
+	case c.nested:
+		_ = x.server.ShowMessage(ext.MessageWarning, c.path+" は追跡していない入れ子のリポジトリなので見比べられません")
+		return
 	case c.symlink:
 		_ = x.server.ShowMessage(ext.MessageWarning, c.path+" はシンボリックリンクなので見比べられません")
 		return
+	}
+	if x.lastBase != 0 {
+		if st, err := x.server.EditorState(ctx); err == nil && st.Buffer == x.lastBase {
+			x.disposeLastBase(ctx)
+		}
 	}
 	base, name := "", c.path
 	if c.old != "" {

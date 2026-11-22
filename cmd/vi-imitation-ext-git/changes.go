@@ -50,7 +50,7 @@ func resolveBase(ctx context.Context, dir, spec string) (comparison, error) {
 	}
 	top, err := git(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return comparison{}, fmt.Errorf("%s は git の作業ツリーの中ではありません（%w）", dir, err)
+		return comparison{}, &notWorkTreeError{dir: dir, err: err}
 	}
 	root := strings.TrimSpace(string(top))
 	if _, err = revParse(ctx, root, "HEAD"); err != nil {
@@ -89,6 +89,19 @@ func resolveBase(ctx context.Context, dir, spec string) (comparison, error) {
 	return cmp, nil
 }
 
+// notWorkTreeError は、ディレクトリが git の作業ツリーの中でないこと（リポジトリの外、.git の中、bare のリポジトリ）を表す。
+// 呼び出し側は、バッファのディレクトリでこの誤りになったら、作業ディレクトリで試し直す。
+type notWorkTreeError struct {
+	dir string
+	err error
+}
+
+func (e *notWorkTreeError) Error() string {
+	return fmt.Sprintf("%s は git の作業ツリーの中ではありません（%v）", e.dir, e.err)
+}
+
+func (e *notWorkTreeError) Unwrap() error { return e.err }
+
 // defaultBase は、defaultBases の最初に在るものと、その表示の名前を返す。
 // origin/HEAD は、指しているブランチの名前（origin/main など）で表示する。
 func defaultBase(ctx context.Context, root string) (rev, label string, ok bool) {
@@ -116,7 +129,11 @@ func mergeBase(ctx context.Context, cmp comparison, left, label string) (compari
 	}
 	out, err := git(ctx, cmp.root, "merge-base", left, "HEAD")
 	if err != nil {
-		return comparison{}, fmt.Errorf("%s と HEAD の共通の祖先がありません", left)
+		// 浅いクローンでは、履歴を切った所より前の共通の祖先が見えない。原因が分かるように案内する（PR #382 のレビューの推奨 1）。
+		if sh, serr := git(ctx, cmp.root, "rev-parse", "--is-shallow-repository"); serr == nil && strings.TrimSpace(string(sh)) == "true" {
+			return comparison{}, fmt.Errorf("%s と HEAD の共通の祖先が見つかりません（浅いクローンなので、git fetch --unshallow で履歴を取ってから打ち直してください）", label)
+		}
+		return comparison{}, fmt.Errorf("%s と HEAD の共通の祖先がありません", label)
 	}
 	cmp.rev, cmp.label = strings.TrimSpace(string(out)), label+"...HEAD"
 	return cmp, nil
@@ -161,13 +178,22 @@ type change struct {
 	submodule bool
 	// symlink は、どちらかの側がシンボリックリンクであることを表す。
 	symlink bool
+	// nested は、追跡していない入れ子のリポジトリ（git ls-files --others が末尾に / を付けて出すディレクトリ）であることを表す。
+	nested bool
+	// oldMode と newMode は、両側にあるファイルのモードが違うとき（chmod +x など）の、比べる元と作業ツリーのモードである。同じなら空である。
+	oldMode, newMode string
 }
 
 // label は、一覧の行の表示の文字列である。先頭の 3 バイトは変更の種類と空白で、その後が絞り込みに使うパスである（labelPrefix）。
+// モードが変わったファイルは、末尾に「（モード 100644 -> 100755）」を足す。中身が同じでも、見比べて違いが無い理由が分かるようにする
+// （PR #382 のレビューの推奨 3）。
 func (c change) label() string {
 	p := c.path
 	if c.kind == kindRenamed {
 		p = c.old + " -> " + c.path
+	}
+	if c.oldMode != "" {
+		p += "（モード " + c.oldMode + " -> " + c.newMode + "）"
 	}
 	return string(c.kind) + "  " + p
 }
@@ -197,7 +223,8 @@ func listChanges(ctx context.Context, cmp comparison) ([]change, error) {
 	}
 	for p := range bytes.SplitSeq(others, []byte{0}) {
 		if len(p) > 0 {
-			out = append(out, change{kind: kindUntracked, path: string(p)})
+			// 入れ子のリポジトリ（サブモジュールとして登録していないもの）は、末尾に / を付けたディレクトリとして出る。
+			out = append(out, change{kind: kindUntracked, path: string(p), nested: bytes.HasSuffix(p, []byte("/"))})
 		}
 	}
 	slices.SortStableFunc(out, func(a, b change) int { return strings.Compare(a.path, b.path) })
@@ -248,6 +275,11 @@ func parseRaw(raw []byte) ([]change, error) {
 		default:
 			// M と、索引の衝突（U）、不明（X）は、両側にあるファイルの変更として扱う。
 			c.kind, c.path, c.old = kindModified, string(fields[i]), string(fields[i])
+		}
+		if c.kind == kindModified || c.kind == kindRenamed {
+			if meta[0] != meta[1] && meta[0] != "000000" && meta[1] != "000000" {
+				c.oldMode, c.newMode = meta[0], meta[1]
+			}
 		}
 		i += need
 		out = append(out, c)
