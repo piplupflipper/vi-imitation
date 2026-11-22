@@ -102,16 +102,10 @@ func (h *host) notify(method string, params any) {
 // 後の ping の応答より前に書かれ、rpc.Conn は届いた順に 1 件ずつハンドラーを呼ぶので、記録も終わっている。
 func (h *host) sync() {
 	h.t.Helper()
-	h.syncWithin(testTimeout)
-}
-
-// syncWithin は、sync と同じく待つ。送る goroutine を待つ時間の上限を wait にする。
-func (h *host) syncWithin(wait time.Duration) {
-	h.t.Helper()
 	if err := h.call(ext.MethodPing, nil, nil); err != nil {
 		h.t.Fatalf("ping: %v", err)
 	}
-	deadline := time.Now().Add(wait)
+	deadline := time.Now().Add(testTimeout)
 	for !h.x.idle() {
 		if time.Now().After(deadline) {
 			h.t.Fatal("送る goroutine が送り終えない")

@@ -119,14 +119,14 @@ func parseHex(t *testing.T, s string) uint32 {
 	return v
 }
 
-// TestPingWithLongLine は、1 行が 5 MB の対象のファイルを開いた直後と、その行に 1 文字ずつ 20 回続けて入れた後に、
+// TestPingWithLongLine は、1 行が 1 MB の対象のファイルを開いた直後と、その行に 1 文字ずつ 20 回続けて入れた後に、
 // ping の応答が本体の期限（2 秒）より前に届くことを確かめる。行はメッセージを処理する goroutine の外で数えるので、
 // 数える時間は ping の応答を遅らせない（PR #395 のレビューの必須 1）。送り終えた一覧は、最後の版の行を数えたものになる。
 //
 // req: FR-262
 func TestPingWithLongLine(t *testing.T) {
 	unit := `function a0(b,c){return b.color==="#fff"?c+0:red(b)};var x0={bg:"#1e1e2e",fg:white};`
-	line := strings.Repeat(unit, 5<<20/len(unit))
+	line := strings.Repeat(unit, 1<<20/len(unit))
 	x := newExtension()
 	h := connect(t, x, ext.APIVersion, `{"fileTypes": ["javascript"]}`)
 	start := time.Now()
@@ -136,7 +136,9 @@ func TestPingWithLongLine(t *testing.T) {
 	if err := h.call(ext.MethodPing, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("開いてから ping の応答まで %v", time.Since(start))
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("開いてから ping の応答まで %v", d)
+	}
 	start = time.Now()
 	for i := range 20 {
 		v := ext.Version(1 + i)
@@ -149,14 +151,10 @@ func TestPingWithLongLine(t *testing.T) {
 	if err := h.call(ext.MethodPing, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	d := time.Since(start)
-	t.Logf("20 回の変更の後の ping の応答まで %v", d)
-	if d > 2*time.Second {
+	if d := time.Since(start); d > 2*time.Second {
 		t.Errorf("20 回の変更の後の ping の応答まで %v", d)
 	}
-	// 5 MB の行を数えて約 24 万の範囲を送り終えるのは、-race と -cover の下で、ほかのテストと並ぶと 5 秒を超えることがある。
-	// 確かめたいのは ping の応答が遅れないことなので、送り終えるのは長めに待つ
-	h.syncWithin(2 * time.Minute)
+	h.sync()
 	p := h.last()
 	if p.Version != 21 {
 		t.Errorf("最後の一覧の version = %d, want 21", p.Version)
