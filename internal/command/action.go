@@ -263,11 +263,8 @@ func actToggleCase(s *State, cmd editcmd.Command) error {
 		return nil
 	}
 	end, _ := advanceChars(line, s.cursor.Byte, max(cmd.Count, 1))
-	text := line[s.cursor.Byte:end]
-	if t := mapCase(text, toggleCase); t != text {
-		if err := s.apply(buffer.Edit{Range: buffer.Range{Start: s.cursor, End: pos(l, end)}, Text: t}); err != nil {
-			return err
-		}
+	if err := s.apply(caseEdits(s.cursor, line[s.cursor.Byte:end], toggleCase)...); err != nil {
+		return err
 	}
 	s.setCursorNormal(pos(l, end))
 	return nil
@@ -280,21 +277,26 @@ func actToggleCase(s *State, cmd editcmd.Command) error {
 // ただし、次の行が空か ')' で始まる場合、それまでにつないだテキストが空の場合、前の行がタブで終わる場合は入れない。
 // 前の行がスペースで終わる場合はスペースを足さない。'joinspaces' がオンなので、'.'、'?'、'!' の後には 2 つ入れる。
 // カーソルは、最後につないだ箇所（入れたスペースの始まり）へ移る。
+//
+// 編集は、つなぐ箇所ごとに、前の行の行末から次の行の先頭の空白の後ろまでを入れるスペースで置き換えるものにし、行の中身は置き換えない。
+// 行の全体を 1 つの編集で置き換えると、行の中の拡張機能の仮想テキスト、診断、印の位置が、ずらすときに範囲の端へ寄るためである
+// （PR #378 のレビューの推奨 1）。編集は前から順に適用するので、どの箇所も、それまでにつないだ 1 行の行末と、その次の行の間になる。
 func actJoin(s *State, cmd editcmd.Command) error {
 	l := s.cursor.Line
 	if l == s.lastLine() {
 		return failf("cannot join the last line")
 	}
 	joins := min(max(cmd.Count, 2)-1, s.lastLine()-l)
-	var sb strings.Builder
 	first := s.line(l)
-	sb.WriteString(first)
+	joined := len(first) // それまでにつないだ 1 行の長さ
 	end1, end2 := lastTwo(first)
 	col := 0
+	eds := make([]buffer.Edit, 0, joins)
 	for i := 1; i <= joins; i++ {
-		next := strings.TrimLeft(s.line(l+i), " \t")
+		raw := s.line(l + i)
+		next := strings.TrimLeft(raw, " \t")
 		spaces := 0
-		if next != "" && next[0] != ')' && sb.Len() != 0 && end1 != '\t' {
+		if next != "" && next[0] != ')' && joined != 0 && end1 != '\t' {
 			if end1 == ' ' {
 				end1 = end2
 			} else {
@@ -304,16 +306,18 @@ func actJoin(s *State, cmd editcmd.Command) error {
 				spaces++
 			}
 		}
-		col = sb.Len()
-		sb.WriteString(strings.Repeat(" ", spaces))
-		sb.WriteString(next)
+		col = joined
+		eds = append(eds, buffer.Edit{
+			Range: buffer.Range{Start: pos(l, joined), End: pos(l+1, len(raw)-len(next))},
+			Text:  strings.Repeat(" ", spaces),
+		})
+		joined += spaces + len(next)
 		end1, end2 = 0, 0
 		if next != "" {
 			end1, end2 = lastTwo(next)
 		}
 	}
-	rng := buffer.Range{Start: pos(l, 0), End: s.lineEnd(l + joins)}
-	if err := s.apply(buffer.Edit{Range: rng, Text: sb.String()}); err != nil {
+	if err := s.apply(eds...); err != nil {
 		return err
 	}
 	s.setCursorNormal(pos(l, col))

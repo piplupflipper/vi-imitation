@@ -54,8 +54,8 @@ func TestNewDecorationsLines(t *testing.T) {
 		t.Error("範囲の外の行に範囲がある")
 	}
 	// 行をまたぐ範囲の間の行の名前を先に数える（1 回目の走査で区間を集めるため）。
-	if !slices.Equal(d.styles, []string{StyleComment, StyleString, StyleKeyword, StyleType}) {
-		t.Errorf("styles = %q", d.styles)
+	if !slices.Equal(d.styles, []decoStyle{{name: StyleComment}, {name: StyleString}, {name: StyleKeyword}, {name: StyleType}}) {
+		t.Errorf("styles = %+v", d.styles)
 	}
 }
 

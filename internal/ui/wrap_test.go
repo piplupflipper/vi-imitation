@@ -154,59 +154,59 @@ func TestWrapper(t *testing.T) {
 		{"012345678\tx", 2}, // タブは 9 列目から 16 列目の手前まで。10 列目で分かれる
 	}
 	for _, tt := range tests {
-		if got := w.rows(tt.s); got != tt.rows {
+		if got := w.rows(0, tt.s); got != tt.rows {
 			t.Errorf("rows(%q) = %d, want %d", tt.s, got, tt.rows)
 		}
 	}
 	s := "aあいうえおか"
 	// か（10 バイト目からの 2 文字目の全角の後）: "a" と 4 文字で 9 列、"お" は送られて 2 行目の 0 列。
-	if p := w.cursor(s, 13, false); p != (wrapPos{row: 1, x: 0}) {
+	if p := w.cursor(0, s, 13, false); p != (wrapPos{row: 1, x: 0}) {
 		t.Errorf("cursor(お) = %+v, want 1,0", p)
 	}
 	// 表示の列は ">" の列（9 列目）も数えるので、お は 10 列目、か は 12 列目である。">" の列は、その後の お の列として数える。
 	l := WrapLines{w: w}
 	for _, tt := range []struct{ off, col int }{{0, 0}, {10, 7}, {13, 10}, {16, 12}, {len(s), 14}} {
-		if c := l.Column(s, tt.off); c != tt.col {
+		if c := l.Column(0, s, tt.off); c != tt.col {
 			t.Errorf("Column(%d) = %d, want %d", tt.off, c, tt.col)
 		}
 	}
 	for _, tt := range []struct{ col, off int }{{8, 10}, {9, 13}, {10, 13}, {11, 13}, {12, 16}, {100, 16}} {
-		if b := l.ByteAt(s, tt.col); b != tt.off {
+		if b := l.ByteAt(0, s, tt.col); b != tt.off {
 			t.Errorf("ByteAt(%d) = %d, want %d", tt.col, b, tt.off)
 		}
 	}
 	// ">" の後のタブの幅も、">" の列を数えた列で決める（nvim 0.12.5 と同じ。PR #310 のレビューの必須 3）。
 	// b は 12 列目、タブは 13 列目から 16 列目の手前までの 3 列で、c は 16 列目（2 行目の 6 列目）。
 	padTab := "aあいうえおb\tc"
-	if p := w.cursor(padTab, len(padTab)-1, false); p != (wrapPos{row: 1, x: 6}) {
+	if p := w.cursor(0, padTab, len(padTab)-1, false); p != (wrapPos{row: 1, x: 6}) {
 		t.Errorf("cursor(c) = %+v, want 1,6", p)
 	}
 	tab := "012345678\tx"
 	// タブの最後のセル（15 列目）は 2 行目の 5 列目。x は 16 列目で 2 行目の 6 列目。
-	if p := w.cursor(tab, 9, true); p != (wrapPos{row: 1, x: 5}) {
+	if p := w.cursor(0, tab, 9, true); p != (wrapPos{row: 1, x: 5}) {
 		t.Errorf("cursor(タブ, 最後のセル) = %+v, want 1,5", p)
 	}
-	if p := w.cursor(tab, 9, false); p != (wrapPos{row: 0, x: 9}) {
+	if p := w.cursor(0, tab, 9, false); p != (wrapPos{row: 0, x: 9}) {
 		t.Errorf("cursor(タブ, 最初のセル) = %+v, want 0,9", p)
 	}
-	if c := l.Column(tab, 9); c != 15 {
+	if c := l.Column(0, tab, 9); c != 15 {
 		t.Errorf("Column(タブ) = %d, want 15（最後のセル）", c)
 	}
 
 	sb := wrapper{width: 10, sbw: 2, rule: lineRule{tabStop: 8}}
 	// 続きの行は 2 列目から 8 列ずつ。表示の列は記号の列も数える。
-	if got := sb.rows("0123456789abcdefghij"); got != 3 {
+	if got := sb.rows(0, "0123456789abcdefghij"); got != 3 {
 		t.Errorf("記号ありの rows = %d, want 3", got)
 	}
-	if p := sb.cursor("0123456789abcdefghij", 18, false); p != (wrapPos{row: 2, x: 2}) {
+	if p := sb.cursor(0, "0123456789abcdefghij", 18, false); p != (wrapPos{row: 2, x: 2}) {
 		t.Errorf("記号ありの cursor(18) = %+v, want 2,2", p)
 	}
-	if c := (WrapLines{w: sb}).Column("0123456789abcdefghij", 18); c != 22 {
+	if c := (WrapLines{w: sb}).Column(0, "0123456789abcdefghij", 18); c != 22 {
 		t.Errorf("記号ありの Column(18) = %d, want 22", c)
 	}
 	// 記号の後のタブの幅も、記号の列を数えた列で決める（nvim 0.12.5 の showbreak=>> と同じ）。
 	// 2 行目の a は 12 列目から、タブは 15 列目から 16 列目の手前までの 1 列、Y は 16 列目（2 行目の 6 列目）。
-	if p := sb.cursor("0123456789aaa\tY", 14, false); p != (wrapPos{row: 1, x: 6}) {
+	if p := sb.cursor(0, "0123456789aaa\tY", 14, false); p != (wrapPos{row: 1, x: 6}) {
 		t.Errorf("記号の後のタブ: cursor(Y) = %+v, want 1,6", p)
 	}
 }

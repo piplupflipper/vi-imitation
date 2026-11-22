@@ -315,7 +315,7 @@ func TestCountGiven(t *testing.T) {
 // wideColumns は、ASCII 以外の文字の幅を 2 として数える、テスト用の表示の列の数え方である。
 type wideColumns struct{}
 
-func (wideColumns) Column(line string, byteOff int) int {
+func (wideColumns) Column(_ int, line string, byteOff int) int {
 	col := 0
 	for _, r := range line[:byteOff] {
 		col += width(r)
@@ -323,7 +323,7 @@ func (wideColumns) Column(line string, byteOff int) int {
 	return col
 }
 
-func (wideColumns) ByteAt(line string, col int) int {
+func (wideColumns) ByteAt(_ int, line string, col int) int {
 	c := 0
 	for off, r := range line {
 		if c+width(r) > col {

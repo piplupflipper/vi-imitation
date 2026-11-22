@@ -303,7 +303,7 @@ func (s *State) visualRegion() region {
 func (s *State) visualCursor() buffer.Position {
 	line := s.line(s.cursor.Line)
 	if line != "" && s.cursor.Byte == lastCharStart(line) &&
-		(s.want == target.WantEOL || s.want >= s.columns().Column(line, len(line))) {
+		(s.want == target.WantEOL || s.want >= s.columns().Column(s.cursor.Line, line, len(line))) {
 		return pos(s.cursor.Line, len(line))
 	}
 	return s.cursor

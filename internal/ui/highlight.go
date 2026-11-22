@@ -16,6 +16,9 @@ func (d *drawer) highlightSpans(rows int) {
 	top := d.r.top
 	for i, hl := range d.f.Highlights {
 		a := d.theme.attr(hl.Style)
+		if hl.Attr != nil {
+			a = a.Over(*hl.Attr)
+		}
 		if a == (Attr{}) {
 			continue
 		}

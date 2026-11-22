@@ -60,6 +60,7 @@ func (e *Editor) commitChange(bs *bufferState, ch buffer.Change) {
 	for id, ss := range bs.signs {
 		bs.signs[id] = shiftSigns(ss, ch.Edits)
 	}
+	bs.shiftAllVirtualTexts(ch)
 	e.shiftJumps(bs, ch)
 	bs.history = append(bs.history, ch)
 	if n := len(bs.history); n > maxHistory {
@@ -152,6 +153,7 @@ func shiftSigns(ss []ext.Sign, eds []buffer.Edit) []ext.Sign {
 func (e *Editor) clearWithheld(bs *bufferState) {
 	clear(bs.diagnostics)
 	clear(bs.signs)
+	bs.clearVirtualTexts()
 	if len(bs.decorations) == 0 {
 		return
 	}
@@ -324,11 +326,20 @@ func (e *Editor) rebuildDecorations(bs *bufferState) {
 }
 
 // buildDecorations は、src の一覧を合わせた、lines 行のテキストの ui.Decorations を作る。イベントループの外で呼ぶ。
+// 範囲に直に付けた色（ext.Decoration.Attr。FR-230）は、名前の色の上に重ねる色（ui.Highlight.Attr）にする。
+// 表は 2 回なめる（ui.NewDecorationsSeq）ので、色を読んだ結果は 1 回目に覚えて 2 回目にも使う。
+//
+// req: FR-230
 func buildDecorations(src []decoSource, lines int) *ui.Decorations {
+	attrs := map[*ext.TextAttr]*ui.Attr{}
 	return ui.NewDecorationsSeq(func(yield func(ui.Highlight) bool) {
 		for _, s := range src {
 			for _, d := range s.decs {
-				if !yield(ui.Highlight{Range: fromExtRange(d.Range), Style: d.Style}) {
+				h := ui.Highlight{Range: fromExtRange(d.Range), Style: d.Style}
+				if d.Attr != nil {
+					h.Attr = cachedAttr(attrs, d.Attr)
+				}
+				if !yield(h) {
 					return
 				}
 			}
@@ -370,6 +381,7 @@ func (e *Editor) clearExtension(extID string) {
 	for _, bs := range e.bufs {
 		delete(bs.diagnostics, extID)
 		delete(bs.signs, extID)
+		bs.removeVirtualTexts(extID)
 		if _, ok := bs.decorations[extID]; ok {
 			bs.removeDecorations(extID)
 			e.rebuildDecorations(bs)

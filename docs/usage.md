@@ -596,6 +596,7 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 色を付ける対象の名前は次のとおりである。
 構文の色の 10 個の名前は、拡張機能（tree-sitter など）が `decoration/set` の `style` で使う名前と同じで、前に `syntax.` を付けない。
 表に無い名前の範囲には色を付けない。
+拡張機能は、名前の色の上に、拡張機能が決めた色（インレイヒントの薄い色、色コードの文字の範囲のその色など）を直に重ねることもある。直に重ねた色は `colors` では変えられない（拡張機能の設定で変える）。
 
 | 名前 | 対象 | 既定 |
 |---|---|---|
@@ -3007,6 +3008,59 @@ func insert(_ context.Context, _ *server.Buffer, p *ext.CommandExecuteParams) (e
 ハンドラーは、`server.New` で作った `Server` に、`Command`、`Motion`、`TextObject`、`Operator`（とその `Async` の版）で操作の ID ごとに登録し、`Run` を呼ぶ。
 拡張機能から本体へ送るもの（メッセージ、編集、ポップアップ、診断など）は `Server` のメソッド（`ShowMessage`、`Edit`、`OpenPopup`、`SetDiagnostics` など）で送る。
 `ext/server` の関数とメソッドの一覧は `vi-imitation --docs script` に、使える標準ライブラリのパッケージと記号は `vi-imitation --docs script-symbols <import のパス>`（`vi-imitation --docs script-symbols strings`）にある。
+
+### 色と仮想テキストを出す
+
+範囲に色を付けるのは `SetDecorations`、本文に無い文字列（仮想テキスト）を出すのは `SetVirtualTexts` である（拡張機能 API の 0.19.0 から）。
+どちらもバッファ全体の一覧を毎回送り、同じ拡張機能とバッファの前の一覧を置き換える。空の一覧で消える。
+色は、色を付ける対象の名前（`Style`。「見た目の設定」の表の名前）と、直に付ける色（`Attr`。`ext.TextAttr` の `Fg`、`Bg`、`Sp` の `"#rrggbb"` と、`Bold` などの飾り）のどちらか、または両方で付ける。両方なら名前の色の上に直の色を重ねる。
+
+仮想テキストの置き方（`Placement`）は次の 3 つで、Neovim の `nvim_buf_set_extmark` の `virt_text_pos` と同じ働きをする。
+
+| 置き方 | 働き |
+|---|---|
+| `ext.VirtualTextInline` | 位置の文字の前に差し込み、後ろの本文を右へずらす（インレイヒント）。カーソルは仮想テキストの上に止まらず、`j` と `k` の列は仮想テキストの列も数える |
+| `ext.VirtualTextEOL` | 行末の後ろに 1 列空けて出す（行末の注記）。画面の右の端で切る |
+| `ext.VirtualTextOverlay` | 位置の文字の上に、本文をずらさずに重ねる（行頭の空白の上の罫線）。画面の右の端で切る |
+
+仮想テキストの位置は、送った後の編集に合わせて本体がずらす（診断と同じ）。
+次の例は、`:=` の前にインレイヒント `: int` を、`//` で始まる行の行末に注記を、4 つの空白で始まる行の先頭に罫線を出し、`#rrggbb` の文字の範囲をその色で塗るコマンド `vtdemo.show` である（宣言ファイルは「スクリプトの拡張機能」の例と同じ形で、`id` と `args` とコマンドの ID を替える）。
+
+```go
+s.Command("vtdemo.show", func(_ context.Context, b *server.Buffer, p *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
+	var vts []ext.VirtualText
+	var decs []ext.Decoration
+	hint := &ext.TextAttr{Fg: "#8b80a8", Italic: true}
+	for i := 0; i < b.LineCount(); i++ {
+		line := b.Line(i)
+		if j := strings.Index(line, " :="); j >= 0 {
+			vts = append(vts, ext.VirtualText{Position: ext.Position{Line: i, Byte: j}, Placement: ext.VirtualTextInline,
+				Chunks: []ext.VirtualTextChunk{{Text: ": int", Attr: hint}}})
+		}
+		if strings.HasPrefix(line, "//") {
+			vts = append(vts, ext.VirtualText{Position: ext.Position{Line: i, Byte: len(line)}, Placement: ext.VirtualTextEOL,
+				Chunks: []ext.VirtualTextChunk{{Text: "eol note", Style: "comment"}}})
+		}
+		if strings.HasPrefix(line, "    ") {
+			vts = append(vts, ext.VirtualText{Position: ext.Position{Line: i, Byte: 0}, Placement: ext.VirtualTextOverlay,
+				Chunks: []ext.VirtualTextChunk{{Text: "│", Attr: &ext.TextAttr{Fg: "#ff8800"}}}})
+		}
+		for k := 0; k+7 <= len(line); k++ {
+			if line[k] == '#' && ext.IsHexColor(line[k:k+7]) {
+				decs = append(decs, ext.Decoration{Range: ext.Range{Start: ext.Position{Line: i, Byte: k}, End: ext.Position{Line: i, Byte: k + 7}},
+					Attr: &ext.TextAttr{Bg: line[k : k+7]}})
+			}
+		}
+	}
+	if err := s.SetVirtualTexts(ext.VirtualTextSetParams{Buffer: b.ID(), Version: b.Version(), VirtualTexts: vts}); err != nil {
+		return ext.CommandExecuteResult{}, err
+	}
+	if err := s.SetDecorations(ext.DecorationSetParams{Buffer: b.ID(), Version: b.Version(), Decorations: decs}); err != nil {
+		return ext.CommandExecuteResult{}, err
+	}
+	return ext.CommandExecuteResult{OK: true}, nil
+})
+```
 
 ### yaegi の制限
 

@@ -237,12 +237,19 @@ func (e *Editor) lineWrap() bool {
 // プレビューに開いているバッファを出すときも、そのバッファの State の表示領域でなく、描く先（プレビュー）で決める。
 // 記号を描くときは、タブ文字の上のカーソルの列と望みの列が、タブの最初の列になる（ui.Columns の doc）。
 //
-// req: FR-161, FR-170
+// 拡張機能の仮想テキスト（virtualText/set。FR-231）も、空白の記号と同じく client の画面のバッファの表示領域にだけ描き、
+// その表示領域の State の列だけを仮想テキストの列で数える（ポップアップとプレビューの中には描かない。FR-234）。
+//
+// req: FR-161, FR-170, FR-234
 func (e *Editor) lineLayout(bs *bufferState, onScreen bool) ui.LineLayout {
-	return ui.LineLayout{
+	l := ui.LineLayout{
 		TabStop:    bs.tabWidth(),
 		Whitespace: onScreen && e.options.Get(option.WhitespaceShow).Bool(),
 	}
+	if onScreen {
+		l.Virtual = bs.virtView
+	}
+	return l
 }
 
 // onScreen は、State st の表示領域が client の画面のバッファの表示領域（viewport）かを返す（lineLayout の onScreen）。
@@ -307,9 +314,9 @@ func (s screenLines) BreakWidth() int {
 }
 
 // Rows は、ui.WrapLines.Rows である。
-func (s screenLines) Rows(line string) int {
+func (s screenLines) Rows(n int, line string) int {
 	l, _ := s.lines()
-	return l.Rows(line)
+	return l.Rows(n, line)
 }
 
 // wrapColumns は、State の望みの列の数え方（command.State.Columns）である。行を折り返して数えるとき（screenLines）は
@@ -331,19 +338,19 @@ func (c wrapColumns) plain() ui.Columns {
 // Column は、target.Columns の Column である。
 //
 // req: FR-161
-func (c wrapColumns) Column(line string, byteOff int) int {
+func (c wrapColumns) Column(n int, line string, byteOff int) int {
 	if l, ok := c.sl.lines(); ok {
-		return l.Column(line, byteOff)
+		return l.Column(n, line, byteOff)
 	}
-	return c.plain().Column(line, byteOff)
+	return c.plain().Column(n, line, byteOff)
 }
 
 // ByteAt は、target.Columns の ByteAt である。
-func (c wrapColumns) ByteAt(line string, col int) int {
+func (c wrapColumns) ByteAt(n int, line string, col int) int {
 	if l, ok := c.sl.lines(); ok {
-		return l.ByteAt(line, col)
+		return l.ByteAt(n, line, col)
 	}
-	return c.plain().ByteAt(line, col)
+	return c.plain().ByteAt(n, line, col)
 }
 
 // hitEnter は、改行を含むメッセージを出していて、Vim の hit-enter の問いと同じくキーを待っているかを返す。

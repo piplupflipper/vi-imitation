@@ -36,6 +36,9 @@ type LineLayout struct {
 	// "whitespace." で始まる名前で決まる。true なら、タブの上のカーソルと望みの列はタブの最初の列になり、タブ文字の記号
 	// （SymbolWhitespaceTab）が空ならタブ文字を ^I の 2 列で数える。
 	Whitespace bool
+	// Virtual は、行に出す仮想テキスト（拡張機能の virtualText/set。FR-231〜FR-234。virtual.go）である。nil なら出さない。
+	// inline の仮想テキストは行の文字と同じく列を占めるので、描画、望みの列、折り返しの数え方のどれも、この値で列を数える。
+	Virtual *VirtualTexts
 }
 
 // lineRule は、LineLayout と記号の対応から作った、行の文字を画面の列に並べる規則である。
@@ -52,11 +55,13 @@ type lineRule struct {
 	space, lead, trail, nbsp string
 	// eol は、list のときの行末の記号（SymbolWhitespaceEOL）である。空なら描かない。
 	eol string
+	// virt は、行に出す仮想テキスト（LineLayout.Virtual）である。行の文字は walk で並べる。
+	virt *VirtualTexts
 }
 
 // newLineRule は、並べ方 l で規則を作る。symbol は記号の名前から文字列を引く関数で、l.Whitespace のときだけ呼ぶ。
 func newLineRule(l LineLayout, symbol func(string) string) lineRule {
-	m := lineRule{tabStop: l.TabStop, list: l.Whitespace}
+	m := lineRule{tabStop: l.TabStop, list: l.Whitespace, virt: l.Virtual}
 	if !m.list {
 		return m
 	}
@@ -74,16 +79,21 @@ func newLineRule(l LineLayout, symbol func(string) string) lineRule {
 // glyph は、nextGlyph と同じく、行 s の off から始まる 1 文字を列 col に置いた配置を返す。
 // 空白の記号を描くとき（m.list）は、タブ文字を、記号で描く glyphWhitespace（幅はタブ幅のまま）にするか、記号が空なら ^I の glyphSpecial（2 列）にする。
 // どちらも glyphTab ではないので、カーソルと望みの列はタブの最初の列になる（Vim 9.1 の getvcol が 'list' のときに行う扱い）。
-func (m lineRule) glyph(s string, off, col int) glyph {
+func (m *lineRule) glyph(s string, off, col int) glyph {
 	g := nextGlyph(s, off, col, tabStopOr(m.tabStop))
 	if g.kind == glyphTab && m.list {
-		if m.tab == "" {
-			g.kind, g.text, g.width = glyphSpecial, "^I", 2
-		} else {
-			g.kind, g.text = glyphWhitespace, m.tab
-		}
+		m.listTab(&g)
 	}
 	return g
+}
+
+// listTab は、空白の記号を描くとき（m.list）のタブ文字 g を、glyph の doc の形に替える。
+func (m *lineRule) listTab(g *glyph) {
+	if m.tab == "" {
+		g.kind, g.text, g.width = glyphSpecial, "^I", 2
+	} else {
+		g.kind, g.text = glyphWhitespace, m.tab
+	}
 }
 
 // eolCell は、行を折り返すときに、行末の 1 セルを見た目の行の数に数えるかである（Vim の plines_win_nofold の 'list' の扱い）。

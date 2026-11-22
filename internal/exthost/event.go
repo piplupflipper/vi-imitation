@@ -17,7 +17,7 @@ import (
 //     [BufferDisposeRequest]、[DiffStartRequest]、[PaneOpenRequest]、[EditorListRequest]、[EditorExecuteRequest]、
 //     [OptionSetRequest]、[OptionGetRequest]
 //   - 拡張機能からの通知: [DecorationSet]、[MessageShow]、[DiagnosticSet]、[SignSet]、[PopupShow]、[OutputAppend]、
-//     [ViewUpdate]、[ViewClose]、[BandSet]
+//     [ViewUpdate]、[ViewClose]、[BandSet]、[VirtualTextSet]
 //   - Host が作るもの: [StateChange]、[QueryResult]
 //
 // # 拡張機能からのリクエストの扱い
@@ -187,6 +187,14 @@ type DiagnosticSet struct {
 type SignSet struct {
 	Extension string
 	Params    ext.SignSetParams
+}
+
+// VirtualTextSet は、拡張機能からの virtualText/set の通知である（基本設計 6.1 の「仮想テキスト」。FR-231）。
+// 置き方と色は Validate で確かめてある。イベントループは、診断と同じく拡張機能とバッファの組ごとに一覧を持ち、
+// Params.Version に応じてずらすか捨てる（[ext.VirtualTextSetParams]）。
+type VirtualTextSet struct {
+	Extension string
+	Params    ext.VirtualTextSetParams
 }
 
 // PopupShow は、拡張機能からの popup/show の通知である（基本設計 6.7 の表示のデータ）。
@@ -408,6 +416,7 @@ func (*DecorationSet) isEvent()         {}
 func (*MessageShow) isEvent()           {}
 func (*DiagnosticSet) isEvent()         {}
 func (*SignSet) isEvent()               {}
+func (*VirtualTextSet) isEvent()        {}
 func (*PopupShow) isEvent()             {}
 func (*OutputAppend) isEvent()          {}
 func (*StatusLineSet) isEvent()         {}

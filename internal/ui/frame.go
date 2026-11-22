@@ -63,6 +63,11 @@ type Highlight struct {
 	Range buffer.Range
 	// Style は、色の種類の名前（StyleKeyword など）である。Theme に無い名前なら色を付けない。
 	Style string
+	// Attr は、名前の色の上に直に重ねる色と飾りである（拡張機能の decoration/set の範囲の色。FR-230）。nil なら重ねない。
+	// 名前が Theme に無くても、Attr があれば Attr で色を付ける。
+	// 値でなくポインターにしたのは、数十万の範囲を NewDecorationsSeq に流すときに、1 つの範囲の写しを大きくしないためである
+	// （値にすると 10 万行の JSON の一覧で表づくりが約 1.6 倍遅くなった）。同じ色の範囲は同じ値を指してよく、描画は読むだけにする。
+	Attr *Attr
 }
 
 // Severity は、診断の重要度である。値は diagnostic/set の severity と同じ文字列である（基本設計 6.7）。

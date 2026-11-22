@@ -51,6 +51,8 @@ type topKey struct {
 	width   int    // 本文の幅
 	wrap    bool
 	rule    lineRule // 行の文字の並べ方（タブ文字の幅と空白の記号。見た目の行の数を変える）
+	// virtGen は、行の仮想テキスト（rule.virt。同じポインターのまま中身が変わる）の世代の番号である（VirtualTexts.Gen）。
+	virtGen uint64
 }
 
 // versioned は、バージョン番号を持つ Text（buffer.Buffer）である。
@@ -60,7 +62,7 @@ type versioned interface{ Version() uint64 }
 func (r *Renderer) topKeyOf(text Text, line int) topKey {
 	k := topKey{
 		ok: true, line: line, lines: text.LineCount(), rows: r.textRows(), width: r.textWidth(),
-		wrap: r.wrap, rule: r.rule,
+		wrap: r.wrap, rule: r.rule, virtGen: r.rule.virt.Gen(),
 	}
 	if v, ok := text.(versioned); ok {
 		k.version = v.Version()

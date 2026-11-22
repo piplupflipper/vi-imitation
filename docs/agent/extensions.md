@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.18.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.19.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -353,4 +353,5 @@ params と result の型の項目は、`vi-imitation --docs extension-types <型
 - `statusline/set`: 通知。params は `StatusLineSetParams`。宣言ファイルの contributes.statusline で足した部品の中身を送る。本体は、部品の ID ごとに最後に届いた中身を持ち、利用者が設定の statusline か tabline に並べた部品だけを描く。並べていない部品の中身も持つので、拡張機能は設定を知らずに送ってよい。宣言ファイルで足していない部品の ID と、他の拡張機能が足した部品の ID の通知は捨てる。拡張機能が異常で終わるか止まったら、その拡張機能の部品の中身をすべて消す（他の表示のデータと同じ）。中身はバッファに依らず、どの client のどのバッファのステータス行にも同じものを出す（仮。lualine の mrreview の状態と、本体のメモリの使用量のような、エディタ全体の状態を出す部品を想定した）。
 - `view/close`: 通知。params は `ViewCloseParams`。
 - `view/update`: 通知。params は `ViewUpdateParams`。
+- `virtualText/set`: 通知。params は `VirtualTextSetParams`。バッファの位置に、本文に無い文字列（仮想テキスト）を色付きで出す。インレイヒント（LSP の textDocument/inlayHint）、行末の注記、行頭の空白の上に重ねるブロックの範囲の罫線などに使う。一覧は、送った拡張機能とバッファの組ごとに持ち、同じ組の前の一覧だけを置き換える。空の一覧を送ると、その組の仮想テキストを消す。位置は、診断（diagnostic/set）と同じく、本体がバッファへ編集を適用するたびにその編集に合わせてずらす。Version は一覧を計算するもとにしたバージョン番号で、扱いも診断と同じである（現在より新しい番号の一覧は捨て、本体が覚えている編集より古い番号の空でない一覧も捨てる）。拡張機能が異常で終わるか止まったら、本体はその拡張機能の仮想テキストをすべて消す。古い本体（0.18.0 まで）は、知らない通知として捨てる（ログに残すだけ）ので、仮想テキストは出ない。
 <!-- generated:methods:end -->

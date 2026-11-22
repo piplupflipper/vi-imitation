@@ -93,12 +93,13 @@ func (s *State) columns() target.Columns {
 // （Vim 9.1 の getvcol() は、ノーマルモードのときだけタブ文字の最後の列をカーソルの列にする）。
 // Neovim 0.12.5 では、"\tab" の先頭の i<Down> は、下の行の先頭へ移る（#347）。
 func (s *State) updateWant() {
-	line, b := s.line(s.cursor.Line), s.cursor.Byte
+	n := s.cursor.Line
+	line, b := s.line(n), s.cursor.Byte
 	if s.mode == ModeInsert && b < len(line) && line[b] == '\t' {
-		s.want = s.columns().Column(line[:b], b)
+		s.want = s.columns().Column(n, line[:b], b)
 		return
 	}
-	s.want = s.columns().Column(line, b)
+	s.want = s.columns().Column(n, line, b)
 }
 
 // setCursorNormal は、カーソルをノーマルモードの位置に丸めて置き、望みの列を更新する。

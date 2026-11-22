@@ -67,6 +67,11 @@ type textArea struct {
 //	searchOrder                 検索の一致（search。FR-137）                  drawer.searchSpans
 //	highlightOrder + i          範囲の色（i は Frame.Highlights での位置。FR-140、FR-153） drawer.collectSpans
 //	（span の外）               選択（visual）                               drawer.attrAt が span の後に重ねる
+//	（span の外）               仮想テキスト（virtualText/set。FR-234）       drawer.drawLine、drawWrapped（virtual.go）
+//
+// 構文の色の範囲に拡張機能が直に付けた色（FR-230）は、名前の色の上に重ね、範囲と同じ構文の色の順に置く（Decorations.attr）。
+// 仮想テキストのセルには、この表のどの色も重ねず、拡張機能が付けた色だけで描く（Neovim の hl_mode の既定の replace）。
+// inline の仮想テキストは行の文字と一緒に描き、eol と overlay は行の文字と見比べの色を描いた後に上に重ねる。
 //
 // 見比べの色は構文の色より下に置き、構文の文字の色が差分の背景の色の上に出るようにする。
 // 文字の表記の色（^A などの表記の specialkey、空白の記号の whitespace、行末の記号の nontext。FR-170）は構文の色の上、診断の下に置く。

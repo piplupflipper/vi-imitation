@@ -79,7 +79,7 @@ func TestHitTestWrap(t *testing.T) {
 		}
 		if got.Line == 0 {
 			wl := r.WrapLines(LineLayout{})
-			if c := wl.ByteAt(b.Line(0), got.Col); c != min(tt.vcol, 14) {
+			if c := wl.ByteAt(0, b.Line(0), got.Col); c != min(tt.vcol, 14) {
 				t.Errorf("列 %d のバイト = %d", got.Col, c)
 			}
 		}

@@ -409,7 +409,7 @@ func (r *Renderer) placeCursor(text Text, f *Frame) cursorPlace {
 		line := min(max(f.Cursor.Line, 0), text.LineCount()-1)
 		w := r.wrapper()
 		// 行の見た目の行の数も同じ 1 回で数えて覚える（スクロールがカーソルの行の高さを数え直さないため）。
-		off, c, rows := w.cursorRows(text.Line(line), max(f.Cursor.Byte, 0), f.Mode != ModeInsert)
+		off, c, rows := w.cursorRows(line, text.Line(line), max(f.Cursor.Byte, 0), f.Mode != ModeInsert)
 		p = cursorPlace{line: line, byte: off, row: c.row, x: c.x, col: w.vcol(c)}
 		p.end = p.col + 1
 		if r.heights != nil && f.Text != nil {
@@ -433,16 +433,33 @@ type cursorMemo struct {
 }
 
 // placeColumn は、placeCursor の、行の先頭からの表示の列を求める部分である。
+// カーソルの文字の前に inline の仮想テキストがあれば、ノーマルモードとビジュアルモードでは文字の上に、インサートモードでは
+// 仮想テキストの前に置く。行末の位置も、行末の位置の仮想テキストの前に置く（Neovim 0.12.5 と同じ。FR-232）。
+//
+// req: FR-232
 func (r *Renderer) placeColumn(text Text, f *Frame) cursorPlace {
 	line := min(max(f.Cursor.Line, 0), text.LineCount()-1)
 	s := text.Line(line)
 	b := min(max(f.Cursor.Byte, 0), len(s))
-	col := 0
-	for off := 0; off < len(s); {
-		gl := r.rule.glyph(s, off, col)
+	col, gap := 0, -1
+	wk := r.rule.walk(line, s)
+	for wk.more() {
+		gl := wk.next(col)
+		if gl.virt != 0 {
+			if gap < 0 {
+				gap = col
+			}
+			if gl.off >= len(s) && b >= len(s) {
+				break
+			}
+			col += gl.width
+			continue
+		}
 		if b < gl.off+gl.size {
 			p := cursorPlace{line: line, byte: gl.off, col: gl.col, end: gl.col + 1, start: gl.col}
 			switch {
+			case f.Mode == ModeInsert && gap >= 0:
+				p.col, p.start, p.end = gap, gap, gap+1
 			case gl.kind == glyphTab && f.Mode != ModeInsert:
 				p.col = gl.col + gl.width - 1
 				p.end = p.col + 1
@@ -451,8 +468,8 @@ func (r *Renderer) placeColumn(text Text, f *Frame) cursorPlace {
 			}
 			return p
 		}
+		gap = -1
 		col += gl.width
-		off += gl.size
 	}
 	return cursorPlace{line: line, byte: len(s), col: col, end: col + 1, start: col}
 }
@@ -508,7 +525,7 @@ func (r *Renderer) height(text Text, n int) int {
 	if h, ok := r.heights[n]; ok {
 		return h
 	}
-	h := r.wrapper().rows(text.Line(n))
+	h := r.wrapper().rows(n, text.Line(n))
 	if r.heights != nil {
 		r.heights[n] = h
 	}
@@ -567,6 +584,8 @@ type drawer struct {
 	sweep sweep    // 行ごとに使い回す作業の領域
 	// spaces は、描いている行の行頭の空白と行末の空白の範囲である。空白の記号を描くとき（FR-170）だけ、prepare が行ごとに求める（look が読む）。
 	spaces lineSpaces
+	// anchors は、描いている行の overlay の仮想テキストを重ねる所を集める、行ごとに使い回す作業の領域である（drawLine、drawWrapped）。
+	anchors []virtAnchor
 }
 
 // collectSpans は、診断、範囲の色（Frame.Highlights）、選択の範囲を、表示領域の行ごとに分ける。
@@ -699,7 +718,7 @@ func (d *drawer) prepare(row, line int, s string, visible func() (from, to int))
 	w.reset()
 	w.decos = d.f.Decorations.appendLine(w.decos[:0], line)
 	for _, ds := range w.decos {
-		a := d.theme.attr(d.f.Decorations.style(ds))
+		a := d.f.Decorations.attr(d.theme, ds)
 		start, end := min(ds.start, ln), min(ds.end, ln)
 		if a == (Attr{}) || start >= end {
 			continue
@@ -749,23 +768,35 @@ func (d *drawer) drawLine(row, line, k, n int) {
 	s := d.text.Line(line)
 	left, w, x0 := d.r.left, d.r.textWidth(), d.r.textLeft()
 	idx := line - d.r.top
-	d.prepare(idx, line, s, func() (int, int) { return d.visibleBytes(s) })
+	d.prepare(idx, line, s, func() (int, int) { return d.visibleBytes(line, s) })
 	put := func(x int, c Cell) {
 		if x >= 0 && x < w {
 			d.g.set(row, x0+x, c)
 		}
 	}
+	// 仮想テキスト（virtual.go）の inline は行の文字と一緒に並べ、overlay は重ねる文字の列を覚えて、行の文字を描いた後に重ねる。
+	lv := d.r.rule.virt.line(line)
+	anchors, oi := d.anchors[:0], 0
 	col := 0
-	for off := 0; off < len(s) && col < left+w; {
-		gl := d.r.rule.glyph(s, off, col)
+	wk := d.r.rule.walk(line, s)
+	for wk.more() && col < left+w {
+		gl := wk.next(col)
 		col += gl.width
-		off += gl.size
+		anchors, oi = overlayAnchors(anchors, lv, oi, gl, gl.col, wrapPos{})
 		if gl.col+gl.width <= left {
-			d.sweep.advance(gl.off, gl.size)
+			if gl.virt == 0 {
+				d.sweep.advance(gl.off, gl.size)
+			}
 			continue
 		}
-		gl, base := d.look(gl)
-		a := d.attrAt(idx, line, gl.off, gl.size, base)
+		var a Attr
+		if gl.virt != 0 {
+			a = lv.inline[gl.virt-1].style.over(d.theme)
+		} else {
+			var base Attr
+			gl, base = d.look(gl)
+			a = d.attrAt(idx, line, gl.off, gl.size, base)
+		}
 		x := gl.col - left
 		switch gl.kind {
 		case glyphTab, glyphSpecial, glyphWhitespace:
@@ -792,13 +823,28 @@ func (d *drawer) drawLine(row, line, k, n int) {
 	// その行の 0 列目に行末の記号と、行末に掛かる選択の色を描く（2026-11-21 に tmux で、'list' の有無の両方で確かめた。PR #334 のレビューの必須 2）。
 	// 見比べの行の色は行末のセルの次から埋める。0 列目に行末のセルを描いたときは、そのセルを残す。
 	fill := col + 1 - left
-	if col < left+w {
+	ended := col < left+w
+	if ended {
 		if c, ok := d.eolCell(idx, line, len(s)); ok {
 			put(max(col-left, 0), c)
 			fill = max(fill, 1)
 		}
+		// 行末の位置の overlay は、行末のセルに重ねる。
+		for ; lv != nil && oi < len(lv.overlay); oi++ {
+			anchors = append(anchors, virtAnchor{group: oi, col: col})
+		}
 	}
 	d.diffFillRest(row, line, fill)
+	if lv != nil {
+		// eol は overlay の上に描く（Neovim 0.12.5 と同じ。PR #378 のレビューの推奨 3）。
+		for _, an := range anchors {
+			d.drawVirtual(row, an.col-left, w, lv.overlay[an.group].pieces)
+		}
+		if ended {
+			d.drawEOLVirtual(row, max(col-left, 0)+1, w, lv)
+		}
+	}
+	d.anchors = anchors
 }
 
 // drawWrapped は、行を折り返すとき（FR-156）の drawLine である。バッファの line 行目の見た目の行のうち、k 番目から n 行を、
@@ -812,30 +858,42 @@ func (d *drawer) drawWrapped(row, line, k, n int) {
 	w := d.r.wrapper()
 	x0 := d.r.textLeft()
 	idx := line - d.r.top
-	d.prepare(idx, line, s, func() (int, int) { return w.span(s, k, k+n) })
+	d.prepare(idx, line, s, func() (int, int) { return w.span(line, s, k, k+n) })
 	nonText := d.theme.attr(StyleNonText)
 	put := func(p wrapPos, c Cell) {
 		if i := p.row - k; i >= 0 && i < n && p.x >= 0 && p.x < w.width {
 			d.g.set(row+i, x0+p.x, c)
 		}
 	}
+	// 仮想テキストは drawLine と同じく、inline を行の文字と一緒に並べ、overlay を後から重ねる（FR-233）。
+	lv := d.r.rule.virt.line(line)
+	anchors, oi := d.anchors[:0], 0
 	p := wrapPos{}
 	done := true
-	for off := 0; off < len(s); {
-		gl := w.next(s, off, p)
-		off += gl.size
+	wk := w.rule.walk(line, s)
+	for wk.more() {
+		gl := w.next(&wk, p)
 		start := p
 		first, pad, padded := w.place(&p, gl)
 		if first.row >= k+n {
 			done = false
 			break
 		}
+		anchors, oi = overlayAnchors(anchors, lv, oi, gl, 0, first)
 		if p.row < k {
-			d.sweep.advance(gl.off, gl.size)
+			if gl.virt == 0 {
+				d.sweep.advance(gl.off, gl.size)
+			}
 			continue
 		}
-		gl, base := d.look(gl)
-		a := d.attrAt(idx, line, gl.off, gl.size, base)
+		var a Attr
+		if gl.virt != 0 {
+			a = lv.inline[gl.virt-1].style.over(d.theme)
+		} else {
+			var base Attr
+			gl, base = d.look(gl)
+			a = d.attrAt(idx, line, gl.off, gl.size, base)
+		}
 		if padded {
 			put(pad, Cell{Text: ">", Width: 1, Attr: nonText})
 		}
@@ -863,15 +921,31 @@ func (d *drawer) drawWrapped(row, line, k, n int) {
 			}
 		}
 	}
+	eolRow := -1
+	var e wrapPos
 	if done {
-		e := w.eol(p)
+		e = w.eol(p)
 		if c, ok := d.eolCell(idx, line, len(s)); ok {
 			put(e, c)
 		}
 		if i := e.row - k; i >= 0 && i < n {
 			d.diffFillRest(row+i, line, e.x+1)
+			eolRow = row + i
+		}
+		for ; lv != nil && oi < len(lv.overlay); oi++ {
+			anchors = append(anchors, virtAnchor{group: oi, pos: e})
 		}
 	}
+	// overlay は、重ねる文字の見た目の行の右の端で切る（次の見た目の行へは続けない。Neovim 0.12.5 と同じ）。eol は overlay の上に描く。
+	for _, an := range anchors {
+		if i := an.pos.row - k; i >= 0 && i < n {
+			d.drawVirtual(row+i, an.pos.x, w.width, lv.overlay[an.group].pieces)
+		}
+	}
+	if lv != nil && eolRow >= 0 {
+		d.drawEOLVirtual(eolRow, e.x+1, w.width, lv)
+	}
+	d.anchors = anchors
 	if w.sbw > 0 {
 		sb := d.r.symbol(SymbolShowBreak)
 		for i := max(k, 1) - k; i < n; i++ {

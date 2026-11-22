@@ -133,10 +133,10 @@ func TestWhitespaceWrap(t *testing.T) {
 		"→       x↲", "あ→     x↲", "··lead  mid  trail··", "↲", "····↲", "↲", nbspLine + "↲", "·→      ·x→     ·↲",
 		"abcdefghijklmnopqrst", "uvwxyzabcdefghijklmn", "→       opq↲", "0123456789012345678↲", "01234567890123456789", "↲", "~",
 	})
-	if got := r.WrapLines(list).Rows("01234567890123456789"); got != 2 {
+	if got := r.WrapLines(list).Rows(0, "01234567890123456789"); got != 2 {
 		t.Errorf("行末の記号を描くときの 20 文字の行の見た目の行の数 = %d, want 2", got)
 	}
-	if got := r.WrapLines(LineLayout{}).Rows("01234567890123456789"); got != 1 {
+	if got := r.WrapLines(LineLayout{}).Rows(0, "01234567890123456789"); got != 1 {
 		t.Errorf("空白の記号を描かないときの 20 文字の行の見た目の行の数 = %d, want 1", got)
 	}
 
@@ -218,10 +218,10 @@ func TestWhitespaceCursor(t *testing.T) {
 		{Columns{LineLayout: list, Symbols: lcs(nil)}, "ab\tc", 2, 2, 2},
 	}
 	for _, tt := range tests {
-		if got := tt.cols.Column(tt.line, tt.byteOff); got != tt.col {
+		if got := tt.cols.Column(0, tt.line, tt.byteOff); got != tt.col {
 			t.Errorf("%+v.Column(%q, %d) = %d, want %d", tt.cols, tt.line, tt.byteOff, got, tt.col)
 		}
-		if got := tt.cols.ByteAt(tt.line, tt.col+1); got != tt.byteA {
+		if got := tt.cols.ByteAt(0, tt.line, tt.col+1); got != tt.byteA {
 			t.Errorf("%+v.ByteAt(%q, %d) = %d, want %d", tt.cols, tt.line, tt.col+1, got, tt.byteA)
 		}
 	}

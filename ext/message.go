@@ -398,6 +398,10 @@ type Decoration struct {
 	// 前に "syntax." を付けない。構文の色の他に、本体の色の名前（docs/usage.md の「見た目の設定」の表。診断の diagnostic.error、
 	// 画面の部品の statusline など）のどれを使ってもよい。本体が知らない名前の範囲には色を付けない。
 	Style string `json:"style"`
+	// Attr は、名前の色の上に重ねて直に付ける色と飾りである（FR-230。TextAttr）。nil なら付けない。
+	// 名前を空にして Attr だけを付けてもよい。0.18.0 までの本体は、Attr を付けた範囲のある通知の全体を誤りとして捨てる（decoration.go）。
+	// 受け取った一覧では、styles の表の同じ項目を指す範囲が同じ値を共有するので、読むだけにする。
+	Attr *TextAttr `json:"attr,omitempty"`
 }
 
 // DecorationSetParams は、decoration/set の params である。

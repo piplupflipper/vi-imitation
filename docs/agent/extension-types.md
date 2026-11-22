@@ -682,6 +682,11 @@ data の i 番目の範囲（0 から数える）は data[5i:5i+5] の次の 5 �
 送る側の一覧（DecorationSetParams.Decorations）は、順序を含めてそのまま読み戻せる。
 本体は、重なった範囲を一覧の後ろのものほど上に描くので、順序には意味がある。
 
+styles の 1 つの項目は、色の種類の名前だけなら文字列で、直に付ける色（Decoration.Attr）があれば
+名前と色のオブジェクトである（名前は省いてよい）。0.18.0 までの本体は文字列でない項目を読めず、通知の全体を誤りとして捨てる。
+
+	{"buffer":1,"version":3,"styles":["keyword",{"style":"comment","attr":{"fg":"#8b80a8"}},{"attr":{"bg":"#ff0000"}}],"data":[...]}
+
 - `buffer`（`BufferID`）
 - `version`（`Version`）: 一覧を計算するもとにしたバージョン番号である。
 
@@ -695,6 +700,26 @@ data の i 番目の範囲（0 から数える）は data[5i:5i+5] の次の 5 �
   構文の色の名前は comment、keyword、string、number、constant、function、type、variable、operator、punctuation の 10 個で、
   前に "syntax." を付けない。構文の色の他に、本体の色の名前（`vi-imitation --docs usage 見た目の設定`の表。診断の diagnostic.error、
   画面の部品の statusline など）のどれを使ってもよい。本体が知らない名前の範囲には色を付けない。
+- `attr`（`*TextAttr`、省ける）: 名前の色の上に重ねて直に付ける色と飾りである（TextAttr）。nil なら付けない。
+  名前を空にして Attr だけを付けてもよい。0.18.0 までの本体は、Attr を付けた範囲のある通知の全体を誤りとして捨てる。
+  受け取った一覧では、styles の表の同じ項目を指す範囲が同じ値を共有するので、読むだけにする。
+
+#### `TextAttr`
+
+範囲（Decoration）と仮想テキスト（VirtualTextChunk）に直に付ける色と飾りである。
+色の種類の名前（Style）と一緒に付けたら、本体は名前の色の上にこの色を重ねる（空の色は名前の色のまま、飾りはどちらかにあれば付ける）。
+名前の色は利用者が設定の colors で変えられるが、この色は変えられない。インレイヒントの薄い色や、色コード（#ff0000 など）の着色のように、
+拡張機能が値を決める色に使う。
+
+- `fg`（`string`、省ける）: Fg、Bg、Sp は、文字の色、背景の色、下線と波線の色である。"#rrggbb"（24 ビットの色。16 進の大文字と小文字のどちらでもよい）か、
+  空（付けない）にする。
+- `bg`（`string`、省ける）
+- `sp`（`string`、省ける）
+- `bold`（`bool`、省ける）: Bold は太字、Italic は斜体、Underline は下線、Undercurl は波線、Reverse は文字と背景の色の入れ替えである。
+- `italic`（`bool`、省ける）
+- `underline`（`bool`、省ける）
+- `undercurl`（`bool`、省ける）
+- `reverse`（`bool`、省ける）
 
 #### `DiagnosticListParams`
 
@@ -1311,6 +1336,51 @@ ViewFinder（finder） 以外では Seq を読まない。
 - `view`（`ViewID`）
 - `component`（`ViewComponent`）
 - `seq`（`uint64`、省ける）
+
+#### `VirtualTextSetParams`
+
+virtualText/set の params である。
+
+- `buffer`（`BufferID`）
+- `version`（`Version`）: 一覧を計算するもとにしたバージョン番号である。
+- `virtualTexts`（`[]VirtualText`）: バッファ全体について、この拡張機能が出す仮想テキストの一覧である。同じ位置の inline と overlay は、一覧の順に描く
+  （inline より先の overlay は inline の文字の上に重なり、後の overlay は inline の後ろの文字に重なる。Neovim の extmark を置いた順と同じ）。
+  行末の位置の overlay の上には eol を描く。
+  空（nil を含む）なら、その組の仮想テキストを消す。
+
+#### `VirtualText`
+
+バッファの 1 つの位置に出す仮想テキストである。
+本体は、仮想テキストのセルに、本文の構文の色、診断、検索の一致、範囲の色、選択の色を重ねず、Chunks の色だけで描く
+（Neovim の hl_mode の既定の "replace"）。
+
+- `position`（`Position`）: 仮想テキストを付ける位置である。Line がバッファの外なら描かない。
+  Byte が文字の途中を指すときは、その文字の位置として扱う。行の長さを超えれば行末の位置にする。
+- `placement`（`VirtualTextPlacement`）: 置き方である。
+- `chunks`（`[]VirtualTextChunk`）: 描く文字列の並びである。
+
+#### `VirtualTextPlacement`
+
+JSON の文字列である。
+
+仮想テキストの置き方である（Neovim 0.12.5 の nvim_buf_set_extmark の virt_text_pos）。
+
+- `"inline"`（VirtualTextInline）: 位置の文字の前に差し込み、後ろの本文を右へずらす（virt_text_pos の "inline"）。
+  位置が行の長さ以上なら、行の最後の文字の後ろに出す。本文と同じく、行を折り返すときは折り返し、横のスクロールでは一緒に送る。
+  カーソルは仮想テキストの上に置かない。
+- `"eol"`（VirtualTextEOL）: 行末の後ろに 1 列空けて出す（virt_text_pos の "eol"）。位置の行だけを読み、バイトは並べる順にだけ使う。
+  同じ行に複数あれば、位置のバイトの順（同じなら一覧の順）に 1 列ずつ空けて並べる。行を折り返すときも見た目の行を増やさず、
+  右の端で切る。
+- `"overlay"`（VirtualTextOverlay）: 位置の文字の列から、本文を右へずらさずに重ねて描く（virt_text_pos の "overlay"）。
+  行末より右にもはみ出して描き、見た目の行の右の端で切る。
+
+#### `VirtualTextChunk`
+
+仮想テキストの、同じ色で描く 1 つの文字列である（Neovim の virt_text の [text, hl_group] の組）。
+
+- `text`（`string`）: 描く文字列である。改行、復帰、タブ文字は空白 1 つとして描く。ほかの制御文字は、本文と同じく ^A の形で描く。
+- `style`（`string`、省ける）: 色の種類の名前（Decoration.Style と同じ名前の表）である。空なら名前の色を付けない。
+- `attr`（`*TextAttr`、省ける）: 名前の色の上に重ねて直に付ける色と飾りである（TextAttr）。nil なら付けない。
 
 #### その他の定数
 

@@ -58,7 +58,7 @@ const tabStop = 8
 // （internal/ui は同じ層なので import しない）。タブは次の 8 の倍数の列まで進め、タブの上ではタブが占める最後の列を返す。
 type tabColumns struct{}
 
-func (tabColumns) Column(line string, byteOff int) int {
+func (tabColumns) Column(_ int, line string, byteOff int) int {
 	col := 0
 	for i, r := range line {
 		w := 1
@@ -73,7 +73,7 @@ func (tabColumns) Column(line string, byteOff int) int {
 	return col
 }
 
-func (tabColumns) ByteAt(line string, col int) int {
+func (tabColumns) ByteAt(_ int, line string, col int) int {
 	last, cur := 0, 0
 	for i, r := range line {
 		w := 1
