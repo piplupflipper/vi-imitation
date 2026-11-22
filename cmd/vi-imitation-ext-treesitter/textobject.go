@@ -241,13 +241,16 @@ func (o *textObjects) resolve(spec textObjectSpec, b *server.Buffer, p *ext.Text
 // blockObject は、構文のまとまり（block.go）のテキストオブジェクトの範囲を返す。around なら全体（an）、そうでなければ中身（in）である。
 // 該当が無ければ ok は false である。
 //
-// 選択 sel が無ければ（オペレーターの後と、v を打った直後）、カーソルを含むまとまりのうち、内側から数えて count 番目のものを採る。
-// 中身は、そのまとまりの容れ物のうち、カーソルを含むもの、無ければカーソルより後で始まる最初のもの、無ければ最後のものの中身である
-// （関数の見出しの上のカーソルで、関数の本体を選ぶ）。
+// 全体は、まとまりの全体のノードの範囲である。後ろに区切りの "," があればそれまで、無く前にあれば前の要素の直後からを含める
+// （aa と同じ。JSON とテーブル駆動のテストの要素を dan で消したときに "," を残さない。withSeparator）。
+// 中身は、まとまりの容れ物の中身（bodySpan）のうち、条件に当たる最も小さいものである。
+//
+// 選択 sel が無ければ（オペレーターの後と、v を打った直後）、範囲がカーソルを含むものを、まとまりの内側から数えて count 番目に採る。
+// 中身がカーソルを含まないまとまり（見出しの上のカーソル、容れ物として拾えない節の中のカーソル）は数えない。
+// カーソルから離れた本体を選ばないためである（PR #377 のレビューの必須 2）。
 //
 // 選択 sel があれば（ビジュアルモードで繰り返したとき）、範囲が選択を含み、選択と同じでないものを、内側から数えて count 番目に採る。
-// 中身は、まとまりの容れ物のうち、中身がそうなる最初のものである。
-// 範囲と選択は、行単位で返す範囲なら行の全体に広げてから比べる（行単位のビジュアルモードの選択と比べられるようにする）。
+// 範囲と選択とカーソルは、行単位で返す範囲なら行の全体に広げてから比べる（lineSpan）。
 //
 // 範囲が行の全体を占めるときは行単位にする（textObject と同じ）。
 //
@@ -257,15 +260,46 @@ func (d *document) blockObject(around bool, cursor ext.Position, sel *ext.Range,
 	if err != nil {
 		return ext.Range{}, false, false, err
 	}
-	var s span
-	if sel == nil {
-		s, ok = d.blockAtCursor(around, off, count)
-	} else {
-		var ss span
-		if ss, err = d.spanOf(*sel); err != nil {
+	q := span{off, min(off+1, len(d.src))}
+	fits := func(e span) bool { return e.start <= off && off < e.end }
+	if sel != nil {
+		ss, err := d.spanOf(*sel)
+		if err != nil {
 			return ext.Range{}, false, false, err
 		}
-		s, ok = d.blockAroundSelection(around, ss, count)
+		q = d.trimSpace(ss)
+		fits = func(e span) bool { return e.start <= ss.start && ss.end <= e.end && e != ss }
+	}
+	var s span
+	var last span
+	n := 0
+	for _, b := range blocksAt(d.tree, d.src, q) {
+		if !d.onBlock(b, q.start) {
+			continue
+		}
+		var cands []span
+		if around {
+			cands = []span{d.withSeparator(&b.node)}
+		} else {
+			for i := range b.bodies {
+				cands = append(cands, d.bodySpan(&b.bodies[i]))
+			}
+			slices.SortFunc(cands, func(a, b span) int { return (a.end - a.start) - (b.end - b.start) })
+		}
+		for _, c := range cands {
+			e := d.lineSpan(c)
+			if !fits(e) || n > 0 && e == last {
+				continue
+			}
+			last = e
+			if n++; n == count {
+				s, ok = c, true
+				break
+			}
+		}
+		if ok {
+			break
+		}
 	}
 	if !ok {
 		return ext.Range{}, false, false, nil
@@ -276,30 +310,21 @@ func (d *document) blockObject(around bool, cursor ext.Position, sel *ext.Range,
 	return ext.Range{Start: d.position(s.start), End: d.position(s.end)}, false, true, nil
 }
 
-// blockAtCursor は、バイト位置 off を含むまとまりのうち、内側から count 番目のものの全体か中身を返す（blockObject の doc）。
-func (d *document) blockAtCursor(around bool, off, count int) (span, bool) {
-	blocks := blocksAt(d.tree, d.src, span{off, min(off+1, len(d.src))})
-	if count > len(blocks) {
-		return span{}, false
-	}
-	b := blocks[count-1]
-	if around {
-		return b.outer(), true
-	}
-	body := b.bodies[len(b.bodies)-1]
+// onBlock は、位置 off がまとまり b の容れ物のどれかの中か、最後の容れ物より前（見出し）にあるかを返す。
+// 容れ物の後ろ（bash の elif の [ ... ] の条件の後の本体のような、容れ物として拾えない部分）にあるなら false で、そのまとまりを数えない。
+func (d *document) onBlock(b block, off int) bool {
 	for i := range b.bodies {
-		if s := nodeSpan(&b.bodies[i]); s.contains(off) || s.start > off {
-			body = b.bodies[i]
-			break
+		if nodeSpan(&b.bodies[i]).contains(off) {
+			return true
 		}
 	}
-	return d.bodySpan(&body), true
+	return off < int(b.bodies[len(b.bodies)-1].StartByte())
 }
 
-// blockAroundSelection は、選択 sel を真に含むまとまりの全体か中身のうち、内側から count 番目のものを返す（blockObject の doc）。
-func (d *document) blockAroundSelection(around bool, sel span, count int) (span, bool) {
-	// 選択の前後の空白は、まとまりを探すノードを決めるときには除く（行単位の選択は字下げを含むので、外側のノードになってしまう）。
-	q := sel
+// trimSpace は、範囲 s の前後の空白と改行を除いた範囲を返す。空白だけなら s を返す。
+// 選択からまとまりを探すノードを決めるときに使う（行単位の選択は字下げを含むので、そのままでは外側のノードになってしまう）。
+func (d *document) trimSpace(s span) span {
+	q := s
 	for q.start < q.end && isSpaceByte(d.src[q.start]) {
 		q.start++
 	}
@@ -307,34 +332,40 @@ func (d *document) blockAroundSelection(around bool, sel span, count int) (span,
 		q.end--
 	}
 	if q.start == q.end {
-		q = sel
+		return s
 	}
-	n := 0
-	for _, b := range blocksAt(d.tree, d.src, q) {
-		var cands []span
-		if around {
-			cands = []span{b.outer()}
-		} else {
-			for i := range b.bodies {
-				cands = append(cands, d.bodySpan(&b.bodies[i]))
-			}
-		}
-		for _, s := range cands {
-			if e := d.lineSpan(s); e.start <= sel.start && sel.end <= e.end && e != sel {
-				if n++; n == count {
-					return s, true
-				}
-				break
-			}
-		}
-	}
-	return span{}, false
+	return q
 }
 
-// bodySpan は、容れ物 c の中身の範囲を返す。括弧の容れ物なら括弧の内側（innerSpan）、本体の容れ物ならノードそのものである。
+// withSeparator は、まとまりの全体のノード n の範囲に、区切りの "," を足した範囲を返す。
+// 後ろの兄弟が "," ならそれまでを、そうでなく前の兄弟が "," なら、その前の要素の直後からを含める（引数の aa の listItemSpan と同じ向き）。
+// 後ろの "," の後の次の要素までは含めないので、要素が行の全体を占めれば行単位になる。
+func (d *document) withSeparator(n *sitter.Node) span {
+	s := nodeSpan(n)
+	if next := nextNonExtra(n); next != nil && next.Kind() == "," && !next.IsNamed() {
+		s.end = int(next.EndByte())
+		return s
+	}
+	if prev := prevNonExtra(n); prev != nil && prev.Kind() == "," && !prev.IsNamed() {
+		if before := prevNonExtra(prev); before != nil {
+			s.start = int(before.EndByte())
+		} else {
+			s.start = int(prev.StartByte())
+		}
+	}
+	return s
+}
+
+// bodySpan は、容れ物 c の中身の範囲を返す（block.go の初めのコメント）。
+// 括弧の容れ物なら括弧の内側（innerSpan）、予約語で閉じる容れ物なら最初と最後の予約語の間の行（keywordInner）、
+// 本体の容れ物ならノードそのものである。
 func (d *document) bodySpan(c *sitter.Node) span {
 	if isBracketed(c) {
 		return d.innerSpan(c)
+	}
+	if isKeywordDelimited(c, d.src) {
+		first, last, _ := keywordInner(c, d.src)
+		return span{d.lineStarts[first], d.lineStarts[last] + d.lineLen(int(last))}
 	}
 	return nodeSpan(c)
 }

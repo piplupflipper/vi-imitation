@@ -226,17 +226,19 @@ func TestBlockObjectGo(t *testing.T) {
 		{name: "an: 型引数の上は関数の全体", around: true, marker: "T any", count: 1, ok: true, want: "func multi[T any](t T) {\n\tdefer func() {\n\t\t_ = t\n\t}()\n}", linewise: true},
 		{name: "an: 構造体の宣言", around: true, marker: "X, Y", count: 1, ok: true, want: "type Point struct {\n\tX, Y int\n}", linewise: true},
 		{name: "an: まとめた宣言の中のインターフェース", around: true, marker: "M()", count: 1, ok: true, want: "\tB interface {\n\t\tM()\n\t}", linewise: true},
-		{name: "an: まとめた宣言の括弧はまとまりにしない", around: true, marker: "A int", count: 1},
+		{name: "an: 複数の行の括弧でまとめた宣言", around: true, marker: "A int", count: 1, ok: true, want: "type (\n\tA int\n\tB interface {\n\t\tM()\n\t}\n)", linewise: true},
+		{name: "in: 複数の行の括弧でまとめた宣言の中身", marker: "A int", count: 1, ok: true, want: "\tA int\n\tB interface {\n\t\tM()\n\t}", linewise: true},
 		{name: "an: まとまりの外", around: true, marker: "package", count: 1},
 		{name: "an: 関数の前のコメントは含めない", around: true, marker: "和を返す", count: 1},
 
 		{name: "in: for の本体は間の行", marker: "a += i", count: 1, ok: true, want: "\t\t\ta += i", linewise: true},
 		{name: "2in: if の本体", marker: "a += i", count: 2, ok: true, want: forStmt, linewise: true},
 		{name: "in: else の本体", marker: "b = 2", count: 1, ok: true, want: "\t\tb = 2", linewise: true},
-		{name: "in: if の条件の上は後ろの本体", marker: "if a > 0", count: 1, ok: true, want: forStmt, linewise: true},
-		{name: "in: 関数の見出しの上は関数の本体", marker: "func add", count: 1, ok: true, want: addBody, linewise: true},
+		{name: "in: if の条件の上はカーソルを含む外側の本体", marker: "if a > 0", count: 1, ok: true, want: addBody, linewise: true},
+		{name: "in: 関数の見出しの上はカーソルを含む中身が無い", marker: "func add", count: 1},
+		{name: "2in: カーソルを含む中身だけを数える", marker: "a += i", count: 3, ok: true, want: addBody, linewise: true},
 		{name: "in: 1 行の本体は空白を除いた内側", marker: "x + 1", count: 1, ok: true, want: "return x + 1"},
-		{name: "in: 空の本体は幅 0", marker: "empty", count: 1, ok: true, want: ""},
+		{name: "in: 空の本体はカーソルを含まない", marker: "{}", count: 1},
 		{name: "in: 型引数の上は型引数の括弧の内側", marker: "T any", count: 1, ok: true, want: "T any"},
 		{name: "in: インターフェースの内側", marker: "M()", count: 1, ok: true, want: "\t\tM()", linewise: true},
 
@@ -248,6 +250,56 @@ func TestBlockObjectGo(t *testing.T) {
 		{name: "in を繰り返す: for の本体から if の本体へ", marker: "a += i", sel: "a += i", selLines: true, count: 1, ok: true, want: forStmt, linewise: true},
 		{name: "in を繰り返す: if の本体から関数の本体へ", marker: "for i", sel: forStmt, count: 1, ok: true, want: addBody, linewise: true},
 		{name: "in を繰り返す: an の後の in は外側の中身", marker: "for i", sel: ifStmt, count: 1, ok: true, want: addBody, linewise: true},
+	})
+}
+
+// switchSource は、switch、型の switch、select と、テーブル駆動のテストの形を含む Go のソースである。
+const switchSource = `package main
+
+func g(b int, x any, ch chan int) {
+	switch b {
+	case 1:
+		println("いち")
+	}
+	switch v := x.(type) {
+	case int:
+		println(v)
+	}
+	select {
+	case <-ch:
+		println("ch")
+	}
+	tests := []struct {
+		name string
+	}{
+		{name: "a"},
+		{
+			name: "b",
+		},
+	}
+	_ = tests
+}`
+
+// TestBlockObjectGoSwitch は、Go の switch、型の switch、select の case の中で、an と in が switch の全体と中身を選び、
+// テーブル駆動のテストの要素の an が区切りの "," まで含むことを確かめる（PR #377 のレビューの必須 1、推奨 3）。
+//
+// req: FR-11, FR-240
+func TestBlockObjectGoSwitch(t *testing.T) {
+	h := newTestHighlighter(t)
+	d := parse(t, h, "go", switchSource)
+	sw := "\tswitch b {\n\tcase 1:\n\t\tprintln(\"いち\")\n\t}"
+	tsw := "\tswitch v := x.(type) {\n\tcase int:\n\t\tprintln(v)\n\t}"
+	sel := "\tselect {\n\tcase <-ch:\n\t\tprintln(\"ch\")\n\t}"
+	runBlockCases(t, d, []blockCase{
+		{name: "an: switch の case の中", around: true, marker: "いち", count: 1, ok: true, want: sw, linewise: true},
+		{name: "in: switch の中身", marker: "いち", count: 1, ok: true, want: "\tcase 1:\n\t\tprintln(\"いち\")", linewise: true},
+		{name: "an: 型の switch の case の中", around: true, marker: "println(v)", count: 1, ok: true, want: tsw, linewise: true},
+		{name: "in: 型の switch の中身", marker: "println(v)", count: 1, ok: true, want: "\tcase int:\n\t\tprintln(v)", linewise: true},
+		{name: "an: select の case の中", around: true, marker: `"ch"`, count: 1, ok: true, want: sel, linewise: true},
+		{name: "in: select の中身", marker: `"ch"`, count: 1, ok: true, want: "\tcase <-ch:\n\t\tprintln(\"ch\")", linewise: true},
+		{name: "an: 1 行の要素は後ろの区切りまで", around: true, marker: `"a"`, count: 1, ok: true, want: "\t\t{name: \"a\"},", linewise: true},
+		{name: "an: 複数の行の要素は後ろの区切りまで", around: true, marker: `"b"`, count: 1, ok: true, want: "\t\t{\n\t\t\tname: \"b\",\n\t\t},", linewise: true},
+		{name: "in: 構造体の型の中から、カーソルを含まない後ろの要素を選ばない", marker: "name string", count: 2, ok: true, want: "\tswitch b {\n\tcase 1:\n\t\tprintln(\"いち\")\n\t}\n" + tsw + "\n" + sel + "\n\ttests := []struct {\n\t\tname string\n\t}{\n\t\t{name: \"a\"},\n\t\t{\n\t\t\tname: \"b\",\n\t\t},\n\t}\n\t_ = tests", linewise: true},
 	})
 }
 
@@ -274,11 +326,17 @@ func TestBlockObjectJSON(t *testing.T) {
 	runBlockCases(t, d, []blockCase{
 		{name: "an: 配列は対ごと", around: true, marker: "1, 2", count: 1, ok: true, want: `"b": [1, 2]`},
 		{name: "in: 配列の内側", marker: "1, 2", count: 1, ok: true, want: "1, 2"},
-		{name: "2an: 外側のオブジェクトの対", around: true, marker: "1, 2", count: 2, ok: true, want: `"a": {"b": [1, 2]}`},
+		{name: "2an: 外側のオブジェクトの対は後ろの区切りまで", around: true, marker: "1, 2", count: 2, ok: true, want: `"a": {"b": [1, 2]},`},
 		{name: "3an: いちばん外のオブジェクトは行を占める", around: true, marker: "1, 2", count: 3, ok: true, want: `{"a": {"b": [1, 2]}, "c": 3}`, linewise: true},
 		{name: "2in: オブジェクトの内側", marker: "1, 2", count: 2, ok: true, want: `"b": [1, 2]`},
-		{name: "an を繰り返す: 対の選択から外の対へ", around: true, marker: `"b"`, sel: `"b": [1, 2]`, count: 1, ok: true, want: `"a": {"b": [1, 2]}`},
+		{name: "an を繰り返す: 対の選択から外の対へ", around: true, marker: `"b"`, sel: `"b": [1, 2]`, count: 1, ok: true, want: `"a": {"b": [1, 2]},`},
 		{name: "in を繰り返す: 配列の内側からオブジェクトの内側へ", marker: "1, 2", sel: "1, 2", count: 1, ok: true, want: `"b": [1, 2]`},
+	})
+	// 複数の行の要素の an は後ろの区切りの "," まで含め、行単位になる（dan で "," の行を残さない）。
+	d2 := parse(t, h, "json", "{\n  \"a\": 1,\n  \"b\": {\n    \"c\": 2\n  },\n  \"d\": [\n    3\n  ]\n}")
+	runBlockCases(t, d2, []blockCase{
+		{name: "an: 後ろに区切りのある要素", around: true, marker: `"c"`, count: 1, ok: true, want: "  \"b\": {\n    \"c\": 2\n  },", linewise: true},
+		{name: "an: 最後の要素は前の区切りから", around: true, marker: "3", count: 1, ok: true, want: ",\n  \"d\": [\n    3\n  ]"},
 	})
 }
 
