@@ -32,7 +32,9 @@ import (
 //	          // 省略できる。ハイライトのクエリのファイル（リポジトリの中の相対パス）。複数あれば順につなぐ
 //	          "queries": ["queries/highlights.scm"]
 //	        }
-//	      }
+//	      },
+//	      // 見出しの帯の設定（contextSettings）
+//	      "context": { "maxLines": 4, "multilineThreshold": 1 }
 //	    }
 //	  }
 //	}

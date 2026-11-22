@@ -26,6 +26,8 @@ import (
 //     中身が行の途中から始まるなら（func f() { x := 1）その行を含む。カーソルの行とその後の行は含めない。
 //     カーソルが節（else、elif の本体。clauseRow）の中にあれば、まとまりの見出しはその前の節でない容れ物（if の本体）までにし、
 //     節の始まりの行（} else {、elif x:）からその節の中身の前までを、もう 1 つの見出しにする
+//   - 括弧の容れ物の中の節（switch の case と default。caseHeadings）も見出しにする。an のまとまりではないが、
+//     nvim-treesitter-context の Go のクエリが見出しにするのに合わせた
 //   - 見出しの行の末尾の空白だけの行は除き、1 つの見出しは multilineThreshold の行までにする（context.lua の get_text_for_range）
 //   - 帯の行数の上限は、設定の maxLines（0 は上限なし）と、カーソルの行から窓の最初の行を引いた数の小さい方である（calc_max_lines）。
 //     本体の帯の行数の上限（ext.MaxBandLines）も超えない
@@ -273,6 +275,9 @@ func (d *document) contextHeadings(top int, cursor ext.Position, c contextSettin
 	for i := len(blocks) - 1; i >= 0; i-- {
 		cands = append(cands, d.headings(blocks[i], off, cursor.Line, c.multilineThreshold)...)
 	}
+	cands = append(cands, d.caseHeadings(q, cursor.Line, c.multilineThreshold)...)
+	// 見出しはどれもカーソルを含むノードのものなので、始まりの行の順が外側から内側の順である。同じ行のものは、まとまりの外側から内側の順を保つ。
+	slices.SortStableFunc(cands, func(a, b heading) int { return a.start - b.start })
 	var out []heading
 	height := 0
 	for _, h := range cands {
@@ -353,6 +358,35 @@ func (d *document) headings(b block, off, cursorRow, threshold int) []heading {
 	if clause > start {
 		add(heading{clause, d.contentRow(&b.bodies[k], clause)})
 	}
+	return out
+}
+
+// caseHeadings は、範囲 q を含む、括弧の容れ物の中の節（Go と C と JavaScript の switch の case と default、Go の select の case）の見出しを、
+// 外側から順に返す。cursorRow と threshold は headings と同じである。
+//
+// 節は、括弧の容れ物の直接の子で、行の最初から予約語で始まり、最初の行の後に行の最初から始まる名前を持つ子があるノードである
+// （block.go の isClause の、親が括弧の容れ物のもの）。見出しは、節の最初の行から、その子の行の前までである。
+// テキストオブジェクトの an と in は、これを構文のまとまりにしない（switch の中身を選ぶ。PR #377 のレビューの必須 1）が、
+// 帯では、nvim-treesitter-context の Go のクエリ（queries/go/context.scm）が expression_case と default_case を見出しにするのに合わせて出す。
+func (d *document) caseHeadings(q span, cursorRow, threshold int) []heading {
+	var out []heading
+	leaf := d.tree.RootNode().DescendantForByteRange(uint(q.start), uint(q.end))
+	for n := leaf; n != nil; n = n.Parent() {
+		p := n.Parent()
+		if p == nil || !n.IsNamed() || n.IsExtra() || !isBracketed(p) || !startsLine(n, d.src) {
+			continue
+		}
+		if first := firstNonExtraChild(n); first == nil || first.IsNamed() {
+			continue
+		}
+		body, _, ok := ownLineChildren(n, d.src, false)
+		start := int(n.StartPosition().Row)
+		if !ok || start >= cursorRow {
+			continue
+		}
+		out = append(out, d.trimHeading(heading{start, min(int(body), cursorRow)}, threshold))
+	}
+	slices.Reverse(out)
 	return out
 }
 

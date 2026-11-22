@@ -22,6 +22,10 @@
 // 同梱する文法は公式の Go のモジュール（github.com/tree-sitter/tree-sitter-go など）を cgo で一緒にコンパイルする。
 // cgo を使うのはこの実行ファイルだけで、本体は cgo を使わない（NFR-02）。
 //
+// 窓の変化の知らせ（window/change）を受け取り、カーソルを含む関数やクラスの見出しの行を、窓の上端の帯（band/set）に出す（sticky.go。
+// nvim-treesitter-context に当たる）。帯は、解析の goroutine が最後に解析した構文木の複製から、帯を作る goroutine で作る。
+// 出すかどうかは、設定の context と、コマンド treesitter.context.toggle で変える。
+//
 // ほかの言語は、利用者の設定（extensions.settings.treesitter.parsers。settings.go の parserSpec）に並べたパーサを、
 // そのファイルの種類のバッファを初めて開いたときに git で取得し、C コンパイラで共有ライブラリにビルドし、dlopen で読み込む（FR-142。parsers.go）。
 // 取得したコミットはロックファイルに記録し、次からは同じコミットとビルドしたものを使う。

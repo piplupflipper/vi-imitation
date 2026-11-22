@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
+	userconfig "github.com/piplupflipper/vi-imitation/internal/config"
 	"github.com/piplupflipper/vi-imitation/internal/rpc"
 )
 
@@ -131,6 +133,24 @@ func TestContextHeadingsShapes(t *testing.T) {
 			want: [][2]int{{2, 3}, {3, 4}},
 		},
 		{
+			name: "switch の case", fileType: "go",
+			src: "package p\n\nfunc f(a int) {\n\tswitch a {\n\tcase 1:\n\t\ta++\n\t\ta++\n\tdefault:\n\t\ta--\n\t\ta--\n\t}\n}",
+			top: 6, cursor: ext.Position{Line: 9, Byte: 2},
+			want: [][2]int{{2, 3}, {3, 4}, {7, 8}},
+		},
+		{
+			name: "select の case", fileType: "go",
+			src: "package p\n\nfunc f(c chan int) {\n\tselect {\n\tcase v := <-c:\n\t\t_ = v\n\t\t_ = v\n\t}\n}",
+			top: 5, cursor: ext.Position{Line: 6, Byte: 2},
+			want: [][2]int{{4, 5}},
+		},
+		{
+			name: "JSON の配列の中のオブジェクト", fileType: "json",
+			src: "[\n  {\n    \"a\": 1,\n    \"b\": 2\n  }\n]",
+			top: 2, cursor: ext.Position{Line: 3, Byte: 4},
+			want: [][2]int{{1, 2}},
+		},
+		{
 			name: "JSON の入れ子の対", fileType: "json",
 			src: "{\n  \"a\": {\n    \"b\": [\n      1,\n      2\n    ]\n  }\n}",
 			top: 1, cursor: ext.Position{Line: 4, Byte: 6},
@@ -224,6 +244,28 @@ func TestParseContext(t *testing.T) {
 		if s.context != tt.want || len(problems) != 1 || !strings.Contains(problems[0], tt.msg) {
 			t.Errorf("parseSettings(%s).context = %+v, %q; want %+v and 1 problem about %s", tt.raw, s.context, problems, tt.want, tt.msg)
 		}
+	}
+}
+
+// TestConfigExampleContext は、同梱する設定の例（config.example.jsonc）の tree-sitter の部分が誤り無く読め、
+// 見出しの帯の設定がオーナーの nvim の nvim-treesitter-context の値（max_lines = 4、multiline_threshold = 1）であることを確かめる。
+//
+// req: FR-247
+func TestConfigExampleContext(t *testing.T) {
+	data, err := os.ReadFile("../../config.example.jsonc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ucfg, errs := userconfig.Parse("config.example.jsonc", data)
+	if len(errs) != 0 {
+		t.Fatalf("設定の例の誤り: %v", errs)
+	}
+	s, problems := parseSettings(ucfg.ExtensionSettings["treesitter"])
+	if len(problems) != 0 {
+		t.Fatalf("problems = %q", problems)
+	}
+	if want := (contextSettings{enable: true, maxLines: 4, multilineThreshold: 1}); s.context != want {
+		t.Errorf("context = %+v, want %+v", s.context, want)
 	}
 }
 
@@ -417,8 +459,8 @@ func TestServeStickyOtherBuffer(t *testing.T) {
 	}
 }
 
-// TestContextHeadingsLanguages は、設定で足す言語（Python、TypeScript、Rust、bash、Lua）で、言語ごとの表を持たずに、
-// クラス、関数、if、else と elif の節、match の腕の見出しが帯に出ることを確かめる。
+// TestContextHeadingsLanguages は、設定で足す言語（Python、TypeScript、Rust、bash、C、Lua）で、言語ごとの表を持たずに、
+// クラス、関数、if、else と elif の節、match の腕、switch の case の見出しが帯に出ることを確かめる。
 // 文法は testParsersEnv の下のものを使うので、CI では飛ばす（block_lang_test.go）。
 //
 // req: FR-245
@@ -459,6 +501,12 @@ func TestContextHeadingsLanguages(t *testing.T) {
 			src: "f() {\n  if [ -n \"$1\" ]; then\n    echo one\n    echo two\n  fi\n}\n",
 			top: 1, cursor: ext.Position{Line: 3, Byte: 4},
 			want: [][2]int{{0, 1}, {1, 2}},
+		},
+		{
+			name: "c の switch の case", lang: "c",
+			src: "int f(int a) {\n  switch (a) {\n  case 1:\n    a++;\n    a++;\n    break;\n  }\n  return a;\n}\n",
+			top: 1, cursor: ext.Position{Line: 4, Byte: 4},
+			want: [][2]int{{0, 1}, {1, 2}, {2, 3}},
 		},
 		{
 			name: "lua の else", lang: "lua",

@@ -90,8 +90,9 @@ func TestConfigExample(t *testing.T) {
 	}
 
 	// 同梱の宣言ファイルを、配布物と同じ extensions/<名前>/ の並びに置いて読む。
+	// 設定の例は treesitter の設定（見出しの帯。#380）も持つので、その宣言ファイルも置く（置かないと、設定の先の拡張機能が無い誤りになる）。
 	dir := t.TempDir()
-	for name, src := range map[string]string{"formatter": ".", "lsp": "../vi-imitation-ext-lsp"} {
+	for name, src := range map[string]string{"formatter": ".", "lsp": "../vi-imitation-ext-lsp", "treesitter": "../vi-imitation-ext-treesitter"} {
 		m, err := os.ReadFile(filepath.Join(src, "manifest.json"))
 		if err != nil {
 			t.Fatal(err)
@@ -107,8 +108,8 @@ func TestConfigExample(t *testing.T) {
 	if len(problems) != 0 {
 		t.Fatalf("宣言ファイルの誤り: %v", problems)
 	}
-	if len(exts) != 2 || exts[0].Manifest.ID != "formatter" || exts[1].Manifest.ID != "lsp" {
-		t.Fatalf("拡張機能の並び = %+v, want formatter, lsp", exts)
+	if len(exts) != 3 || exts[0].Manifest.ID != "formatter" || exts[1].Manifest.ID != "lsp" || exts[2].Manifest.ID != "treesitter" {
+		t.Fatalf("拡張機能の並び = %+v, want formatter, lsp, treesitter", exts)
 	}
 	formatter, lsp := exts[0].Manifest, exts[1].Manifest
 	for ft := range want {

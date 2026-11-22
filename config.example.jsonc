@@ -262,6 +262,17 @@
     // 保存の前の整形（下の formatter）の期限。整形ツールの応答をこの時間まで待ち、超えたら整形せずに書き出す（本体の既定は 1000）
     "willSaveTimeoutMs": 2000,
     "settings": {
+      // tree-sitter の拡張機能。説明は docs/usage.md の「関数とクラスの見出しを窓の上端に出す」にある
+      "treesitter": {
+        // 関数とクラスの見出しを窓の上端に出す帯（nvim-treesitter-context の max_lines = 4、multiline_threshold = 1 と同じ）。
+        // 一時的に消すときは :treesitter.context.toggle
+        "context": {
+          // 深い入れ子で画面を占領しないよう、帯は 4 行まで（拡張機能の既定は 0 で上限なし）
+          "maxLines": 4,
+          // 複数の行にまたがる見出しも 1 行に切り詰める（拡張機能の既定は 20）
+          "multilineThreshold": 1,
+        },
+      },
       // LSP の言語サーバーを足す例（Python の pyright）。説明は docs/usage.md の「LSP」にある。
       // 既定の言語サーバーは Go の gopls だけで、ほかの言語は servers と activation の両方に書く
       "lsp": {

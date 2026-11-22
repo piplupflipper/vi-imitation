@@ -2526,6 +2526,30 @@ goroutine は、受け取った後に変えない一覧のスライスとバッ�
 - 描くのは編集の client の画面のバッファの表示領域だけで、ポップアップとプレビューの中には描かない（空白の記号と同じく `lineLayout` の `onScreen` で決める）
 - 文字列の改行、復帰、タブ文字は空白 1 つにする（タブ文字の幅は置く列で変わり、改行は 1 行に描けないため）。ほかの制御文字は本文と同じく `^A` の形で描く
 
+#### 見出しの帯（FR-245〜FR-248）
+
+#380 で、tree-sitter の拡張機能が、カーソルを含む関数やクラスの見出しを、窓の上端の帯（6.7 の「窓の上端の帯」）に出すようにした（`cmd/vi-imitation-ext-treesitter` の `sticky.go`）。
+オーナーの nvim の nvim-treesitter-context（コミット 8decd73460d26ef0a0befb745d022dd1fc2c38b8。オーナーの設定は `max_lines = 4`、`multiline_threshold = 1`）に当たる。
+宣言ファイルの `windowEvents` を true にして `window/change` を受け取り、`band/set` で帯を置く。
+表に無い点は、どれも仮である。
+
+| 点 | 決めたこと |
+|---|---|
+| 見出しにするもの | カーソルを含む構文のまとまり（`blocksAt`。この節の「構文のまとまり」と同じ単位）と、括弧の容れ物の直接の子の節（Go と C と JavaScript の `switch` の `case` と `default`、Go の `select` の `case`。`caseHeadings`）。節は、行の最初から予約語で始まり、最初の行の後に行の最初から始まる名前を持つ子があるノードで、`an` の節の容れ物の規則の、親が括弧の容れ物のものである。`an` は `case` をまとまりにしない（`switch` の中身を選ぶ。PR #377 のレビューの必須 1）が、nvim-treesitter-context の Go のクエリ（`queries/go/context.scm`）が `expression_case` と `default_case` を見出しにするので、帯では見出しにした。言語ごとのクエリ（nvim-treesitter-context の `queries/<言語>/context.scm`）は持たない |
+| まとまりの見出し | まとまりの最初の行から、カーソルを含む容れ物の中身（`bodySpan`）の始まりの前の行までである。中身が行の途中から始まる（`func f() { x := 1`）ならその行を含む。1 つのまとまりは複数の容れ物を持つので、関数の複数行の引数の並びの後の本体の中では、引数の並びを含む `) error {` の行までになる。カーソルがどの容れ物の中にも無ければ（見出しの上）、カーソルより後の最初の容れ物までにする。カーソルの行とその後の行は含めない |
+| `else` と `elif` | カーソルが節（容れ物から全体のノードの手前までの祖先のうち、最も近い、親の `alternative` のフィールドの子か、`an` の節の容れ物）の中にあれば、まとまりの見出しはその前の節でない容れ物（`if` の本体）までにし、節の始まりの行（`} else {`、`} else if x {`、`elif x:`）からその節の中身の前までを、もう 1 つの見出しにする（`clauseRow`）。nvim-treesitter-context の Go のクエリは `else` の本体を見出しにしないので、`} else if a {` の後の `} else {` の中では、外の `if` と `} else if a {` の行を出す。こちらは外の `if` と `} else {` の行を出す |
+| 1 つの見出しの行 | 末尾の空白だけの行を除き、設定の `multilineThreshold` の行までにする（`context.lua` の `get_text_for_range`） |
+| 帯の行数 | 上限は、設定の `maxLines`（0 は上限なし）と、カーソルの行から窓の最初の行を引いた数の小さい方である（`context.lua` の `calc_max_lines`）。本体の上限（`ext.MaxBandLines`）も超えない |
+| 採り方 | 見出しを始まりの行の順（外側から内側）に並べ、見出しの最初の行が「窓の最初の行 + それまでに採った見出しの行数（上限で抑える）」より上にあるものを採る。同じ行で始まる見出しは内側のものを採る（`context.lua` の `get`）。採った行数が上限を超えたら外側の見出しから削り、削る見出しが超えた分より長ければその見出しの後ろの行を削る（`trim_contexts`。`trim_scope` の既定の `outer`） |
+| 帯の行 | バッファの行の全体を送り、行に当たるバッファの行（`line`）を書く。色は、ハイライトのクエリを行の範囲に限って流し、全文と同じ規則で重なりを決める（`document.paint`）。本文と同じ構文の色になる（FR-246）。行の中の復帰（`\r`）は、帯の行に書けないので空白に替える |
+| 作る goroutine | `window/change` のフックは、窓の知らせを覚えて帯を作る goroutine を起こすだけにし、ループの上で構文木を触らない（2.1）。帯を作る goroutine は、解析の goroutine が最後に解析した構文木の複製と全文（`treeStore.latest`）で作る。知らせのバージョン番号の構文木を待たないので、解析の途中なら 1 つ前の構文木で作り、帯にはその構文木のバージョン番号を書く（本体は、今のバージョン番号と違う帯を押しても移らない。FR-238）。解析し終えたら、そのバッファを出している窓の帯を作り直す |
+| 送る帯 | 帯には知らせの `seq` を書く。作っている間に同じ窓の後の知らせが届いていれば送らない。最後に送った帯と同じ中身なら送らない。構文木の無いバッファ（解析しない種類）の窓には、前に帯を送っていれば行の空の帯を送って消させる。窓が無くなった（`closed`）ら忘れる（本体がその窓の帯を消す） |
+| 設定 | `extensions.settings.treesitter.context` の `enable`（既定は true）、`maxLines`（既定は 0）、`multilineThreshold`（既定は 20）である。既定は nvim-treesitter-context の `lua/treesitter-context/config.lua` の既定（`enable = true`、`max_lines = 0`、`multiline_threshold = 20`）に合わせた。誤った値の項目は既定の値のままにし、最初の `buffer/open` でほかの設定の誤りと一緒に知らせる |
+| 切り替え | コマンド `treesitter.context.toggle`（`:treesitter.context.toggle`。宣言ファイルの `contributes.commands`）で、出すかどうかを切り替える（FR-248）。拡張機能のプロセスの中の 1 つの値で、すべての窓に効く。拡張機能が起動し直したら設定の値に戻る |
+
+nvim-treesitter-context の、次の設定に当たるものは持たない。
+`mode = 'topline'`（窓の最初の行で見出しを決める）、`separator`（帯の下の区切りの行。本体の `band.bottom` の色で代わりにできる）、`min_window_height`（低い窓で出さない。本体がカーソルの行を隠さないように削る）、`trim_scope`（いつも既定の `outer` で削る）、`line_numbers`（本体の行番号の列の設定に従う）、`zindex`（本体の重なりの順で決まる。6.7）、`on_attach` である。
+
 #### 利用者の設定に並べたパーサ（FR-142）
 
 同梱する言語は Go と JSON だけで、文法を cgo で一緒にコンパイルし、版は `go.mod` で固定する。
@@ -3401,6 +3425,7 @@ Neovim の `WinScrolled` と `CursorMoved` に当たる契機で、カーソル�
 #369 で、拡張機能が `band/set`（5.3）で置いた帯を、窓の表示領域の上の端に重ねて描くようにした（`internal/ui` の `band.go`、`internal/editor` の `window.go`。FR-237〜FR-239）。
 オーナーの nvim の nvim-treesitter-context（コミット 8decd73460d26ef0a0befb745d022dd1fc2c38b8。オーナーの設定は `max_lines = 4`、`multiline_threshold = 1`）の窓の出し方に合わせた。
 何を帯にするか（関数の見出しの選び方、`max_lines`、外側と内側のどちらから削るか）は拡張機能が決め、本体は届いた行を描く。
+tree-sitter の拡張機能の決め方は、6.1 の「見出しの帯」にある（#380）。
 表に無い点は、どれも仮である。
 
 | 点 | 決めたこと |
