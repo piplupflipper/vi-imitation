@@ -2322,23 +2322,24 @@ tree-sitter-json（v0.24.8）の文法はコメントを含み、公式のクエ
   - 括弧の容れ物: 最初の子が名前を持たない子（予約語か括弧）で、子に開き括弧 `{` か `[` があり、最後の子が対応する閉じ括弧であるもの。Go の `block`、`literal_value`、`interface_type`、`field_declaration_list`、`switch`、型の `switch`、`select` の文、JSON の `object`、`array` が当たる。最初の子が名前を持つノード（`a[i]` の `a`）は、添え字の式をまとまりにしないために除く。1 行の `(` は、引数の並びと式の括弧をまとまりにしないために含めない
   - 本体の容れ物: 親の `body` か `consequence` のフィールドの子であるもの。Python の関数や `if` の本体の `block` のように、括弧を持たない言語の本体を拾う
   - 予約語で閉じる容れ物: 最初の子と最後の子が名前を持たず、最後の子が後の行の最初から始まり、間に行の最初から始まる名前を持つ子があるもの。bash の `if ... fi`、`case ... esac`、`do ... done`、Lua の `if ... end`、Go の複数の行の `type (...)`、`import (...)`、引数の並びが当たる
+  - 節の容れ物: 予約語で閉じる容れ物（括弧の容れ物を除く）の子で、行の最初から予約語で始まり、最初の行の後に行の最初から始まる名前を持つ子があるもの。bash の `elif`、`else`、Lua の `elseif`、`else` の節が当たる。Go の `switch { ... }` の `case` は、括弧の容れ物の子なので当たらない（`switch` の中身を選ぶ）
 - まとまりの全体は、容れ物から親へ、次のどれかに当たる親へたどった、いちばん外のノードである。根へは広げない
-  1. 今のノードが親の `body`、`consequence`、`alternative` のフィールドの子である（本体を持つ文や宣言と、`else`、`elif` の節）。親が容れ物でも広げる
+  1. 今のノードが親の `body`、`consequence`、`alternative` のフィールドの子か、節の容れ物である（本体を持つ文や宣言と、`else`、`elif` の節）。親が容れ物でも広げる
   2. 親が容れ物でなく、親が今のノードと同じ位置で終わり、今のノードがその行の最初の文字（字下げの後）から始まらない（Go の `} else {` の本体）
   3. 親が容れ物でなく、親が今のノードと同じ行で始まり、今のノードより前から始まるか、今のノードと同じ行で終わる（Go の `func` の見出し、JSON の `"a":` の対）。今のノードと同じ位置で始まって後の行へ続く親（Go の `statement_list` のような、今のノードを最初の要素に持つ並び）には広げない
 - フィールドの名前（`body`、`consequence`、`alternative`）は tree-sitter の文法の慣習（Go、Python、C、JavaScript、TypeScript、Rust、Lua の文法が使う）で、言語ごとの表ではない
 - 2 で行の最初から始まるノードを除くのは、字下げで本体を書く言語（Python）では、入れ子の本体の終わりがどれも同じ位置になり、除かないと `for` の中の `an` が外の `if` までまとめて選ぶためである（2026-11-22 に、設定で足した tree-sitter-python v0.23.6 で確かめた）
 - この規則で、Go の関数の本体は `function_declaration` に、`f := func() {...}` の関数リテラルの本体は代入の文に、JSON の `"a": {...}` のオブジェクトはキーとの対になる
-- `else` と `elif` の節は、言語によらず `if` の全体のまとまりに入る。Go と TypeScript は `} else {` の本体が 1 と 2 で、Python の `elif`、`else` と Lua の `elseif`、`else` は節が `alternative` のフィールドなので 1 で、`if` の全体に広がる。bash の `elif` と `else` の節はまとまりにならないが、`if ... fi` が予約語で閉じる容れ物なので、中の `an` は `if` の全体を選ぶ（2026-11-22 に、nvim-treesitter がビルドした tree-sitter-bash、tree-sitter-lua、tree-sitter-typescript、tree-sitter-python で確かめた。`cmd/vi-imitation-ext-treesitter/block_lang_test.go`）
+- `else` と `elif` の節は、言語によらず `if` の全体のまとまりに入る。Go と TypeScript は `} else {` の本体が 1 と 2 で、Python の `elif`、`else` と Lua の `elseif`、`else` は節が `alternative` のフィールドなので 1 で、`if` の全体に広がる。bash の `elif` と `else` の節は節の容れ物なので、1 で `if` の全体に広がる（2026-11-22 に、nvim-treesitter がビルドした tree-sitter-bash、tree-sitter-lua、tree-sitter-typescript、tree-sitter-python で確かめた。`cmd/vi-imitation-ext-treesitter/block_lang_test.go`）
 - 1 つのまとまりは、複数の容れ物を持ちうる（`if` と `else` の本体、型引数と本体を持つ関数、Lua の `if ... end` とその本体）
-- まとまりの中身は、容れ物の中身である。括弧の容れ物は括弧の内側、予約語で閉じる容れ物は最初と最後の予約語の間の行（`then` と `fi`、`do` と `done` を含めない）、本体の容れ物はノードそのものである
-- カーソルが、まとまりの容れ物のどれの中にも無く、最後の容れ物より後にある（bash の `elif [ ... ]` の条件の括弧の後の本体）ときは、そのまとまりを数えない。容れ物として拾えない部分を、条件の括弧のまとまりとして選ばないためである（PR #377 のレビューの推奨 1）
+- まとまりの中身は、容れ物の中身である。括弧の容れ物は括弧の内側、本体の容れ物はノードそのものである。予約語で閉じる容れ物は、最初の予約語の後の行から最初の節の前の行まで（bash の `if` の `then` の枝の本体。`then`、`elif`、`fi`、`do`、`done` の行を含めない）、節の容れ物はその節の本体の行である。このため、bash と Lua の `if` の `in` は、カーソルのある枝の本体だけを選ぶ（PR #377 の再レビューの推奨 1）
+- `in` は、カーソルが、まとまりの容れ物のどれの中にも無く、最後の容れ物より後にあるときは、そのまとまりを数えない。`an` はこの判定をせず、容れ物として拾えない節（Python の `except`、`finally`、Lua の `until` の行）の中でも、カーソルを全体に含むまとまり（`try`、`repeat` の文）を選ぶ（PR #377 の再レビューの必須）
 
 次の書き方は、言語ごとの表を作らないと拾えないので、まとまりにしない（`docs/usage.md` の「まとまりにならない書き方」）。
 
 - TOML の表（`[server]` から次の表まで）。表の名前の括弧の後に、キーと値の対が続く形で、閉じる子が無い
 - TSX の JSX の要素（`<ul>` から `</ul>` まで）。最初と最後の子が名前を持つ開きの要素と閉じの要素である。中の `{...}` の式と、複数の行の `(...)` はまとまりになる
-- Python の `except` と `finally` の節の本体。手元で確かめた tree-sitter-python の文法は、この本体にフィールドの名前を付けていない。中の `in` は、外側の関数の本体を選び、関数の外では何もしない
+- Python の `except` と `finally` の節の本体。手元で確かめた tree-sitter-python の文法は、この本体にフィールドの名前を付けていない。中の `an` は `try` の文の全体を、`in` は外側の関数の本体を選び、関数の外の `in` は何もしない
 - Lua の中身の無い関数（`function empty() end`）。本体のノードが無い
 
 カーソルを含むまとまりは、カーソルを含む最も小さいノードから根の手前までの祖先をたどって集める。

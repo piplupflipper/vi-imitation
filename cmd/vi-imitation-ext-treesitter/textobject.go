@@ -248,6 +248,8 @@ func (o *textObjects) resolve(spec textObjectSpec, b *server.Buffer, p *ext.Text
 // 選択 sel が無ければ（オペレーターの後と、v を打った直後）、範囲がカーソルを含むものを、まとまりの内側から数えて count 番目に採る。
 // 中身がカーソルを含まないまとまり（見出しの上のカーソル、容れ物として拾えない節の中のカーソル）は数えない。
 // カーソルから離れた本体を選ばないためである（PR #377 のレビューの必須 2）。
+// 中身は、カーソルが容れ物の後ろにあるまとまり（onBlock）でも数えない。全体（an）はこの判定をせず、
+// 容れ物として拾えない節（Python の except）の中でも、カーソルを全体に含むまとまり（try の文）を選ぶ（PR #377 の再レビューの必須）。
 //
 // 選択 sel があれば（ビジュアルモードで繰り返したとき）、範囲が選択を含み、選択と同じでないものを、内側から数えて count 番目に採る。
 // 範囲と選択とカーソルは、行単位で返す範囲なら行の全体に広げてから比べる（lineSpan）。
@@ -274,7 +276,7 @@ func (d *document) blockObject(around bool, cursor ext.Position, sel *ext.Range,
 	var last span
 	n := 0
 	for _, b := range blocksAt(d.tree, d.src, q) {
-		if !d.onBlock(b, q.start) {
+		if !around && !d.onBlock(b, q.start) {
 			continue
 		}
 		var cands []span
@@ -357,14 +359,19 @@ func (d *document) withSeparator(n *sitter.Node) span {
 }
 
 // bodySpan は、容れ物 c の中身の範囲を返す（block.go の初めのコメント）。
-// 括弧の容れ物なら括弧の内側（innerSpan）、予約語で閉じる容れ物なら最初と最後の予約語の間の行（keywordInner）、
+// 括弧の容れ物なら括弧の内側（innerSpan）、予約語で閉じる容れ物なら最初の予約語の後から最初の節の前までの行、節ならその本体の行（ownLineChildren）、
 // 本体の容れ物ならノードそのものである。
 func (d *document) bodySpan(c *sitter.Node) span {
 	if isBracketed(c) {
 		return d.innerSpan(c)
 	}
-	if isKeywordDelimited(c, d.src) {
-		first, last, _ := keywordInner(c, d.src)
+	keyword, clause := isKeywordDelimited(c, d.src), isClause(c, d.src)
+	if keyword || clause {
+		first, last, ok := ownLineChildren(c, d.src, keyword)
+		if !ok {
+			// 最初の枝の本体が無い（if の直後に elif がある）。カーソルを含まない幅 0 の範囲にする。
+			return span{int(c.StartByte()), int(c.StartByte())}
+		}
 		return span{d.lineStarts[first], d.lineStarts[last] + d.lineLen(int(last))}
 	}
 	return nodeSpan(c)

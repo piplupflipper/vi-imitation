@@ -20,16 +20,18 @@ import (
 //     括弧を持たない言語の本体）。フィールドの名前は tree-sitter の文法の慣習で、言語によらない（bodyFields）
 //     3. 予約語で閉じる容れ物: 最初の子と最後の子が名前を持たず、最後の子が後の行の最初から始まり（bash の fi、done、esac、Lua の end、
 //     複数の行の ( ) の閉じ括弧）、間に行の最初から始まる名前を持つ子があるもの
+//     4. 節の容れ物: 予約語で閉じる容れ物の子で、行の最初から予約語で始まり、最初の行の後に行の最初から始まる名前を持つ子があるもの
+//     （bash の elif と else、Lua の elseif と else。isClause）
 //   - まとまりの全体は、容れ物から親へ、次のどれかに当たる親へたどった、いちばん外のノードである（joins）。根へは広げない
-//     1. 今のノードが親の body、consequence、alternative のフィールドの子である（本体を持つ文や宣言と、else、elif の節。joinFields）
+//     1. 今のノードが親の body、consequence、alternative のフィールドの子か、節の容れ物である（本体を持つ文や宣言と、else、elif の節。joinFields）
 //     2. 親が容れ物でなく、親が今のノードと同じ位置で終わり、今のノードがその行の最初の文字から始まらない（Go の } else { の block）
 //     3. 親が容れ物でなく、親が今のノードと同じ行で始まり、今のノードより前から始まるか、今のノードと同じ行で終わる
 //     （Go の func の見出し、JSON の "a": の対）。今のノードと同じ位置で始まって後の行へ続く親（今のノードを最初の要素に持つ文の並び）には広げない
 //     Go の関数の本体の block は function_declaration に、if と else の本体（Python の elif、else の節も）は if 文に、
 //     JSON の "a": {...} の object は pair になる。
 //     2 で行の最初から始まるノードを除くのは、字下げで本体を書く言語（Python）では、入れ子の本体がどれも同じ位置で終わるためである
-//   - まとまりの中身（in）は、容れ物の中身である（bodySpan）。括弧の容れ物は括弧の内側、予約語で閉じる容れ物は最初と最後の予約語の間の行、
-//     本体の容れ物はノードそのものである
+//   - まとまりの中身（in）は、容れ物の中身である（bodySpan）。括弧の容れ物は括弧の内側、予約語で閉じる容れ物は最初の予約語の後の行から
+//     最初の節の前の行まで（bash の if の then の枝の本体）、節の容れ物はその節の本体の行、本体の容れ物はノードそのものである
 //
 // 1 つのまとまりが複数の容れ物を持つことがある（if と else の本体、型引数と本体を持つ関数）。
 
@@ -64,7 +66,24 @@ func isContainer(n *sitter.Node, src []byte) bool {
 	if !n.IsNamed() || n.IsExtra() || isRoot(n) {
 		return false
 	}
-	return isBracketed(n) || inField(n, bodyFields) || isKeywordDelimited(n, src)
+	return isBracketed(n) || inField(n, bodyFields) || isKeywordDelimited(n, src) || isClause(n, src)
+}
+
+// isClause は、n が予約語で閉じる容れ物の中の節（bash の elif と else、Lua の elseif と else）かどうかを返す（この節の初めのコメントの 4）。
+// 親が予約語で閉じる容れ物（括弧の容れ物を除く）で、n が行の最初から予約語で始まり、n の最初の行の後に、行の最初から始まる名前を持つ子があるものである。
+// 節は、親の if の全体のまとまりに入り（joins）、中身はその節の本体の行だけである（bodySpan）。
+// 括弧の容れ物（Go の switch { ... }）の中の case は節にしない（switch の中身を選ぶ。PR #377 のレビューの必須 1）。
+func isClause(n *sitter.Node, src []byte) bool {
+	p := n.Parent()
+	if p == nil || !n.IsNamed() || n.IsExtra() || !startsLine(n, src) || isBracketed(p) || !isKeywordDelimited(p, src) || isKeywordDelimited(n, src) {
+		return false
+	}
+	first := firstNonExtraChild(n)
+	if first == nil || first.IsNamed() {
+		return false
+	}
+	_, _, ok := ownLineChildren(n, src, false)
+	return ok
 }
 
 // isBracketed は、n が括弧の容れ物の形（最初の子が名前を持たず、開き括弧があり、最後の子が対応する閉じ括弧）かどうかを返す。
@@ -94,13 +113,14 @@ func isKeywordDelimited(n *sitter.Node, src []byte) bool {
 	if last.StartPosition().Row <= n.StartPosition().Row || !startsLine(last, src) {
 		return false
 	}
-	_, _, ok := keywordInner(n, src)
+	_, _, ok := ownLineChildren(n, src, false)
 	return ok
 }
 
-// keywordInner は、予約語で閉じる容れ物 n の中身の行（最初と最後の行）を返す。
-// 中身は、行の最初から始まる最初の名前を持つ子の行から、最後の名前を持つ子の行までである。そのような子が無ければ ok は false である。
-func keywordInner(n *sitter.Node, src []byte) (first, last uint, ok bool) {
+// ownLineChildren は、予約語で閉じる容れ物か節 n の中身の行（最初と最後の行）を返す。
+// 中身は、n の最初の行の後で行の最初から始まる最初の名前を持つ子の行から、最後の名前を持つ子の行までである。そのような子が無ければ ok は false である。
+// stopAtClause が true なら、最初の節（isClause。bash の elif）の前で止める（if の中身を、最初の枝の本体に限る）。
+func ownLineChildren(n *sitter.Node, src []byte, stopAtClause bool) (first, last uint, ok bool) {
 	cursor := n.Walk()
 	defer cursor.Close()
 	children := n.NamedChildren(cursor)
@@ -108,6 +128,9 @@ func keywordInner(n *sitter.Node, src []byte) (first, last uint, ok bool) {
 		c := &children[i]
 		if c.IsExtra() {
 			continue
+		}
+		if stopAtClause && isClause(c, src) {
+			break
 		}
 		if !ok {
 			if !startsLine(c, src) || c.StartPosition().Row == n.StartPosition().Row {
@@ -176,7 +199,7 @@ func joins(p, cur *sitter.Node, src []byte) bool {
 	if isRoot(p) {
 		return false
 	}
-	if inField(cur, joinFields) {
+	if inField(cur, joinFields) || isClause(cur, src) {
 		return true
 	}
 	if isContainer(p, src) {
