@@ -120,3 +120,36 @@ func TestExtMessageKeepsEditorError(t *testing.T) {
 		t.Errorf("拡張機能の誤りの後の知らせ: message = %q", msg)
 	}
 }
+
+// hit-enter の問いで待っている本体の複数行のメッセージ（:ls の一覧）は、後から届いた本体の知らせ（diff/start で分割したペインの
+// client が繋いだときの「見比べます」）と拡張機能の message/show で上書きしない。知らせは履歴に残り、:messages で見られる。
+// 利用者がキーを打って一覧を消した後は、これまでどおり出る（#381 の続き。main の CI で TestChangesLastClientInTmux が揺れた）。
+func TestLaterMessageKeepsHitEnter(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "a\n", "b.txt": "b\n"})
+	h := start(t, Config{WorkDir: dir}, "a.txt", "b.txt")
+	h.keys(":ls<CR>")
+	h.eventually(":ls の一覧", func() bool { return h.e.hitEnter() && strings.Contains(h.e.message.Text, `"b.txt"`) })
+	listing := h.message()
+	h.e.do(func() {
+		h.e.showLaterMessage(infoMessage("later"))
+		h.e.handleEvent(&exthost.MessageShow{Params: ext.MessageShowParams{Level: ext.MessageInfo, Text: "from ext"}})
+	})
+	if msg := h.message(); msg != listing {
+		t.Errorf("後から届いた知らせで一覧が替わった: %q", msg)
+	}
+	var history []string
+	h.e.do(func() {
+		for _, m := range h.e.msgHistory {
+			history = append(history, m.Text)
+		}
+	})
+	if !slices.Contains(history, "later") || !slices.Contains(history, "from ext") {
+		t.Errorf("履歴 = %q, want later と from ext を含む", history)
+	}
+	h.keys("<CR>")
+	h.eventually("一覧が消える", func() bool { return h.e.message.Text == "" })
+	h.e.do(func() { h.e.showLaterMessage(infoMessage("later 2")) })
+	if msg := h.message(); msg != "later 2" {
+		t.Errorf("一覧を消した後の知らせ: message = %q", msg)
+	}
+}

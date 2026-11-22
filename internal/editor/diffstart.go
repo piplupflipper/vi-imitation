@@ -167,7 +167,7 @@ func (e *Editor) diffStart(extID string, p ext.DiffStartParams) (ext.DiffStartRe
 		return ext.DiffStartResult{}, err
 	}
 	text := fmt.Sprintf("%s を別のペインで開いて見比べます", e.bufferName(other))
-	e.withView(c, func() { e.message = infoMessage(text) })
+	e.withView(c, func() { e.showLaterMessage(infoMessage(text)) })
 	return ext.DiffStartResult{Split: true}, nil
 }
 

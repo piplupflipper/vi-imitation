@@ -49,13 +49,36 @@ func (e *Editor) noteMessage(m ui.Message) {
 
 // showExtMessage は、拡張機能の message/show の m を履歴に残し、メッセージの行に出す。
 // メッセージの行に本体の誤り（拡張機能のメッセージでない誤り）が出ていれば、上書きしない（このファイルの冒頭の規則）。
+// hit-enter の問いで待っている本体の複数行のメッセージ（:ls、:messages など）も、上書きしない（keepsHitEnter）。
 func (e *Editor) showExtMessage(m ui.Message) {
 	e.noteMessage(m)
 	if e.message.Level == ui.MessageError && e.message != e.extMessage {
 		return
 	}
+	if e.keepsHitEnter() {
+		return
+	}
 	e.message = m
 	e.extMessage = m
+}
+
+// showLaterMessage は、利用者のキーによらずに後から起きたこと（別の client の操作、拡張機能の diff/start で分割したペインの client が
+// 繋いだこと）の本体の知らせ m を、読み込んでいる client のメッセージの行に出す。
+// その client が hit-enter の問いで本体の複数行のメッセージを出して待っていれば、上書きせずに履歴に残すだけにする（keepsHitEnter）。
+func (e *Editor) showLaterMessage(m ui.Message) {
+	if e.keepsHitEnter() {
+		e.noteMessage(m)
+		return
+	}
+	e.message = m
+}
+
+// keepsHitEnter は、読み込んでいる client が、hit-enter の問いで本体の複数行のメッセージ（拡張機能のメッセージでないもの）を出して
+// 待っているかを返す。そのメッセージは、利用者が次のキーを打つまで、後から届いた知らせで上書きしない。
+// 利用者が打った :ls の一覧が、続けて届いた知らせ（diff/start の「見比べます」）で、読む前に消えたため
+// （#381 の続き。main の CI の TestChangesLastClientInTmux が揺れた。Vim の hit-enter の問いも、キーを打つまで一覧を残す）。
+func (e *Editor) keepsHitEnter() bool {
+	return e.hitEnter() && e.message != e.extMessage
 }
 
 // showMessages は、:messages で、メッセージの履歴を古い順に 1 件 1 行で出す（Vim の :messages）。

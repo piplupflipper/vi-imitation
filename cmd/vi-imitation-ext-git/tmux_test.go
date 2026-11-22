@@ -420,6 +420,8 @@ func TestChangesLastClientInTmux(t *testing.T) {
 	ts.run("send-keys", "-t", p2, "Enter")
 	ts.waitPane(p2, "b.txt のタブ", func(s string) bool { return strings.Contains(s, "BBB") })
 	ts.waitPanes(3)
+	// 右に開くペインの client が繋ぐ（見比べを始めた知らせが届く）前に :ls を打ってもよい。本体は、hit-enter の問いで待っている
+	// :ls の一覧を、後から届いた知らせで上書きしない（#381 の続き。main の CI で、知らせが一覧を消して揺れた）。
 	ts.run("send-keys", "-t", p2, ":ls", "Enter")
 	ls := ts.waitPane(p2, ":ls の一覧", func(s string) bool { return strings.Contains(s, `"a.txt"`) })
 	for l := range strings.Lines(ls) {
