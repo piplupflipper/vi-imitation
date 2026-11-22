@@ -78,6 +78,13 @@ func TestLoadColorScheme(t *testing.T) {
 	if got := load("iceberg", "").SchemeColors; got["yank"].Reverse || got["yank"].Bg.Kind != ColorRGB || got["yank"].Bg == got["visual"].Bg {
 		t.Errorf("同梱の iceberg の yank = %+v、visual = %+v", got["yank"], got["visual"])
 	}
+	// 同梱の iceberg は帯の色（band、band.linenr）を書かない。書くと、設定の colors で popup や linenr を変えても帯が付いてこない
+	// （本体は書いていない帯の色を popup と linenr から引き継ぐ。PR #376 の再レビューの推奨）。
+	for _, name := range []string{"band", "band.linenr"} {
+		if s, ok := load("iceberg", "").SchemeColors[name]; ok {
+			t.Errorf("同梱の iceberg が %s を書いている: %+v", name, s)
+		}
+	}
 
 	var cfg Config
 	if errs := cfg.LoadColorScheme(dir, AppearanceCheck{}); errs != nil || cfg.SchemeColors != nil {

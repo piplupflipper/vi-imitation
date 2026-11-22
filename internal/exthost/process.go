@@ -462,6 +462,16 @@ func (h *Host) handler(e *extension, r *run) rpc.Handler {
 					return
 				}
 				ev = &ProgressReport{Extension: id, Params: p}
+			case ext.MethodBandSet:
+				var p ext.BandSetParams
+				if !h.decode(id, n, &p) {
+					return
+				}
+				if err := p.Validate(); err != nil {
+					h.log.Warn("invalid band/set from extension", "extension", id, "error", err)
+					return
+				}
+				ev = &BandSet{Extension: id, Params: p}
 			case ext.MethodViewUpdate:
 				var p ext.ViewUpdateParams
 				if !h.decode(id, n, &p) {

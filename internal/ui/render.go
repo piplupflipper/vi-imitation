@@ -331,6 +331,7 @@ func (r *Renderer) render(f *Frame) Screen {
 	d.drawMarks(rows)
 	area := textArea{top: 0, rows: rows, width: r.Width}
 	r.drawIntro(g, f.Intro, area)
+	r.drawBand(g, theme, f, text, cur, area)
 	r.drawScrollbar(g, theme, f.Scrollbar, text, area)
 	r.drawProgress(g, theme, f.Progress, area)
 	curRow, curCol := r.cursorScreen(text, f, cur)

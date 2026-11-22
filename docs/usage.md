@@ -631,6 +631,9 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 | `scrollbar.diagnostic.error`、`scrollbar.diagnostic.warning`、`scrollbar.diagnostic.info`、`scrollbar.diagnostic.hint` | スクロールバーの診断の印。つまみの上では `scrollbar` の上に重ねる（既定では反転で、印の色の地に記号が出る） | 印の列の `sign.diagnostic.*` と同じ、端末の 16 色の 9、11、12、8 |
 | `scrollbar.search` | スクロールバーの検索の一致の印 | 端末の 16 色の 14（情報の印の 12 と色で見分けられるようにした）。同梱の iceberg では iceberg.vim の `Normal` の文字の色 |
 | `scrollbar.<種類>` | 拡張機能が後から足すスクロールバーの印の種類の色。`scrollbar.` の後に、`scrollbar.marks` に書ける形の名前（空でなく、コンマと空白を含まない）を書く。本体の表に無い名前でも誤りにしない。ただし、本体の種類（`diagnostic`、`search`）と同じか似た名前（`scrollbar.diagnostics.error`、`scrollbar.serch` など。点までの部分の編集距離が 2 以下）で本体の表に無いものは、書き間違いとして設定の誤りにする | なし |
+| `band` | 拡張機能が窓の上端に重ねる帯（[窓の上端の帯](#窓の上端の帯)）の本文の列。帯の行の範囲の色はこの上に重ねる | 書かなければ `popup` の今の色を引き継ぐ（nvim-treesitter-context の既定の `TreesitterContext` は浮かべた窓の `NormalFloat` へのリンク）。同梱の iceberg も書かないので、`popup`（iceberg.vim の `Pmenu`）の色になる |
+| `band.linenr` | 帯の行の、印の列と行番号の列 | 書かなければ `linenr` の今の色を引き継ぐ（nvim-treesitter-context の既定の `TreesitterContextLineNumber` は `LineNr` へのリンク）。同梱の iceberg も書かないので、`linenr`（iceberg.vim の `LineNr`）の色になる |
+| `band.bottom` | 帯の最後の行の全体に重ねる色（帯と本文の境目に下線を引くときに書く。nvim-treesitter-context の `TreesitterContextBottom`） | なし |
 | `sign.executionPoint`、`sign.breakpoint`、`sign.breakpointUnverified` | 印の列のデバッガーの印 | 順に黄色、赤、灰色 |
 | `sign.diagnostic.error`、`sign.diagnostic.warning`、`sign.diagnostic.info`、`sign.diagnostic.hint` | 印の列の診断の印 | 順に赤、黄色、青、灰色 |
 | `tabline`、`tabline.selected`、`tabline.fill` | タブの行の、ほかのタブ、いまのタブ、タブの右の空いた列 | 順に灰色の背景と下線、太字、反転 |
@@ -1696,6 +1699,22 @@ LSP と DAP の操作（定義へ移動、ホバー、ブレークポイント�
 出さないときは、設定ファイルに `"progress": { "show": false }` と書くか、実行中に `:option.set progress.show false` と打つ。
 色の名前は[配色](#配色)、印の名前は[記号](#記号)にある。
 拡張機能から知らせる口は、`vi-imitation --docs extensions` の `progress/report` にある。
+
+## 窓の上端の帯
+
+拡張機能は、編集の画面のバッファの表示領域の上の端に、何行かを重ねて描ける（オーナーの nvim の nvim-treesitter-context の窓の形）。
+関数とクラスの見出しを窓の上端に固定する拡張機能が使う。本体は帯の中身を決めず、拡張機能が送った行を描く。
+
+- 帯の行の左の、印の列と行番号の列には、行番号の列を出していれば、その帯の行に当たるファイルの行の番号が出る
+- 帯はカーソルの行を隠さない。カーソルが表示領域の上の方にあると、帯の上の行から削って縮む。カーソルが最初の行にあれば出ない
+- 帯の下に隠れた本文の行は、スクロールの余白（`scroll.margin`）を足さずに隠れたままにする
+- ノーマルモードで帯の行を左のボタンで押すと、その帯の行に当たるファイルの行の先頭へ移る。移る前の位置はジャンプリストに残るので、`<C-o>` で戻れる。帯を作った後にファイルを書き換えた（拡張機能が帯を作り直す前の）帯の行と、行に当たらない帯の行を押したときと、インサートモードとビジュアルモードで押したときは、帯の下に隠れた本文を押したことになる
+- 右端のスクロールバー、拡張機能の進み具合、ポップアップは、帯の上に出る。ポップアップやペインの中の画面には帯は出ない
+- 帯を出した拡張機能が異常で終わるか止まったら、帯は消える
+
+色の名前は[配色](#配色)の `band`、`band.linenr`、`band.bottom` にある。
+拡張機能から使う口は、`vi-imitation --docs extensions` の `window/change`（見えている行の範囲とカーソルの変化の知らせ。宣言ファイルの `windowEvents` で受け取る）と `band/set` にある。
+スクリプトの拡張機能からは、`server.Server` の `OnWindowChange` と `SetBand` で使える（[スクリプトの拡張機能](#スクリプトの拡張機能)）。
 
 ## タブとジャンプ
 

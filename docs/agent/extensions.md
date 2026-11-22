@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.16.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.17.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -142,6 +142,9 @@ f の対象の文字が見つからない場合のように該当が無いとき
   本体は、この拡張機能への command/execute と provider/invoke の params の Withheld を立てるので、ext/server はハンドラーへ
   バッファの代わりに nil を渡す。バッファの複製を要る操作（operators、motions、textObjects）と SaveHook とは併せて書けない（Validate）。
   古い本体（0.15.0 まで）は未知の項目として無視し、バッファを送る。
+- `windowEvents`（`bool`、省ける）: true なら、稼働中のときに窓の変化の知らせ window/change を受け取る。
+  関数の見出しを窓の上端に固定する拡張機能（nvim-treesitter-context に当たる）が使う。起動の契機にはならない。
+  足したのは API 0.17.0 である。古い本体は未知の項目として警告にし、知らせを送らない。
 - `activation`（`[]Activation`）: 起動の契機の一覧である。どれか 1 つが成り立った時点で起動する。
 - `contributes`（`Contributes`）: 拡張機能が追加する操作である。
 - `provides`（`[]Operation`、省ける）: 拡張機能が引き受ける本体の操作（提供者として名乗る操作）の列である。
@@ -318,9 +321,11 @@ params と result の型の項目は、`vi-imitation --docs extension-types <型
 - `view/key`: 通知。params は `ViewKeyParams`。
 - `view/select`: 通知。params は `ViewSelectParams`。
 - `view/tabChange`: 通知。params は `ViewTabChangeParams`。
+- `window/change`: 通知。params は `WindowChangeParams`。窓の見えている行の範囲、カーソルの位置、モード、表示領域の大きさが変わったことを知らせる（Neovim の WinScrolled と CursorMoved に当たる）。本体が送るのは、宣言ファイルの windowEvents が true で、稼働中の拡張機能だけである。起動の契機にはならない（未起動の拡張機能は起動しない）。稼働中になった拡張機能には、その時点のすべての窓の状態を送る。キーを打つたびには送らない。本体は、画面を描いた後に、窓ごとに前に送った中身と比べ、違う窓だけを送る。前に送ってから WindowNotifyIntervalMs（150） のミリ秒が経っていなければ、その間は送らずに、時間が来た時点の最後の中身を 1 回だけ送る（nvim-treesitter-context の throttle_by_id と同じく、続けて変わっても、その時間のうちに 2 回までにする）。このため、拡張機能が受け取る中身は、途中の中身を飛ばすことがある。ext/server は、さらに、フックが前の知らせを処理している間に同じ窓の知らせが続けて届いたら、最後の 1 件だけをフックへ渡す（拡張機能の処理が間隔より遅くても、知らせが溜まって ping の応答が遅れないようにする）。窓が無くなった（client が終わった）ときは、Closed を true にした知らせを 1 回送る。その WindowID は使い回さない。古い本体（0.16.0 まで）は送らない。
 
 #### 拡張機能から本体へ
 
+- `band/set`: 通知。params は `BandSetParams`。窓の表示領域の上の端に、何行かを重ねて描く帯を置く（nvim-treesitter-context の窓に当たる）。本体は、拡張機能と窓の組ごとに最後に届いた帯を持ち、窓のバッファが Buffer のときだけ描く。行の無い帯（Lines が空）は、その組の帯を消す。拡張機能が異常で終わるか止まったら、その拡張機能の帯をすべて消す。1 つの窓に複数の拡張機能の帯があれば、拡張機能の ID の順に上から並べる。帯はカーソルの行を隠さない。本体は、帯の行数がカーソルの表示領域の中の行（上から数えた行数）を超えるとき、帯の上の行から削って、カーソルの行より上に収める（nvim-treesitter-context の calc_max_lines と trim_scope の既定の outer と同じ）。帯の下に隠れた本文の行のために、スクロールの余白は足さない（nvim-treesitter-context と同じ）。古い本体（0.16.0 まで）は、知らない通知として捨てる（ログに残すだけ）。
 - `buffer/create`: リクエスト。params は `BufferCreateParams`、result は `BufferCreateResult`。
 - `buffer/dispose`: リクエスト。params は `BufferDisposeParams`、result は `BufferDisposeResult`。
 - `buffer/edit`: リクエスト。params は `BufferEditParams`、result は `BufferEditResult`。編集を禁止したバッファへの要求は、result ではなく、code が ErrorCodeReadOnly（-32001） の誤りの応答で断る。

@@ -1717,6 +1717,7 @@ ACP の拡張機能が `session/new` の `cwd` に本体の作業ディレクト
 | `contributes.popupKeys` | ポップアップの中だけで効くキーと ID の組の列。#236 で、`contributes` の他の項目と同じ形（`id`、`keys`、`description`）にし、打たれたら `view/key` で ID を知らせる形にした（1.4）。#286 で、`view/key` の代わりに `<CR>` と同じく扱わせる `action`（`select`）を足した（1.4 の「#286 の出す場所の指定」） | FR-69、FR-105 |
 | `contributes.statusline` | ステータス行とタブ行に足す部品の ID と説明文（7.1）。ID は拡張機能の ID と `.` で始め、その後に `.` を含めない（#238。`ext.StatusLinePart`）。部品を足す拡張機能は `activation` を空にしてよい | FR-92 |
 | `noBufferSync` | true なら、本体はその拡張機能へバッファの同期（`buffer/open`、`buffer/change`、`buffer/close`、`buffer/didSave`）を送らない（5.3 の「#367 で」の段落。`ext.Manifest.NoBufferSync`）。`saveHook`、`contributes` の `operators`、`motions`、`textObjects` とは併せて書けない | FR-229 |
+| `windowEvents` | true なら、稼働中のときに窓の変化の知らせ `window/change` を受け取る（5.3、6.7 の「窓の変化の知らせ」。#369）。起動の契機にはならない | FR-235 |
 
 段階 3 の拡張機能の宣言ファイルの例を示す。
 
@@ -2048,6 +2049,19 @@ PR #375 のレビューで、メモリの使用量の拡張機能（6.11）が�
 | バッファの複製が要る操作（`operators`、`motions`、`textObjects`）と `saveHook` | 宣言ファイルの検査で、印と併せて書くと誤りにする |
 
 古い本体（0.15.0 まで）は、`noBufferSync` を未知の項目として無視し（`internal/config` の `LoadManifest` が警告にする）、バッファを送る。
+
+#369 で、次を足した（拡張機能 API の版は 0.17.0。6.7 の「窓の変化の知らせ」と「窓の上端の帯」）。
+
+| 向き | メソッド（仮） | 種類 | 内容 | 関係する要件 |
+|---|---|---|---|---|
+| 本体 → 拡張機能 | `window/change` | 通知 | 窓（`ext.WindowID`。今は編集の client ごとに `client/<client の番号>`）の、バッファ、バージョン番号、最初の行（`top`）、最後まで描いた行の次の行（`bottom`。`ui.Renderer.Botline`）、表示領域の行数と列数、横のスクロールの位置（`left`。行を折り返す窓では 0）、カーソル、モード、見比べの片側か（`diff`）、知らせの通し番号（`seq`）を知らせる（`ext.WindowChangeParams`）。窓が無くなったら `closed` を true にして送る。宣言ファイルの `windowEvents` が true の稼働中の拡張機能にだけ送る | FR-235、FR-236 |
+| 拡張機能 → 本体 | `band/set` | 通知 | 窓の上端に重ねて描く帯を、窓、帯を作ったときのバッファとバージョン番号、元にした知らせの通し番号（`seq`。今の帯より小さければ本体が捨てる）、行の列で置く（`ext.BandSetParams`）。行は、文字列、省ける行に当たるバッファの行（`line`）、範囲ごとの色の名前（`highlights`）を持つ。行の空の帯は、その拡張機能の帯を消す。窓の識別子が空のもの、64 行を超えるもの、改行か不正な UTF-8 を含む行、負の行、行の外を指す範囲は、本体がログに残して捨てる | FR-237〜FR-239 |
+| 宣言ファイル | `windowEvents` | 項目 | true なら `window/change` を受け取る。起動の契機にはならない | FR-235 |
+
+古い本体（0.16.0 まで）は、`windowEvents` を未知の項目として警告にして `window/change` を送らず、`band/set` を知らない通知として捨てる。
+`ext/server` の口は、受け取る `Server.OnWindowChange`（窓のバッファの複製を添える）と、送る `Server.SetBand` である。
+`ext/server` は、フックが前の知らせを処理している間に同じ窓の知らせが続けて届いたら、最後の 1 件だけをフックへ渡す（6.7 の「窓の変化の知らせ」）。
+`band/set` は、ほかの表示のデータの通知と同じく、本体が拡張機能の応答を待っている間は取っておき、取っておく列が上限を超えたら捨てる通知に数える。
 
 `popup/open` の params は、部品（`component`。`kind`、`title`、`text`、`format`、`highlights`、`items`）、置き場所（`placement`。`cursor` か `center`）、カーソルの近くの窓に開いた時点でフォーカスを入れるか（`focus`）である。
 部品の検査（種類、項目の ID の空と重複、改行、範囲）に通らない `popup/open` は、JSON-RPC の誤りで断る。通らない `view/update` は捨てる。
@@ -3258,6 +3272,47 @@ Vim と Neovim には対応する既定が無い（要件定義の FR-178 の後
 - 拡張機能の印の種類（#317 の第 3 弾）: 描画（`scrollbarCellAt` の二分探索）と印のクリック（`ui.Renderer.ScrollbarMarkLines` の部分の列と、`mouseMarkJump` の「カーソルの行より後の最初の行」）は、`ui.ScrollbarMarks.Lines` が小さい順であることを前提にする。拡張機能から受けた行は、診断の印と同じく `internal/editor` で並べ直してから渡す。`ScrollbarMarkLines` は種類の名前で分岐しないので、拡張機能の種類にもそのまま効く
 - 窓の上端の帯のクリック: `ui.Hit.Row` と `ui.Hit.ThumbRow` の doc コメントは、意味を「Area が HitScrollbar のとき」に限っている。帯でも行や列を返すなら、意味を広げるか別の欄にする。帯を押したボタンのドラッグを帯の中へ寄せて解くなら、`internal/editor` の `mouseLocator.hit` の、寄せ先にする部品の列挙（今は `HitText`、`HitFloat`、`HitScrollbar`）に足す
 拡張機能の印の種類は、`scrollbarKinds` に行を足すか、拡張機能から送られた一覧を `ui.ScrollbarMarks` にする形になる見込みである。
+2 つ目の申し送りは #369 で受けた。帯は `ui.Hit.Row` と `ThumbRow` を使わず、帯の行に当たるバッファの行を別の欄 `ui.Hit.BandLine` に入れ、帯の下の本文の位置は `Line` と `Col` に入れる（次の次の節）。帯で押したボタンのドラッグは、`mouseLocator.hit` が本文（`HitText`）へ寄せて解く。
+
+#### 窓の変化の知らせ
+
+#369 で、窓の見えている行の範囲とカーソルの変化を拡張機能に知らせる `window/change`（5.3）を足した（`internal/editor` の `window.go`。FR-235、FR-236）。
+Neovim の `WinScrolled` と `CursorMoved` に当たる契機で、カーソルが止まった契機（この節の前の「カーソルが止まった契機」）には載せない。
+表に無い点は、どれも仮である。
+
+| 点 | 決めたこと |
+|---|---|
+| 窓 | 編集の client の画面のバッファの表示領域で、client ごとに 1 つである。識別子は `client/<client の番号>` で、拡張機能は形に頼らない（`ext.WindowID`）。端末多重化ソフトで分割したペインの client と、見比べのために分割したペインの client は別の client なので、別の窓になる。見比べの片側かは `diff` で分かる。ポップアップの中のバッファ（ホバー、ポップアップで見る、ファインダー）と部品の client の画面は、#369 では窓として知らせない。後で知らせるときは `client/` で始まらない識別子にする |
+| 中身 | 描画の後の、その client の描画の部品（`ui.Renderer`）の最初の行（`Top`）、最後まで描いた行の次の行（`Botline`）、表示領域の行数（`TextRows`）と本文の列数（`TextWidth`）、行を折り返さないときの横のスクロールの位置（`Left`。Vim の `leftcol`。折り返すときは 0）と、カーソルのあるタブ（フォーカスのあるポップアップを開いていれば、開いたときのタブ）のバッファ、バージョン番号、カーソルと、キーを受けるバッファのモードである |
+| 送る相手 | 宣言ファイルの `windowEvents` が true で、稼働中の拡張機能だけである（`exthost.Host.WindowEventExtensions`）。保存の前の `saveHook` と同じ形の名乗りにした。起動の契機にはしない（未起動の拡張機能は、知らせのために起動しない） |
+| 送る時 | `render` の最後（`notifyWindows`）に、拡張機能と窓の組ごとに前に送った中身と比べ、違う窓だけを送る。描いた結果で比べるので、キーでない出来事（`gd` の応答での移動、端末の大きさの変更、別の client や拡張機能の編集）でも、変われば送る。どの client のキーかにもよらない（ペインの部品の client のキーで元の client のタブが動いたときも、元の client の窓を送る） |
+| 間引き | 送った後の `ext.WindowNotifyIntervalMs`（150）ミリ秒の間は送らず、その間に描いたら、時間が来た時点で比べ直して違う窓を送り、送ったらもう一度その時間を待つ。nvim-treesitter-context（コミット 8decd73460d26ef0a0befb745d022dd1fc2c38b8）の `lua/treesitter-context.lua` の `throttle_by_id`（最初の呼び出しはすぐに動かし、150 ミリ秒の間の呼び出しはその後に 1 回だけ動かす）に合わせた。時間の待ちは、一時的な色付けと同じく `Editor.afterFunc` のタイマーで行い、時間が来たら `inspect` でイベントループへ戻す（2.1）。間引きは拡張機能ごとでなく全体で 1 つにした |
+| 横のスクロール | 横のスクロールの位置は比べる中身に入れるので、カーソルが動かずに横だけ動いた（ホイールの横の送り）ときも送る。Neovim の `WinScrolled` も横のスクロールで起きる。窓の列で位置を決める拡張機能（hlchunk.nvim は罫線の列を `winsaveview().leftcol` で窓の列に直す）のための項目で、帯は本体が横のスクロールに合わせて描くので要らない（PR #376 のレビューの推奨 1） |
+| 通し番号 | 送るたびに 1 から増やす番号（`seq`。窓と拡張機能をまたいで 1 つ）を付ける。比べる中身には入れない。拡張機能は帯の `seq` に書き、本体は、同じ拡張機能と窓の組の今の帯より小さい `seq` の帯を捨てる（次の節の「持ち方」） |
+| 遅い拡張機能 | `ext/server` は、接続の読み取りの goroutine で `window/change` に届いた順の番号を振り、窓ごとに最後の番号を覚える。ループがその知らせを処理する時点で、同じ窓の後の知らせが届いていれば、フックを呼ばずに捨てる（`Server.windowChange`）。後の知らせは列の後ろにあるので、それより前の `buffer/change` を適用した後に、最後の知らせでフックを呼ぶ（順序は保つ）。フックがループの上で間引きの間隔より長く止まっても、知らせが列に溜まらず、生存確認の応答が遅れない。PR #376 のレビューで、知らせのたびに 400 ミリ秒待つ拡張機能に 0.1 秒ごとに `j` を送ると、約 6 秒で生存確認の期限（2 秒）を超えて強制終了された（`internal/editor` の `TestWindowChangeSlowExtension`。推奨 2） |
+| 閉じた窓 | client が終わったら、次の描画の後に、`closed` を true にした知らせを送る。識別子は使い回さない |
+| 状態の変化 | 拡張機能の状態が変わったら（再起動を含む）、その拡張機能へ送った中身を忘れる（`forgetWindows`）。次に稼働中になったら、すべての窓を送り直す。`buffer/open` の送り直し（5.2）の後に送るので、拡張機能は窓のバッファの複製を持っている |
+| 順序 | 本体は、描画の前に `buffer/change` を送り終えているので、`window/change` を受け取った拡張機能の複製のバージョン番号は、ふつう知らせの `version` と同じである（`ext/server` の `WindowChangeEvent.Buffer`） |
+
+#### 窓の上端の帯
+
+#369 で、拡張機能が `band/set`（5.3）で置いた帯を、窓の表示領域の上の端に重ねて描くようにした（`internal/ui` の `band.go`、`internal/editor` の `window.go`。FR-237〜FR-239）。
+オーナーの nvim の nvim-treesitter-context（コミット 8decd73460d26ef0a0befb745d022dd1fc2c38b8。オーナーの設定は `max_lines = 4`、`multiline_threshold = 1`）の窓の出し方に合わせた。
+何を帯にするか（関数の見出しの選び方、`max_lines`、外側と内側のどちらから削るか）は拡張機能が決め、本体は届いた行を描く。
+表に無い点は、どれも仮である。
+
+| 点 | 決めたこと |
+|---|---|
+| 持ち方 | 窓と拡張機能の組ごとに、最後に届いた帯を持つ（`Editor.bands`）。帯の `seq` が今の帯の `seq` より小さければ、古い知らせから作った帯（別の goroutine で作り、作り終える順で入れ替わって届いたもの）として捨てる。`seq` を書かない（0）帯は比べない。行の空の帯はその組を消す（`seq` を書いていれば行の無い帯として持ち、消した後に届いた古い帯も描かない）。繋いでいない client の窓への帯は捨てる。拡張機能が止まったら（`clearExtension`）その拡張機能の帯を、client が終わったら（`removeClient`）その窓の帯を消す |
+| 出す画面 | その窓の client の画面（`bufferFrame`）だけで、窓のバッファが帯の `buffer` のときだけ描く。ポップアップ、プレビュー、ファインダーの中身の Frame は、描くときに `Band` を空にする（スクロールバーと同じ）。1 つの窓に複数の拡張機能の帯があれば、拡張機能の ID の順に上から並べる |
+| 隠れる行 | 帯の行数は、帯の行の数と、カーソルの表示領域の中の行（上から数えた行数）の小さい方にし、上の行から削る。カーソルが最初の行にあれば描かない。nvim-treesitter-context の `context.lua` の `calc_max_lines` が `max_lines` を `cursor - w0`（カーソルの行から最初の行を引いた数）で抑え、`trim_scope` の既定の `outer` が外側（上）から削るのと同じで、拡張機能の帯が古いままでもカーソルの行は隠れない。帯の下に隠れた本文の行のために、スクロールの余白（`scroll.margin`）は足さない（nvim-treesitter-context も `'scrolloff'` を変えない）。このため、`k` でカーソルを帯の行の下まで上げると帯が縮む |
+| 列 | 印の列と行番号の列（本文の左の列の全体）は `band.linenr` で塗り、行番号の列を出していれば、行に当たるバッファの行の番号を本文の行番号と同じく右に寄せて描く（`render.lua` の `render_lno` と、窓の色 `TreesitterContextLineNumber`）。印は描かない。本文の列は `band` で塗る |
+| 文字 | 行は折り返さず、右の端で切る。行を折り返さない窓では、本文と同じ横のスクロールの位置から描く（`render.lua` の `horizontal_scroll_contexts`）。行を折り返す窓では左の端から描く。タブ文字は窓のバッファのタブ幅（`tab.width`）で広げ、空白の記号（FR-170）は描かない（nvim-treesitter-context の窓は `'list'` の無い `minimal` の窓である）。`^A` などの表記は `specialkey` の色を重ねる |
+| 色 | 範囲の色（`highlights` の色の名前）は `band` の上に、後の範囲ほど上に重ねる。最後の行には、列の全体に `band.bottom` を重ねる（`TreesitterContextBottom`。既定の対応には無い）。`band` と `band.linenr` は既定の対応に値を持たず、既定の対応、配色、設定の `colors` のどれにも書いていなければ、浮かべた窓の `popup` と行番号の列の `linenr` の今の色を引き継ぐ（`internal/ui` の `styleLinks`。Neovim の `:hi default link` に当たる。`TreesitterContext` と `TreesitterContextLineNumber` の既定のリンク先は `NormalFloat` と `LineNr` で、本体の浮かべた窓の色の名前は `popup` である）。配色と設定の `colors` が `popup` と `linenr` だけを変えても、帯の色が付いてくる。同梱の iceberg には `band` と `band.linenr` を書かない（書くと、設定の `colors` で `popup` や `linenr` を変えても帯が付いてこない。PR #376 の再レビューの推奨）。PR #376 のレビューの必須 1 までは固定の番号を既定にしていて、iceberg で帯の行番号の列が本文の行番号と違う色になった。範囲ごとの任意の色（#317 の第 3 弾の 2 本目）は、同じ範囲の型に後で足す |
+| 重なり | `internal/ui` の `layers.go` の「窓の重なり」の表の 2.7（起動の案内の上、スクロールバーの下）。nvim-treesitter-context の窓の `zindex` の既定（20）は、nvim-scrollview（40）、fidget.nvim（45）、浮かべた窓（50）、noice.nvim のコマンドラインのポップアップ（200）より下にある。起動の案内は Neovim が窓の格子に直に描くので、浮かべた窓である帯はその上に重なる |
+| クリック（FR-238） | 帯の、バッファの行に当たる行は、`ui.Renderer.HitTest` が `ui.HitBand` として解き、帯の行に当たるバッファの行（`Hit.BandLine`）と、帯の下の本文の位置（`Line`、`Col`）を返す。浮かべた窓とスクロールバーのつまみと印のセルは、帯より先に引く。`mouseLocator.Target` はそれを `command.MouseBand` にし、`mouse.click` はノーマルモードなら `mouseBandJump` で、移る前の位置をジャンプリストに記録して、その行の先頭（バイト 0）へ移る。nvim-treesitter-context の `on_key` が、ノーマルモードの `<LeftMouse>` を受けて `normal! m'` と `nvim_win_set_cursor(winid, { line, 0 })` で移り、押下を捨てるのと同じにした。押下を捨てるので、続くドラッグの選択の始まりにはしない |
+| 押しても移らない行 | 行に当たるバッファの行の無い帯の行と、帯を作ったときから本文が変わった（今のバージョン番号が帯の `version` と違う）帯の行は、`HitText` として解く（`render.lua` の `get_source_line` も、`changedtick` が帯を作ったときと違えば押下を本文の窓へ渡す）。インサートモードとビジュアルモードの `mouse.click`、2 回目と 3 回目のクリック、帯の上で始めたドラッグは、帯の下の本文の位置として扱う（nvim-treesitter-context はノーマルモードの `<LeftMouse>` だけを扱い、ほかは Neovim が帯の下の本文の窓で扱う）。ホイールは本文の上と同じく表示領域を送る |
+| 進み具合とコマンドライン | 進み具合（この節の前の「進み具合の表示」）は表示領域の最後の行から上へ積むので、表示領域の低い画面でだけ帯と重なり、そのときは進み具合が上に出る。画面の上のポップアップのコマンドライン（FR-215）の枠は、帯の行と重なれば枠が上に出る |
 
 #### 行番号の列
 

@@ -7,7 +7,11 @@
 // （lightline に近いステータス行の色は、config.example.jsonc の colors にある）。
 // 端末の背景を透過させる前提の調整は入れていない。本体には本文の文字と背景の色を指す名前が無いので、Normal の色は写していない。
 // colors/iceberg.vim に対応するハイライトグループが無い名前（message.info、popup.border、popup.match、statusline. で始まる部品の色、
-// sign.executionPoint、sign.breakpoint、sign.breakpointUnverified、progress、commandLine.popup）は書いていない。書いていない名前は本体の既定の色になる。
+// sign.executionPoint、sign.breakpoint、sign.breakpointUnverified、progress、commandLine.popup、
+// band.bottom（nvim-treesitter-context の TreesitterContextBottom の既定のリンク先は NONE）は書いていない。書いていない名前は本体の既定の色になる。
+// 窓の上端の帯の band と band.linenr も書いていない。本体は、書いていなければ popup と linenr の今の色を引き継ぐ
+// （nvim-treesitter-context の TreesitterContext と TreesitterContextLineNumber は NormalFloat と LineNr へのリンク）ので、
+// 配色に値を書くと、設定の colors で popup や linenr を変えても帯が付いてこなくなる（PR #376 の再レビューの推奨）。
 {
   // 構文の色。本体の名前は tree-sitter の捕捉の名前に当たるので、Neovim の tree-sitter のグループ（TS...）から写した
   "comment": { "fg": "#6b7089" }, // TSComment → Comment

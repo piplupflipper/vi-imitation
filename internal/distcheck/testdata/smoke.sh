@@ -41,7 +41,7 @@ msg() {
 }
 out=$(
 	{
-		msg '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"apiVersion":"0.16.0"}}'
+		msg '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"apiVersion":"0.17.0"}}'
 		msg '{"jsonrpc":"2.0","method":"buffer/open","params":{"buffer":1,"version":1,"fileType":"go","text":"package main\nfunc main() {}"}}'
 		# 解析は別の goroutine で行うので、応答を待ってから標準入力を閉じる。
 		sleep 2

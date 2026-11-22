@@ -41,11 +41,16 @@ const (
 	fakeProvider = "provider"
 	// fakeChatty は、バッファを開くたびに message/show を続けて送る拡張機能である（gopls の進み具合の知らせの代役。messages_test.go）。
 	fakeChatty = "chatty"
+	// fakeWindow は、window/change を受けて、窓の上端にバッファの最初の行の帯を置く拡張機能である（window_test.go）。
+	fakeWindow = "window"
+	// fakeSlowWindow は、fakeWindow と同じだが、知らせのたびに slowWindowDelay だけループを止める拡張機能である（window_test.go）。
+	fakeSlowWindow = "slowwindow"
 )
 
 const (
-	slowDelay     = 300 * time.Millisecond
-	slowInitDelay = 1500 * time.Millisecond
+	slowWindowDelay = 400 * time.Millisecond
+	slowDelay       = 300 * time.Millisecond
+	slowInitDelay   = 1500 * time.Millisecond
 )
 
 func TestMain(m *testing.M) {
@@ -579,6 +584,23 @@ func runFakeExt(mode string) int {
 			for i := range 3 {
 				_ = s.ShowMessage(ext.MessageInfo, fmt.Sprintf("chatty: loading %d", i+1))
 			}
+		})
+	case fakeWindow, fakeSlowWindow:
+		// 最初の行が見えていなければ、最初の行を帯にする（nvim-treesitter-context の、関数の中を見ているときの見出しの代役）。
+		// fakeSlowWindow は、知らせを受けるたびにループの上で slowWindowDelay だけ待つ（本体の間引きの間隔より遅い拡張機能）。
+		s.OnWindowChange(func(_ context.Context, e *server.WindowChangeEvent) {
+			p := e.Params
+			if p.Closed || e.Buffer == nil {
+				return
+			}
+			if mode == fakeSlowWindow {
+				time.Sleep(slowWindowDelay)
+			}
+			band := ext.BandSetParams{Window: p.Window, Buffer: p.Buffer, Version: p.Version, Seq: p.Seq}
+			if p.Top > 0 {
+				band.Lines = []ext.BandLine{{Text: e.Buffer.Line(0), Line: ext.SourceLine(0), Highlights: []ext.BandHighlight{{Start: 0, End: 4, Style: "keyword"}}}}
+			}
+			_ = s.SetBand(band)
 		})
 	case fakeSlowInit:
 		s.OnInitialize(func(context.Context, *server.InitializeEvent) error {

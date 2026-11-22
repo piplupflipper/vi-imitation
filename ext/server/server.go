@@ -67,11 +67,12 @@ const codeRequestCancelled = -32800
 //   - buffer/open、buffer/change、buffer/close: 複製を作る、更新する、捨てる
 //   - buffer/willSave: BufferWillSave で登録したハンドラーを呼ぶ。登録していなければ、編集無しを応答する
 //   - buffer/didSave: OnBufferDidSave で登録したフックを呼ぶ
+//   - window/change: OnWindowChange で登録したフックを呼ぶ
 //   - shutdown: OnShutdown で登録したフックを呼び、送信の列を書き出してから接続を閉じ、Serve から nil を返す
 //
 // # 本体へ送るメッセージ
 //
-// 通知（SetDecorations、ShowMessage、SetDiagnostics、SetSigns、ShowPopup、AppendOutput、ReportProgress）は、どこから呼んでもよい。
+// 通知（SetDecorations、ShowMessage、SetDiagnostics、SetSigns、ShowPopup、AppendOutput、ReportProgress、SetBand）は、どこから呼んでもよい。
 // リクエスト（Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice）と WaitBuffer は、
 // 本体の応答かループの処理を待つので、ループの上から呼んではならない（Edit の doc）。
 // ハンドラーかフックから使うときは、go で別の goroutine を起こし、Server が渡したのとは別の ctx で呼ぶ。
@@ -112,6 +113,10 @@ type Server struct {
 	onShutdown func(ctx context.Context, e *ShutdownEvent)
 	// onView は、ポップアップの利用者の操作の知らせ（view.go）のフックである。
 	onView func(ctx context.Context, e *ViewEvent)
+	// onWindow は、窓の変化の知らせ（window.go）のフックである。
+	onWindow func(ctx context.Context, e *WindowChangeEvent)
+	// windows は、窓ごとに最後に届いた window/change の番号である（window.go の windowArrived）。読み取りの goroutine とループが触る。
+	windows windowLatest
 	// willSave は、buffer/willSave のハンドラーである。登録は 1 つだけで、キーは空文字列である。
 	willSave map[string]entry[ext.BufferWillSaveParams, ext.BufferWillSaveResult]
 
@@ -186,7 +191,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			q.push(inbound{ctx: ctx, req: req, reply: reply})
 		},
 		Notification: func(ctx context.Context, n *rpc.Notification) {
-			q.push(inbound{ctx: ctx, note: n})
+			q.push(inbound{ctx: ctx, note: n, winSeq: s.windowArrived(n)})
 		},
 	}, rpc.WithCancelMethod(ext.MethodCancel))
 	s.conn.Store(conn)
@@ -305,6 +310,10 @@ func (s *Server) dispatch(m inbound) {
 	ctx, leave := s.enter(m.ctx)
 	defer leave()
 	if m.note != nil {
+		if m.note.Method == ext.MethodWindowChange {
+			s.windowChange(ctx, m.note, m.winSeq)
+			return
+		}
 		s.handleNotification(ctx, m.note)
 		return
 	}
@@ -544,6 +553,8 @@ type inbound struct {
 	reply rpc.Replier
 	note  *rpc.Notification
 	fn    func()
+	// winSeq は、note が window/change のときの、届いた順の番号である（windowArrived）。ほかの通知では 0 である。
+	winSeq uint64
 }
 
 // queue は、接続の読み取りの goroutine から、ループへメッセージを渡す、上限の無い列である。

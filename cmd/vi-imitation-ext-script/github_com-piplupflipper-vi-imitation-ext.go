@@ -12,7 +12,7 @@ import (
 func init() {
 	Symbols["github.com/piplupflipper/vi-imitation/ext/ext"] = map[string]reflect.Value{
 		// function, constant and variable definitions
-		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.16.0\"", token.STRING, 0)),
+		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.17.0\"", token.STRING, 0)),
 		"ActivationCommand":          reflect.ValueOf(ext.ActivationCommand),
 		"ActivationFileType":         reflect.ValueOf(ext.ActivationFileType),
 		"ActivationMotion":           reflect.ValueOf(ext.ActivationMotion),
@@ -36,9 +36,11 @@ func init() {
 		"ListKeys":                   reflect.ValueOf(ext.ListKeys),
 		"ListRegisters":              reflect.ValueOf(ext.ListRegisters),
 		"ListTabs":                   reflect.ValueOf(ext.ListTabs),
+		"MaxBandLines":               reflect.ValueOf(constant.MakeFromLiteral("64", token.INT, 0)),
 		"MessageError":               reflect.ValueOf(ext.MessageError),
 		"MessageInfo":                reflect.ValueOf(ext.MessageInfo),
 		"MessageWarning":             reflect.ValueOf(ext.MessageWarning),
+		"MethodBandSet":              reflect.ValueOf(constant.MakeFromLiteral("\"band/set\"", token.STRING, 0)),
 		"MethodBufferChange":         reflect.ValueOf(constant.MakeFromLiteral("\"buffer/change\"", token.STRING, 0)),
 		"MethodBufferClose":          reflect.ValueOf(constant.MakeFromLiteral("\"buffer/close\"", token.STRING, 0)),
 		"MethodBufferCreate":         reflect.ValueOf(constant.MakeFromLiteral("\"buffer/create\"", token.STRING, 0)),
@@ -86,6 +88,7 @@ func init() {
 		"MethodViewSelect":           reflect.ValueOf(constant.MakeFromLiteral("\"view/select\"", token.STRING, 0)),
 		"MethodViewTabChange":        reflect.ValueOf(constant.MakeFromLiteral("\"view/tabChange\"", token.STRING, 0)),
 		"MethodViewUpdate":           reflect.ValueOf(constant.MakeFromLiteral("\"view/update\"", token.STRING, 0)),
+		"MethodWindowChange":         reflect.ValueOf(constant.MakeFromLiteral("\"window/change\"", token.STRING, 0)),
 		"ModeCommandLine":            reflect.ValueOf(ext.ModeCommandLine),
 		"ModeInsert":                 reflect.ValueOf(ext.ModeInsert),
 		"ModeNormal":                 reflect.ValueOf(ext.ModeNormal),
@@ -138,6 +141,7 @@ func init() {
 		"SignBreakpointUnverified":   reflect.ValueOf(ext.SignBreakpointUnverified),
 		"SignExecutionPoint":         reflect.ValueOf(ext.SignExecutionPoint),
 		"SocketFDStart":              reflect.ValueOf(constant.MakeFromLiteral("3", token.INT, 0)),
+		"SourceLine":                 reflect.ValueOf(ext.SourceLine),
 		"StatusLineText":             reflect.ValueOf(ext.StatusLineText),
 		"ValidateManifests":          reflect.ValueOf(ext.ValidateManifests),
 		"ViewFinder":                 reflect.ValueOf(ext.ViewFinder),
@@ -145,10 +149,14 @@ func init() {
 		"ViewList":                   reflect.ValueOf(ext.ViewList),
 		"ViewText":                   reflect.ValueOf(ext.ViewText),
 		"ViewTree":                   reflect.ValueOf(ext.ViewTree),
+		"WindowNotifyIntervalMs":     reflect.ValueOf(constant.MakeFromLiteral("150", token.INT, 0)),
 
 		// type definitions
 		"Activation":              reflect.ValueOf((*ext.Activation)(nil)),
 		"ActivationKind":          reflect.ValueOf((*ext.ActivationKind)(nil)),
+		"BandHighlight":           reflect.ValueOf((*ext.BandHighlight)(nil)),
+		"BandLine":                reflect.ValueOf((*ext.BandLine)(nil)),
+		"BandSetParams":           reflect.ValueOf((*ext.BandSetParams)(nil)),
 		"BufferChangeParams":      reflect.ValueOf((*ext.BufferChangeParams)(nil)),
 		"BufferCloseParams":       reflect.ValueOf((*ext.BufferCloseParams)(nil)),
 		"BufferCreateParams":      reflect.ValueOf((*ext.BufferCreateParams)(nil)),
@@ -262,5 +270,7 @@ func init() {
 		"ViewSpan":                reflect.ValueOf((*ext.ViewSpan)(nil)),
 		"ViewTabChangeParams":     reflect.ValueOf((*ext.ViewTabChangeParams)(nil)),
 		"ViewUpdateParams":        reflect.ValueOf((*ext.ViewUpdateParams)(nil)),
+		"WindowChangeParams":      reflect.ValueOf((*ext.WindowChangeParams)(nil)),
+		"WindowID":                reflect.ValueOf((*ext.WindowID)(nil)),
 	}
 }

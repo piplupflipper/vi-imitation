@@ -136,7 +136,7 @@ func (r *Renderer) drawPreview(g *Grid, theme Theme, p *Preview, top, x, w, h in
 	view := *p.View
 	view.Tabs, view.Output, view.List, view.Choice, view.Float, view.Diff = nil, nil, nil, nil, nil, nil
 	view.Message, view.HitEnter, view.LineNumbers, view.Search, view.Highlights = Message{}, false, LineNumbers{}, nil, nil
-	view.Scrollbar, view.Intro = nil, nil
+	view.Scrollbar, view.Intro, view.Band = nil, nil, nil
 	if view.Mode == ModeCommandLine {
 		view.Mode = ModeNormal
 	}

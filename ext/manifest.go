@@ -35,6 +35,10 @@ type Manifest struct {
 	// バッファの代わりに nil を渡す。バッファの複製を要る操作（operators、motions、textObjects）と SaveHook とは併せて書けない（Validate）。
 	// 古い本体（0.15.0 まで）は未知の項目として無視し、バッファを送る。
 	NoBufferSync bool `json:"noBufferSync,omitempty"`
+	// WindowEvents は、true なら、稼働中のときに窓の変化の知らせ window/change を受け取る（MethodWindowChange の doc。FR-235）。
+	// 関数の見出しを窓の上端に固定する拡張機能（nvim-treesitter-context に当たる）が使う。起動の契機にはならない。
+	// 足したのは API 0.17.0 である。古い本体は未知の項目として警告にし、知らせを送らない。
+	WindowEvents bool `json:"windowEvents,omitempty"`
 	// Activation は、起動の契機の一覧である。どれか 1 つが成り立った時点で起動する。
 	Activation []Activation `json:"activation"`
 	// Contributes は、拡張機能が追加する操作である。

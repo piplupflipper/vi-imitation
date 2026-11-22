@@ -282,6 +282,8 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
 - `func (s *Server) OnView(f func(ctx context.Context, e *ViewEvent))`: ポップアップの利用者の操作の知らせを受け取ったときに呼ぶ関数を登録する。Serve の後に呼ぶと panic する。
   他のフックと同じくループの上で呼ばれるので、f の中で本体の応答を待つ関数（OpenPopup など）をこの ctx で呼ぶと ErrEditInHandler になる。
   応答を待たない UpdateView と CloseView は呼んでよい。
+- `func (s *Server) OnWindowChange(f func(ctx context.Context, e *WindowChangeEvent))`: window/change を受け取ったときに呼ぶ関数を登録する。Serve の後に呼ぶと panic する。
+  本体が送るのは、宣言ファイルの windowEvents が true の拡張機能だけである。
 - `func (s *Server) OpenEditor(ctx context.Context, p ext.EditorOpenParams) (ext.EditorOpenResult, error)`: 本体へ editor/open を送り、ファイルかバッファを開かせる。
   p が ext.EditorOpenParams.Validate を通らなければ、送らずにその誤りを返す。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
@@ -309,6 +311,10 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
 - `func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error`: r から本体のメッセージを読み、w へ書き、接続が終わるまでメッセージを処理する。
   r と w が io.Closer を実装していれば、終わるときに閉じる。
+- `func (s *Server) SetBand(p ext.BandSetParams) error`: 本体へ band/set を送り、窓の上端に行を重ねて描く帯を置く。
+  p.Lines が空なら帯を消す。p.Seq には、帯を作る元にした知らせの WindowChangeEvent.Params.Seq を書く。
+  応答は待たない。どこから呼んでもよい。
+  p.Validate を通らない帯は、送らずに誤りを返す（本体も捨てる）。
 - `func (s *Server) SetDecorations(p ext.DecorationSetParams) error`: 本体へ decoration/set を送る。応答は待たない。どこから呼んでもよい。
 - `func (s *Server) SetDiagnostics(p ext.DiagnosticSetParams) error`: 本体へ diagnostic/set を送る。応答は待たない。どこから呼んでもよい。
 - `func (s *Server) SetOptions(ctx context.Context, p ext.OptionSetParams) error`: 本体へ option/set を送り、本体の設定の項目の値を変える。
@@ -382,4 +388,15 @@ ViewEvent の種類である。
 - `ViewExpanded`: view/expand である。Item に開閉した木の項目の ID が、Expanded に開いたかどうかが入る。
 - `ViewTabChanged`: view/tabChange である（API 0.10.0 で足した）。分割したペインを開いた元の client のカーソルのあるタブが替わった。
   Buffer にそのタブのバッファの番号が、Item にそのファイルの絶対パス（ファイルでなければ空）が入る（ext.ViewTabChangeParams）。
+
+#### `server.WindowChangeEvent`
+
+本体から window/change を受け取ったことを表す。
+
+- `Params ext.WindowChangeParams`: 受け取った知らせである。Params.Closed が true なら、窓が無くなった。
+  帯を送るときは、Params.Seq を ext.BandSetParams.Seq に書く（本体が、古い知らせから作った帯を捨てる）。
+- `Buffer *Buffer`: 窓のバッファの複製である。持っていない（拡張機能へ送っていないバッファ、窓が無くなった）なら nil である。
+  フックが戻るまでの間だけ内容を保つ。
+  本体は window/change より前にそれまでの buffer/change を送るので、複製のバージョン番号はふつう Params.Version と同じである。
+  差分が欠けて buffer/open の送り直しを待っている間は、複製が古いことがある（Buffer.Version で確かめる）。
 <!-- generated:server-api:end -->

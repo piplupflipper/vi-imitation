@@ -9,6 +9,7 @@ package ui
 //	1    バッファの行（本文、印の列、行番号の列、見比べの詰め物、"~" の行）  render の行の繰り返し（drawGutter、drawLine、drawFiller）
 //	2    行を折り返すときの表示領域の端の印（"<<<"、"@@@"）               drawer.drawMarks
 //	2.5  起動の案内（Frame.Intro。FR-205、FR-207）                         drawIntro
+//	2.7  表示領域の上の端の帯（Frame.Band。FR-237、FR-239）                 drawBand
 //	3    右端のスクロールバーと印（Frame.Scrollbar。FR-186、FR-187）       drawScrollbar
 //	4    拡張機能の進み具合（Frame.Progress。FR-178）                      drawProgress
 //	5    浮かべる窓（Frame.List、Frame.Float とそのプレビュー）             drawList、drawFloat
@@ -35,6 +36,14 @@ package ui
 // スクロールバーを進み具合より下に置くのも、nvim-scrollview の窓の zindex の既定（40）が fidget.nvim の 45 より下にあるのと同じ重なりにするためである。
 // 進み具合は右の端の 1 列を空けて描く（progressPadding）ので、スクロールバーの列とは重ならない。
 // 折り返しの "@@@"（2）は最後の行の右の 3 列に描くので、スクロールバーがその右の 1 列に重なる（nvim-scrollview も、浮かべた窓として本文の上に描く）。
+//
+// 上の端の帯（drawBand）は、nvim-treesitter-context（オーナーの nvim のコミット 8decd73460d26ef0a0befb745d022dd1fc2c38b8）の窓の
+// zindex の既定（20）に合わせ、本文と起動の案内の上、スクロールバー（nvim-scrollview の 40）、進み具合（fidget.nvim の 45）、
+// 浮かべた窓（50）、画面の上のポップアップのコマンドライン（noice.nvim の 200）の下に置く。
+// 起動の案内は Neovim が窓の格子に直に描くので、浮かべた窓である帯はその上に重なる。
+// スクロールバーは帯の行の右の端の列に重なり、帯の上でもつまみと印を押せる（HitTest がスクロールバーのセルを帯より先に引く）。
+// 進み具合は表示領域の最後の行から上へ積むので、表示領域の低い画面でだけ帯と重なり、そのときは進み具合が上に出る。
+// 画面の上のポップアップのコマンドラインの枠（8.2）は画面の上から 3 行目から下に置くので、帯の行と重なれば枠が上に出る。
 
 // textArea は、バッファの表示領域の、グリッドの中の位置である（窓の重なりの表の doc）。
 type textArea struct {

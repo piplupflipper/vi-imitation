@@ -279,6 +279,9 @@ func (f *fakeExt) request(ctx context.Context, req *rpc.Request, reply rpc.Repli
 		// 識別子の無い progress/report は本体が捨てるので、後の正しいものだけがイベントになる。
 		_ = f.conn.Notify(ext.MethodProgressReport, ext.ProgressReportParams{Kind: ext.ProgressBegin, Title: "bad"})
 		_ = f.conn.Notify(ext.MethodProgressReport, ext.ProgressReportParams{Token: "t", Kind: ext.ProgressBegin, Title: "load", Percentage: ext.Percent(5)})
+		// 検査を通らない band/set（窓が空）も本体が捨てるので、後の正しいものだけがイベントになる。
+		_ = f.conn.Notify(ext.MethodBandSet, ext.BandSetParams{Lines: []ext.BandLine{{Text: "bad"}}})
+		_ = f.conn.Notify(ext.MethodBandSet, ext.BandSetParams{Window: "client/1", Buffer: 1, Version: 7, Lines: []ext.BandLine{{Text: "func f() {", Line: ext.SourceLine(2)}}})
 		_ = reply(nil, nil)
 	case methodGarbage:
 		_, _ = os.Stdout.WriteString("Content-Length: 5\r\n\r\nhello")

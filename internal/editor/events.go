@@ -81,6 +81,8 @@ func (e *Editor) handleEvent(ev exthost.Event) {
 		e.setStatusPart(ev.Extension, ev.Params)
 	case *exthost.ProgressReport:
 		e.reportProgress(ev.Extension, ev.Params)
+	case *exthost.BandSet:
+		e.setBand(ev.Extension, ev.Params)
 	case *exthost.PopupOpenRequest:
 		e.withView(e.extView(ev.Extension), func() { e.popupOpenRequest(ev) })
 	case *exthost.BufferCreateRequest:
@@ -149,6 +151,8 @@ func messageLevel(l ext.MessageLevel) ui.MessageLevel {
 // 止まった拡張機能が option/set で入れた設定の値も捨てる（clearExtOptions。FR-190、FR-191）。
 func (e *Editor) stateChange(ev *exthost.StateChange) {
 	e.clearProgressLater(ev)
+	// 送った窓の中身を忘れ、次に稼働中になったら、すべての窓を送り直す（window.go。FR-235）。
+	e.forgetWindows(ev.Extension)
 	switch ev.State {
 	case exthost.StateRestartWait, exthost.StateDisabled, exthost.StateNotStarted:
 		e.clearExtOptions(ev.Extension)
