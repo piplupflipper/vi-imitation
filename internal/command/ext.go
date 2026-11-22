@@ -174,9 +174,11 @@ func (s *State) resolveMotion(t editcmd.Target, cmd editcmd.Command, op target.O
 }
 
 // resolveTextObject は、テキストオブジェクトを本体の表か拡張機能で解決する。
-func (s *State) resolveTextObject(t editcmd.Target, cmd editcmd.Command, from buffer.Position) (target.Span, error) {
+// sel は、ビジュアルモードの今の選択の範囲（extSelection）で、オペレーターの後では nil である。
+func (s *State) resolveTextObject(t editcmd.Target, cmd editcmd.Command, from buffer.Position, sel *buffer.Range) (target.Span, error) {
 	req := s.request(cmd, target.NoOperator)
 	req.Cursor = from
+	req.Selection = sel
 	var (
 		sp  target.Span
 		err error

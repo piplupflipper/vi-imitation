@@ -458,6 +458,10 @@ func (x *extQuery) TextObject(ref editcmd.Ref, b *buffer.Buffer, req target.Requ
 		Buffer: x.bs.id, Version: ext.Version(b.Version()), ID: ref.ID,
 		Cursor: toExtPos(req.Cursor), Count: count(req.Count, req.CountGiven), Args: args(req.Char),
 	}
+	if req.Selection != nil {
+		sel := toExtRange(*req.Selection)
+		p.Selection = &sel
+	}
 	var r ext.TextObjectResolveResult
 	if err := x.call(ref, ext.MethodTextObjectResolve, p, info, &r); err != nil {
 		return target.Span{}, err
@@ -476,7 +480,8 @@ func (x *extQuery) TextObject(ref editcmd.Ref, b *buffer.Buffer, req target.Requ
 	if r.Linewise {
 		kind = target.Linewise
 	}
-	return target.Span{Start: rg.Start, End: rg.End, Kind: kind}, nil
+	// 選択を置き換える答えは、選択を渡した問い合わせ（ビジュアルモード）でだけ読む。
+	return target.Span{Start: rg.Start, End: rg.End, Kind: kind, ReplaceSelection: r.ReplaceSelection && p.Selection != nil}, nil
 }
 
 // Operator は、operator/apply を問い合わせる。

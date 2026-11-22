@@ -120,7 +120,7 @@ func (s *State) operatorSpan(cmd editcmd.Command) (target.Span, error) {
 		}
 		return target.OperatorSpan(s.buf, s.cursor, res), nil
 	case editcmd.TargetTextObject:
-		sp, err := s.resolveTextObject(cmd.Target, cmd, s.cursor)
+		sp, err := s.resolveTextObject(cmd.Target, cmd, s.cursor, nil)
 		if err != nil {
 			return target.Span{}, err
 		}

@@ -17,13 +17,16 @@ import (
 //	surround.add（オペレーター）  範囲を、対象の後の文字の括弧で囲む
 //	jump.x（モーション）          次の 'x' へ移る
 //	line.inner（テキストオブジェクト）行の内容全体
+//	grow.lines（テキストオブジェクト）選択を上下に 1 行ずつ広げる（選択を置き換える）
+//	grow.chars（テキストオブジェクト）選択の行の 2 文字目から最後の文字の前まで（選択を置き換える）
 //	dup.line（操作）              行を下に複製する
 type fakeExt struct {
-	calls     []string
-	replays   []bool // 問い合わせごとの QueryInfo.Replaying
-	deferring bool   // true なら、再生中でない問い合わせに ErrDeferred を返す
-	stale     bool   // true なら古いバージョン番号のトランザクションを返す
-	failing   bool
+	calls      []string
+	replays    []bool          // 問い合わせごとの QueryInfo.Replaying
+	selections []*buffer.Range // テキストオブジェクトの問い合わせごとの target.Request.Selection
+	deferring  bool            // true なら、再生中でない問い合わせに ErrDeferred を返す
+	stale      bool            // true なら古いバージョン番号のトランザクションを返す
+	failing    bool
 }
 
 func (f *fakeExt) Motion(ref editcmd.Ref, b *buffer.Buffer, req target.Request, info QueryInfo) (target.Result, error) {
@@ -43,8 +46,29 @@ func (f *fakeExt) Motion(ref editcmd.Ref, b *buffer.Buffer, req target.Request, 
 func (f *fakeExt) TextObject(ref editcmd.Ref, b *buffer.Buffer, req target.Request, info QueryInfo) (target.Span, error) {
 	f.calls = append(f.calls, "textObject "+ref.ID)
 	f.replays = append(f.replays, info.Replaying)
+	f.selections = append(f.selections, req.Selection)
 	if f.deferring && !info.Replaying {
 		return target.Span{}, ErrDeferred
+	}
+	switch ref.ID {
+	case "lines":
+		// 選択が無ければカーソルの行、あれば選択の上と下に 1 行ずつ広げた行（tree-sitter の an の代役）。
+		if req.Selection == nil {
+			l := req.Cursor.Line
+			return target.Span{Start: pos(l, 0), End: pos(l, len(b.Line(l))), Kind: target.Linewise}, nil
+		}
+		first, last := max(req.Selection.Start.Line-1, 0), min(req.Selection.End.Line+1, b.LineCount()-1)
+		if first == req.Selection.Start.Line && last == req.Selection.End.Line {
+			return target.Span{}, target.ErrNoTarget
+		}
+		return target.Span{Start: pos(first, 0), End: pos(last, len(b.Line(last))), Kind: target.Linewise, ReplaceSelection: true}, nil
+	case "chars":
+		// 選択の最初の行の 2 文字目から、最後の行の最後の文字の前まで（文字単位。選択を置き換える）。
+		if req.Selection == nil {
+			return target.Span{}, target.ErrNoTarget
+		}
+		last := req.Selection.End.Line
+		return target.Span{Start: pos(req.Selection.Start.Line, 1), End: pos(last, len(b.Line(last))-1), Kind: target.Exclusive, ReplaceSelection: true}, nil
 	}
 	n := len(b.Line(req.Cursor.Line))
 	return target.Span{Start: pos(req.Cursor.Line, 0), End: pos(req.Cursor.Line, n), Kind: target.Exclusive}, nil
@@ -95,6 +119,8 @@ func extKeymap(t *testing.T) *input.Keymap {
 		{Kind: input.BindOperator, Keys: editcmd.MustParseKeys("ys"), Ref: editcmd.Ref{Extension: "surround", ID: "add"}, TakesChar: true},
 		{Kind: input.BindMotion, Keys: editcmd.MustParseKeys("gx"), Ref: editcmd.Ref{Extension: "jump", ID: "x"}},
 		{Kind: input.BindTextObject, Keys: editcmd.MustParseKeys("il"), Ref: editcmd.Ref{Extension: "line", ID: "inner"}},
+		{Kind: input.BindTextObject, Keys: editcmd.MustParseKeys("an"), Ref: editcmd.Ref{Extension: "grow", ID: "lines"}},
+		{Kind: input.BindTextObject, Keys: editcmd.MustParseKeys("ic"), Ref: editcmd.Ref{Extension: "grow", ID: "chars"}},
 		{Kind: input.BindAction, Keys: editcmd.MustParseKeys("gD"), Ref: editcmd.Ref{Extension: "dup", ID: "line"}},
 	} {
 		if err := km.Bind(b); err != nil {
@@ -185,6 +211,78 @@ func TestExtensionReplaying(t *testing.T) {
 		if s.Replaying() {
 			t.Errorf("%s: 再生の後も Replaying", tt.keys)
 		}
+	}
+}
+
+// ビジュアルモードの拡張機能のテキストオブジェクトには今の選択が渡り、拡張機能が選択を置き換えると答えたら、
+// 選択をその範囲にする（tree-sitter の an と in を繰り返して外へ広げる。#373）。
+// カーソルが選択の始まりの側にあれば始まりに置き、行単位の答えなら V に、文字単位の答えなら v にする。
+//
+// req: FR-240
+func TestVisualTextObjectReplaceSelection(t *testing.T) {
+	sel := func(sl, sb, el, eb int) string {
+		return fmt.Sprint(&buffer.Range{Start: pos(sl, sb), End: pos(el, eb)})
+	}
+	tests := []struct {
+		name, text, keys string
+		mode             Mode
+		cursor           buffer.Position
+		reg              string // 最後に "ad を足して打ったときのレジスター a の中身。空なら "ad を打たない
+		text2            string // 空でなければ、打った後のバッファの中身
+		sels             []string
+		err              bool
+	}{
+		{name: "1 回目は選択を渡さない", text: "a\nb\nc\nd\ne", keys: "jjvan", mode: ModeVisualLine, cursor: pos(2, 0), reg: "c", sels: []string{"<nil>"}},
+		{name: "繰り返すと外へ広げる", text: "a\nb\nc\nd\ne", keys: "jjvanan", mode: ModeVisualLine, cursor: pos(3, 0), reg: "b\nc\nd", sels: []string{"<nil>", sel(2, 0, 2, 1)}},
+		{name: "3 回", text: "a\nb\nc\nd\ne", keys: "jjvananan", mode: ModeVisualLine, cursor: pos(4, 0), reg: "a\nb\nc\nd\ne"},
+		{name: "広げられなければ失敗して選択を変えない", text: "a\nb\nc", keys: "jvananan", mode: ModeVisualLine, cursor: pos(2, 0), reg: "a\nb\nc", err: true},
+		{name: "カーソルが始まりの側なら始まりに置く", text: "a\nb\nc\nd\ne", keys: "jjvananoan", mode: ModeVisualLine, cursor: pos(0, 0), reg: "a\nb\nc\nd\ne"},
+		{name: "広げた選択に d", text: "a\nb\nc\nd\ne", keys: "jjvanand", mode: ModeNormal, cursor: pos(1, 0), text2: "a\ne"},
+		{name: "選択がバッファの終わりまででも広げる", text: "a\nbc", keys: "jvlan", mode: ModeVisualLine, cursor: pos(1, 1), reg: "a\nbc", sels: []string{sel(1, 0, 1, 2)}},
+		{name: "置き換えない答えはバッファの終わりで失敗", text: "a\nbc", keys: "jvlil", mode: ModeVisual, cursor: pos(1, 1), reg: "bc", err: true},
+		{name: "文字単位の選択を渡す", text: "abcdefg", keys: "lllvlic", mode: ModeVisual, cursor: pos(0, 5), reg: "bcdef", sels: []string{sel(0, 3, 0, 5)}},
+		{name: "行単位の選択は行の全体を渡し、文字単位の答えで v にする", text: "abcdefg\nxyz", keys: "Vic", mode: ModeVisual, cursor: pos(0, 5), reg: "bcdef", sels: []string{sel(0, 0, 0, 7)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ext := &fakeExt{}
+			s := New(newBuffer(tt.text), input.NewParser(extKeymap(t)))
+			s.Extensions = ext
+			err := errOf(feedKeys(s, tt.keys))
+			if (err != nil) != tt.err {
+				t.Errorf("err = %v, want error %v", err, tt.err)
+			}
+			if s.Mode() != tt.mode || s.cursor != tt.cursor {
+				t.Errorf("mode %v cursor %v, want %v %v", s.Mode(), s.cursor, tt.mode, tt.cursor)
+			}
+			if tt.sels != nil {
+				var got []string
+				for _, r := range ext.selections {
+					if r == nil {
+						got = append(got, "<nil>")
+						continue
+					}
+					got = append(got, fmt.Sprint(r))
+				}
+				if strings.Join(got, ",") != strings.Join(tt.sels, ",") {
+					t.Errorf("selections = %v, want %v", got, tt.sels)
+				}
+			}
+			if tt.text2 != "" {
+				if got := s.buf.Text(); got != tt.text2 {
+					t.Errorf("text = %q, want %q", got, tt.text2)
+				}
+			}
+			if tt.reg != "" {
+				// y は、キーマップの ys（surround.add）の続きを待つので、d で選択を取り出す。
+				if err := errOf(feedKeys(s, `"ad`)); err != nil {
+					t.Fatal(err)
+				}
+				if reg, _ := s.registers.Get('a'); reg.Text != tt.reg {
+					t.Errorf("register = %q, want %q", reg.Text, tt.reg)
+				}
+			}
+		})
 	}
 }
 

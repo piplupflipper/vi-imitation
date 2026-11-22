@@ -181,9 +181,13 @@ func (s *State) visualRight(cmd editcmd.Command) error {
 //
 // Vim は、選択を広げる方向（カーソルが端より前か）や、i( を重ねたときの外側の括弧への広げ方を細かく扱うが、
 // ここでは前へ広げることだけを扱う。
+//
+// 拡張機能のテキストオブジェクトには、今の選択（extSelection）も渡す。
+// 拡張機能が選択を置き換えると答えたら（target.Span.ReplaceSelection。tree-sitter の an と in）、選択を範囲そのものにする（replaceSelection）。
 func (s *State) visualTextObject(cmd editcmd.Command) error {
 	from := s.clampPos(s.visual.head) // バッファの外を指していても読まない（Selection の doc）
 	extend := s.visual.head != s.visual.anchor
+	var noMore error
 	if extend {
 		line := s.line(from.Line)
 		switch {
@@ -191,21 +195,26 @@ func (s *State) visualTextObject(cmd editcmd.Command) error {
 			from.Byte = nextChar(line, from.Byte)
 		case from.Line < s.lastLine():
 			from = pos(from.Line+1, 0)
-		default:
+		case cmd.Target.Ref.Builtin():
 			return failf("no more text")
+		default:
+			// 選択がバッファの終わりまで届いていても、選択を置き換える拡張機能のテキストオブジェクトは外へ広げられる。
+			// 置き換えない答えなら、本体の表のテキストオブジェクトと同じく失敗にする。
+			noMore = failf("no more text")
 		}
 	}
-	sp, err := s.resolveTextObject(cmd.Target, cmd, from)
+	sel := s.extSelection()
+	sp, err := s.resolveTextObject(cmd.Target, cmd, from, sel)
 	if err != nil {
 		return err
 	}
-	end := sp.End
-	if sp.Kind == target.Exclusive && end != sp.Start {
-		if end.Byte > 0 {
-			end.Byte = prevChar(s.line(end.Line), end.Byte)
-		} else if end.Line > 0 {
-			end = s.lineEnd(end.Line - 1)
-		}
+	end := s.inclusiveEnd(sp)
+	if sp.ReplaceSelection {
+		s.replaceSelection(sp.Start, end, sp.Kind == target.Linewise)
+		return nil
+	}
+	if noMore != nil {
+		return noMore
 	}
 	if !extend {
 		s.visual.anchor = sp.Start
@@ -215,6 +224,50 @@ func (s *State) visualTextObject(cmd editcmd.Command) error {
 	}
 	s.setCursorNormal(end)
 	return nil
+}
+
+// inclusiveEnd は、テキストオブジェクトの範囲 sp の、ビジュアルモードで選ぶ最後の文字の位置を返す。
+// 文字単位（Exclusive）の範囲は終わりの直前の文字で、終わりが行の先頭なら前の行の行末の後（改行を選ぶ位置）である。
+func (s *State) inclusiveEnd(sp target.Span) buffer.Position {
+	end := sp.End
+	if sp.Kind == target.Exclusive && end != sp.Start {
+		if end.Byte > 0 {
+			end.Byte = prevChar(s.line(end.Line), end.Byte)
+		} else if end.Line > 0 {
+			end = s.lineEnd(end.Line - 1)
+		}
+	}
+	return end
+}
+
+// extSelection は、拡張機能のテキストオブジェクトに渡す今の選択の範囲（target.Request.Selection）を返す。
+// 範囲はオペレーターが働く範囲（visualRegion）と同じである。
+// 文字単位で 1 文字だけを選んでいる（anchor と head が同じ）ときは、カーソルからの問い合わせと同じになるので nil を返す。
+func (s *State) extSelection() *buffer.Range {
+	if !s.mode.visual() || s.mode == ModeVisual && s.visual.anchor == s.visual.head {
+		return nil
+	}
+	r := s.visualRegion().r
+	return &r
+}
+
+// replaceSelection は、選択を start から end（どちらも含む）に置き換える（選択を外へ広げるテキストオブジェクト。#373）。
+// linewise なら行単位の、そうでなければ文字単位のビジュアルモードにする。
+// カーソル（head）が選択の始まりの側にあれば始まりに、そうでなければ終わりに置く（Neovim 0.12.5 の an と同じ）。
+//
+// req: FR-240
+func (s *State) replaceSelection(start, end buffer.Position, linewise bool) {
+	s.mode = ModeVisual
+	if linewise {
+		s.mode = ModeVisualLine
+	}
+	if s.visual.head.Less(s.visual.anchor) {
+		s.visual.anchor = end
+		s.setCursorNormal(start)
+		return
+	}
+	s.visual.anchor = start
+	s.setCursorNormal(end)
 }
 
 // visualRegion は、ビジュアルモードの選択を、オペレーターが働く範囲にする。

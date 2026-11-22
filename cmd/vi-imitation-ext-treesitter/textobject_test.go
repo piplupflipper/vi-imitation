@@ -8,7 +8,7 @@ import (
 	"github.com/piplupflipper/vi-imitation/ext"
 )
 
-// objectSource は、テキストオブジェクトの対象（関数、関数リテラル、メソッド、型、引数）を含む Go のソースである。
+// objectSource は、引数のテキストオブジェクトの対象（宣言の引数、可変長の引数、呼び出しの引数、型引数）を含む Go のソースである。
 const objectSource = `package main
 
 type Point struct {
@@ -37,6 +37,41 @@ func (p Point) Sum(xs ...int) int {
 func empty() {}
 
 func multi[T any, U comparable](t T) {
+}`
+
+// blockSource は、構文のまとまり（関数、if と else、for、関数リテラル、defer、構造体、インターフェース）を含む Go のソースである。
+const blockSource = `package main
+
+type Point struct {
+	X, Y int
+}
+
+type (
+	A int
+	B interface {
+		M()
+	}
+)
+
+// add は和を返す。
+func add(a int, b int) int {
+	f := func(x int) int { return x + 1 }
+	if a > 0 {
+		for i := 0; i < b; i++ {
+			a += i
+		}
+	} else {
+		b = 2
+	}
+	return f(a) + b
+}
+
+func empty() {}
+
+func multi[T any](t T) {
+	defer func() {
+		_ = t
+	}()
 }`
 
 // specByID は、textObjectSpecs から id の定義を引く。
@@ -71,13 +106,12 @@ func sliceRange(d *document, r ext.Range, linewise bool) string {
 	return string(d.src[start:end])
 }
 
-// TestTextObjectGo は、Go のソースの各位置で、テキストオブジェクトの範囲と行単位かどうかが期待どおりであることを確かめる。
+// TestTextObjectParameterGo は、Go のソースの各位置で、引数のテキストオブジェクト（aa、ia）の範囲と行単位かどうかが期待どおりであることを確かめる。
 //
-// req: FR-11, FR-35
-func TestTextObjectGo(t *testing.T) {
+// req: FR-11, FR-241
+func TestTextObjectParameterGo(t *testing.T) {
 	h := newTestHighlighter(t)
 	d := parse(t, h, "go", objectSource)
-	addFunc := "func add(a int, b int) int {\n\tf := func(x int) int { return x + 1 }\n\treturn f(a) + b\n}"
 	tests := []struct {
 		name     string
 		id       string
@@ -87,24 +121,6 @@ func TestTextObjectGo(t *testing.T) {
 		want     string
 		linewise bool
 	}{
-		{"af: 関数の全体は行単位", "treesitter.function.around", "return f(a)", 1, true, addFunc, true},
-		{"af: カーソルが func の上", "treesitter.function.around", "func add", 1, true, addFunc, true},
-		{"af: 関数リテラルは文字単位", "treesitter.function.around", "x + 1", 1, true, "func(x int) int { return x + 1 }", false},
-		{"2af: 外側の関数", "treesitter.function.around", "x + 1", 2, true, addFunc, true},
-		{"3af: 外側が無い", "treesitter.function.around", "x + 1", 3, false, "", false},
-		{"if: 1 行の本体は空白を除いた内側", "treesitter.function.inner", "x + 1", 1, true, "return x + 1", false},
-		{"if: 複数行の本体は間の行", "treesitter.function.inner", "return f(a)", 1, true, "\tf := func(x int) int { return x + 1 }\n\treturn f(a) + b", true},
-		{"if: 空の本体は幅 0", "treesitter.function.inner", "empty", 1, true, "", false},
-		{"if: 間に行の無い複数行の本体は幅 0", "treesitter.function.inner", "comparable", 1, true, "", false},
-		{"af: メソッド", "treesitter.function.around", "p.X", 1, true, "func (p Point) Sum(xs ...int) int {\n\treturn p.X + call(1, 2,\n\t\t3,\n\t)\n}", true},
-		{"af: 関数の外", "treesitter.function.around", "package", 1, false, "", false},
-		{"af: コメントは含めない", "treesitter.function.around", "和を返す", 1, false, "", false},
-		{"ac: 構造体の宣言の全体", "treesitter.class.around", "X, Y", 1, true, "type Point struct {\n\tX, Y int\n}", true},
-		{"ic: 構造体の内側", "treesitter.class.inner", "X, Y", 1, true, "\tX, Y int", true},
-		{"ac: まとめた宣言の中の型", "treesitter.class.around", "A int", 1, true, "\tA int", true},
-		{"ic: 構造体でない型", "treesitter.class.inner", "A int", 1, true, "int", false},
-		{"ac: まとめた宣言の中のインターフェース", "treesitter.class.around", "M()", 1, true, "\tB interface {\n\t\tM()\n\t}", true},
-		{"ic: インターフェースの内側", "treesitter.class.inner", "M()", 1, true, "\t\tM()", true},
 		{"ia: 引数", "treesitter.parameter.inner", "b int", 1, true, "b int", false},
 		{"aa: 最初の引数は後ろの区切りまで", "treesitter.parameter.around", "a int", 1, true, "a int, ", false},
 		{"aa: 最後の引数は前の区切りから", "treesitter.parameter.around", "b int", 1, true, ", b int", false},
@@ -116,6 +132,7 @@ func TestTextObjectGo(t *testing.T) {
 		{"2ia: 外側に並びが無い", "treesitter.parameter.inner", "a) + b", 2, false, "", false},
 		{"ia: 型引数", "treesitter.parameter.inner", "U comparable", 1, true, "U comparable", false},
 		{"aa: 型引数", "treesitter.parameter.around", "T any", 1, true, "T any, ", false},
+		{"ia: 引数の外", "treesitter.parameter.inner", "package", 1, false, "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -136,40 +153,168 @@ func TestTextObjectGo(t *testing.T) {
 	}
 }
 
-// TestServeTextObject は、本体の役から textObject/resolve を JSON-RPC で送り、
-// 編集の後のバージョンでも、構文木を持たない（解析の前の）バージョンでも、そのバージョンのテキストで範囲が返ることを確かめる。
+// blockCase は、構文のまとまりのテキストオブジェクトの 1 つの場合である。
+type blockCase struct {
+	name   string
+	around bool
+	marker string
+	// sel は、選択の範囲のテキストである。空なら選択の無い問い合わせ（オペレーターの後）にする。
+	// selLines が true なら、sel を含む行の全体を選択にする（行単位のビジュアルモード）。
+	sel      string
+	selLines bool
+	count    int
+	ok       bool
+	want     string
+	linewise bool
+}
+
+// runBlockCases は、d で cases のそれぞれを blockObject に渡し、範囲と行単位かどうかを確かめる。
+func runBlockCases(t *testing.T, d *document, cases []blockCase) {
+	t.Helper()
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			var sel *ext.Range
+			if tt.sel != "" {
+				i := strings.Index(string(d.src), tt.sel)
+				if i < 0 {
+					t.Fatalf("selection %q not found", tt.sel)
+				}
+				r := ext.Range{Start: d.position(i), End: d.position(i + len(tt.sel))}
+				if tt.selLines {
+					r = ext.Range{Start: ext.Position{Line: r.Start.Line}, End: ext.Position{Line: r.End.Line, Byte: d.lineLen(r.End.Line)}}
+				}
+				sel = &r
+			}
+			r, linewise, ok, err := d.blockObject(tt.around, cursorAt(t, d, tt.marker), sel, tt.count)
+			if err != nil {
+				t.Fatalf("blockObject: %v", err)
+			}
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v (range %+v %q)", ok, tt.ok, r, sliceRange(d, r, linewise))
+			}
+			if !ok {
+				return
+			}
+			if got := sliceRange(d, r, linewise); got != tt.want || linewise != tt.linewise {
+				t.Errorf("got %q linewise %v, want %q linewise %v", got, linewise, tt.want, tt.linewise)
+			}
+		})
+	}
+}
+
+// TestBlockObjectGo は、Go のソースで、構文のまとまりの全体（an）と中身（in）の範囲が、
+// 回数と選択（ビジュアルモードで繰り返したとき）に応じて内側から外側へ広がることを確かめる。
 //
-// req: FR-11, FR-35
+// req: FR-11, FR-240
+func TestBlockObjectGo(t *testing.T) {
+	h := newTestHighlighter(t)
+	d := parse(t, h, "go", blockSource)
+	forStmt := "\t\tfor i := 0; i < b; i++ {\n\t\t\ta += i\n\t\t}"
+	ifStmt := "\tif a > 0 {\n" + forStmt + "\n\t} else {\n\t\tb = 2\n\t}"
+	addBody := "\tf := func(x int) int { return x + 1 }\n" + ifStmt + "\n\treturn f(a) + b"
+	addFunc := "func add(a int, b int) int {\n" + addBody + "\n}"
+	runBlockCases(t, d, []blockCase{
+		{name: "an: for の全体は行単位", around: true, marker: "a += i", count: 1, ok: true, want: forStmt, linewise: true},
+		{name: "2an: if と else の全体", around: true, marker: "a += i", count: 2, ok: true, want: ifStmt, linewise: true},
+		{name: "3an: 関数の全体", around: true, marker: "a += i", count: 3, ok: true, want: addFunc, linewise: true},
+		{name: "4an: 外側が無い", around: true, marker: "a += i", count: 4},
+		{name: "an: else の中も if の全体", around: true, marker: "b = 2", count: 1, ok: true, want: ifStmt, linewise: true},
+		{name: "an: if の条件の上のカーソル", around: true, marker: "if a > 0", count: 1, ok: true, want: ifStmt, linewise: true},
+		{name: "an: 関数の見出しの上のカーソル", around: true, marker: "func add", count: 1, ok: true, want: addFunc, linewise: true},
+		{name: "an: 関数リテラルは代入の文ごと", around: true, marker: "x + 1", count: 1, ok: true, want: "\tf := func(x int) int { return x + 1 }", linewise: true},
+		{name: "an: defer の関数リテラルは defer の文ごと", around: true, marker: "_ = t", count: 1, ok: true, want: "\tdefer func() {\n\t\t_ = t\n\t}()", linewise: true},
+		{name: "an: 型引数の上は関数の全体", around: true, marker: "T any", count: 1, ok: true, want: "func multi[T any](t T) {\n\tdefer func() {\n\t\t_ = t\n\t}()\n}", linewise: true},
+		{name: "an: 構造体の宣言", around: true, marker: "X, Y", count: 1, ok: true, want: "type Point struct {\n\tX, Y int\n}", linewise: true},
+		{name: "an: まとめた宣言の中のインターフェース", around: true, marker: "M()", count: 1, ok: true, want: "\tB interface {\n\t\tM()\n\t}", linewise: true},
+		{name: "an: まとめた宣言の括弧はまとまりにしない", around: true, marker: "A int", count: 1},
+		{name: "an: まとまりの外", around: true, marker: "package", count: 1},
+		{name: "an: 関数の前のコメントは含めない", around: true, marker: "和を返す", count: 1},
+
+		{name: "in: for の本体は間の行", marker: "a += i", count: 1, ok: true, want: "\t\t\ta += i", linewise: true},
+		{name: "2in: if の本体", marker: "a += i", count: 2, ok: true, want: forStmt, linewise: true},
+		{name: "in: else の本体", marker: "b = 2", count: 1, ok: true, want: "\t\tb = 2", linewise: true},
+		{name: "in: if の条件の上は後ろの本体", marker: "if a > 0", count: 1, ok: true, want: forStmt, linewise: true},
+		{name: "in: 関数の見出しの上は関数の本体", marker: "func add", count: 1, ok: true, want: addBody, linewise: true},
+		{name: "in: 1 行の本体は空白を除いた内側", marker: "x + 1", count: 1, ok: true, want: "return x + 1"},
+		{name: "in: 空の本体は幅 0", marker: "empty", count: 1, ok: true, want: ""},
+		{name: "in: 型引数の上は型引数の括弧の内側", marker: "T any", count: 1, ok: true, want: "T any"},
+		{name: "in: インターフェースの内側", marker: "M()", count: 1, ok: true, want: "\t\tM()", linewise: true},
+
+		{name: "an を繰り返す: 行単位の for の選択から if へ", around: true, marker: "for i", sel: forStmt, selLines: true, count: 1, ok: true, want: ifStmt, linewise: true},
+		{name: "an を回数で繰り返す: for の選択から関数へ", around: true, marker: "for i", sel: forStmt, count: 2, ok: true, want: addFunc, linewise: true},
+		{name: "an を繰り返す: 文字単位の関数リテラルの選択から代入の文へ", around: true, marker: "func(x", sel: "func(x int) int { return x + 1 }", count: 1, ok: true, want: "\tf := func(x int) int { return x + 1 }", linewise: true},
+		{name: "an を繰り返す: 関数の全体からは広げられない", around: true, marker: "func add", sel: addFunc, count: 1},
+		{name: "an を繰り返す: 文の選択から for へ", around: true, marker: "a += i", sel: "a += i", count: 1, ok: true, want: forStmt, linewise: true},
+		{name: "in を繰り返す: for の本体から if の本体へ", marker: "a += i", sel: "a += i", selLines: true, count: 1, ok: true, want: forStmt, linewise: true},
+		{name: "in を繰り返す: if の本体から関数の本体へ", marker: "for i", sel: forStmt, count: 1, ok: true, want: addBody, linewise: true},
+		{name: "in を繰り返す: an の後の in は外側の中身", marker: "for i", sel: ifStmt, count: 1, ok: true, want: addBody, linewise: true},
+	})
+}
+
+// TestBlockObjectJSON は、テキストオブジェクトのクエリを持たない JSON でも、構文のまとまりを選べることを確かめる。
+//
+// req: FR-11, FR-240
+func TestBlockObjectJSON(t *testing.T) {
+	h := newTestHighlighter(t)
+	d := parse(t, h, "json", `{"a": {"b": [1, 2]}, "c": 3}`)
+	runBlockCases(t, d, []blockCase{
+		{name: "an: 配列は対ごと", around: true, marker: "1, 2", count: 1, ok: true, want: `"b": [1, 2]`},
+		{name: "in: 配列の内側", marker: "1, 2", count: 1, ok: true, want: "1, 2"},
+		{name: "2an: 外側のオブジェクトの対", around: true, marker: "1, 2", count: 2, ok: true, want: `"a": {"b": [1, 2]}`},
+		{name: "3an: いちばん外のオブジェクトは行を占める", around: true, marker: "1, 2", count: 3, ok: true, want: `{"a": {"b": [1, 2]}, "c": 3}`, linewise: true},
+		{name: "2in: オブジェクトの内側", marker: "1, 2", count: 2, ok: true, want: `"b": [1, 2]`},
+		{name: "an を繰り返す: 対の選択から外の対へ", around: true, marker: `"b"`, sel: `"b": [1, 2]`, count: 1, ok: true, want: `"a": {"b": [1, 2]}`},
+		{name: "in を繰り返す: 配列の内側からオブジェクトの内側へ", marker: "1, 2", sel: "1, 2", count: 1, ok: true, want: `"b": [1, 2]`},
+	})
+}
+
+// TestServeTextObject は、本体の役から textObject/resolve を JSON-RPC で送り、
+// 編集の後のバージョンでも、構文木を持たない（解析の前の）バージョンでも、そのバージョンのテキストで範囲が返ることと、
+// 選択を渡すと選択を置き換える答え（replaceSelection）になることを確かめる。
+//
+// req: FR-11, FR-240
 func TestServeTextObject(t *testing.T) {
 	conn, got := connect(t)
-	if err := conn.Notify(ext.MethodBufferOpen, ext.BufferOpenParams{Buffer: 1, Version: 1, FileType: "go", Text: objectSource}); err != nil {
+	if err := conn.Notify(ext.MethodBufferOpen, ext.BufferOpenParams{Buffer: 1, Version: 1, FileType: "go", Text: blockSource}); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.Notify(ext.MethodBufferOpen, ext.BufferOpenParams{Buffer: 2, Version: 1, FileType: "json", Text: `{"a": [1, 2]}`}); err != nil {
 		t.Fatal(err)
 	}
 	h := newTestHighlighter(t)
-	d := parse(t, h, "go", objectSource)
-	resolve := func(buf ext.BufferID, version ext.Version, id string, cursor ext.Position) ext.TextObjectResolveResult {
+	d := parse(t, h, "go", blockSource)
+	resolve := func(p ext.TextObjectResolveParams) ext.TextObjectResolveResult {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
 		var r ext.TextObjectResolveResult
-		if err := conn.Call(ctx, ext.MethodTextObjectResolve, ext.TextObjectResolveParams{Buffer: buf, Version: version, ID: id, Cursor: cursor}, &r); err != nil {
+		if err := conn.Call(ctx, ext.MethodTextObjectResolve, p, &r); err != nil {
 			t.Fatalf("textObject/resolve: %v", err)
 		}
 		return r
 	}
+	at := func(buf ext.BufferID, version ext.Version, id string, cursor ext.Position) ext.TextObjectResolveParams {
+		return ext.TextObjectResolveParams{Buffer: buf, Version: version, ID: id, Cursor: cursor}
+	}
 	// 一覧が届く前（構文木を持たないかもしれない）と後の両方で、同じ範囲が返る。
-	cursor := cursorAt(t, d, "x + 1")
-	want := ext.TextObjectResolveResult{OK: true, Version: 1, Range: ext.Range{Start: cursorAt(t, d, "func(x"), End: cursorAt(t, d, "\n\treturn f(a)")}}
-	if r := resolve(1, 1, "treesitter.function.around", cursor); r != want {
+	cursor := cursorAt(t, d, "return x + 1")
+	inner := ext.Range{Start: cursor, End: cursorAt(t, d, " }\n\tif")}
+	want := ext.TextObjectResolveResult{OK: true, Version: 1, Range: inner}
+	if r := resolve(at(1, 1, "treesitter.block.inner", cursor)); r != want {
 		t.Errorf("before decoration/set: %+v, want %+v", r, want)
 	}
 	receive(t, got)
 	receive(t, got)
-	if r := resolve(1, 1, "treesitter.function.around", cursor); r != want {
+	if r := resolve(at(1, 1, "treesitter.block.inner", cursor)); r != want {
 		t.Errorf("after decoration/set: %+v, want %+v", r, want)
+	}
+	// 選択を渡すと、選択より大きい範囲を、選択を置き換える答えで返す。
+	p := at(1, 1, "treesitter.block.inner", cursor)
+	p.Selection = &inner
+	line := cursor.Line
+	wantSel := ext.TextObjectResolveResult{OK: true, Version: 1, Range: ext.Range{Start: ext.Position{Line: line}, End: ext.Position{Line: line + 8, Byte: len("\treturn f(a) + b")}}, Linewise: true, ReplaceSelection: true}
+	if r := resolve(p); r != wantSel {
+		t.Errorf("with selection: %+v, want %+v", r, wantSel)
 	}
 	// 1 行目に行を足すと、範囲は 1 行下がる。
 	edit := ext.Edit{Range: ext.Range{Start: ext.Position{Line: 0, Byte: 12}, End: ext.Position{Line: 0, Byte: 12}}, Text: "\n"}
@@ -177,13 +322,23 @@ func TestServeTextObject(t *testing.T) {
 		t.Fatal(err)
 	}
 	down := func(p ext.Position) ext.Position { return ext.Position{Line: p.Line + 1, Byte: p.Byte} }
-	want2 := ext.TextObjectResolveResult{OK: true, Version: 2, Range: ext.Range{Start: down(want.Range.Start), End: down(want.Range.End)}}
-	if r := resolve(1, 2, "treesitter.function.around", down(cursor)); r != want2 {
+	want2 := ext.TextObjectResolveResult{OK: true, Version: 2, Range: ext.Range{Start: down(inner.Start), End: down(inner.End)}}
+	if r := resolve(at(1, 2, "treesitter.block.inner", down(cursor))); r != want2 {
 		t.Errorf("after change: %+v, want %+v", r, want2)
 	}
-	// テキストオブジェクトを持たない言語では失敗する。
-	if r := resolve(2, 1, "treesitter.function.around", ext.Position{Line: 0, Byte: 8}); r.OK {
-		t.Errorf("json: %+v, want ok false", r)
+	// 引数のクエリを持たない言語では、引数は失敗し、構文のまとまりは選べる。
+	if r := resolve(at(2, 1, "treesitter.parameter.inner", ext.Position{Line: 0, Byte: 8})); r.OK {
+		t.Errorf("json parameter: %+v, want ok false", r)
+	}
+	wantJSON := ext.TextObjectResolveResult{OK: true, Version: 1, Range: ext.Range{Start: ext.Position{Byte: 7}, End: ext.Position{Byte: 11}}}
+	if r := resolve(at(2, 1, "treesitter.block.inner", ext.Position{Line: 0, Byte: 8})); r != wantJSON {
+		t.Errorf("json block: %+v, want %+v", r, wantJSON)
+	}
+	// 引数は、選択を渡しても選択を置き換えない。
+	p = at(1, 2, "treesitter.parameter.inner", down(cursorAt(t, d, "b int")))
+	p.Selection = &ext.Range{Start: p.Cursor, End: ext.Position{Line: p.Cursor.Line, Byte: p.Cursor.Byte + 1}}
+	if r := resolve(p); !r.OK || r.ReplaceSelection {
+		t.Errorf("parameter with selection: %+v, want ok and no replaceSelection", r)
 	}
 }
 
@@ -193,12 +348,12 @@ func TestParseObjectCapture(t *testing.T) {
 		name string
 		want objectCapture
 	}{
-		{"function.outer", objectCapture{objectFunction, partOuter}},
-		{"class.inner", objectCapture{objectClass, partInner}},
+		{"parameter.outer", objectCapture{objectParameter, partOuter}},
 		{"parameter.inner", objectCapture{objectParameter, partInner}},
-		{"function", objectCapture{}},
-		{"loop.outer", objectCapture{}},
-		{"function.body", objectCapture{}},
+		{"function.outer", objectCapture{}},
+		{"block.inner", objectCapture{}},
+		{"parameter", objectCapture{}},
+		{"parameter.body", objectCapture{}},
 	}
 	for _, tt := range tests {
 		if got := parseObjectCapture(tt.name); got != tt.want {

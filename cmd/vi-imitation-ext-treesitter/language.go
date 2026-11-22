@@ -27,14 +27,15 @@ type languageSpec struct {
 	language func() unsafe.Pointer
 	// query は、queryFS の中のハイライトのクエリのパスである。
 	query string
-	// objects は、queryFS の中のテキストオブジェクトのクエリのパスである。空なら、この言語はテキストオブジェクトを持たない。
+	// objects は、queryFS の中のテキストオブジェクトのクエリ（引数）のパスである。空なら、この言語は引数のテキストオブジェクトを持たない。
+	// 構文のまとまり（an、in）はクエリを使わない（block.go）ので、空でも使える。
 	objects string
 }
 
 // languages は、同梱する言語の一覧である。
 // 同梱する言語を足すときは、ここと宣言ファイル（manifest.json）の activation と queries/ の下のクエリを足す。
 // 同梱しない言語は、利用者の設定に並べたパーサ（FR-142。settings.go）で足す。
-// JSON は、関数、型、引数に当たる構文を持たないので、テキストオブジェクトを持たない。
+// JSON は、引数に当たる構文を持たないので、テキストオブジェクトのクエリを持たない（構文のまとまりの an と in は使える）。
 // JSON の文法（tree-sitter-json）は、コメントを文法に含み（extras）、ハイライトのクエリはコメントにも色を付けるので、"jsonc" にも使う。
 // 末尾のカンマは文法に無く、構文木に誤りのノードができるが、パーサーが立ち直るので、後ろの要素にも色が付く（TestDecorationsJSONC）。
 var languages = []languageSpec{

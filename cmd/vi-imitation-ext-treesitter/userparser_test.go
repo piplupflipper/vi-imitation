@@ -369,8 +369,9 @@ func readLockFile(t *testing.T, path string) parserLock {
 // 取得したコミットはロックファイルに記録し、次の起動（新しい highlighter）では、git も C コンパイラも使わずに同じものを読み込む。
 // 版を変えたら取得し直し、ロックファイルの記録を替え、前のビルドを消す。
 // 文法は src/ のあるディレクトリ（path）の下に置き、外部スキャナー（scanner.c）も一緒にコンパイルする。
+// 用意したパーサで、構文のまとまりのテキストオブジェクトも使える。
 //
-// req: FR-142
+// req: FR-142, FR-240
 func TestUserParserFetchBuildAndReuse(t *testing.T) {
 	repo := newGrammarRepo(t, "grammar", map[string]string{
 		// parser.c は外部スキャナーを使わないので、関数の中身は呼ばれない。コンパイルできることだけを試す。
@@ -390,6 +391,17 @@ func TestUserParserFetchBuildAndReuse(t *testing.T) {
 	p := receiveBuffer(t, got, 1, nil)
 	if styleAt(p.Decorations, numberAt) != "number" || styleAt(p.Decorations, keyAt) != "string" {
 		t.Errorf("decorations = %+v, want number at %v and string at %v", p.Decorations, numberAt, keyAt)
+	}
+	// 設定で足した言語でも、構文のまとまりのテキストオブジェクト（in）を、クエリなしに構文木の形で選べる（FR-240）。
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		var r ext.TextObjectResolveResult
+		err := conn.Call(ctx, ext.MethodTextObjectResolve, ext.TextObjectResolveParams{Buffer: 1, Version: 1, ID: "treesitter.block.inner", Cursor: numberAt}, &r)
+		cancel()
+		want := ext.TextObjectResolveResult{OK: true, Version: 1, Range: ext.Range{Start: keyAt, End: ext.Position{Byte: len(text) - 1}}}
+		if err != nil || r != want {
+			t.Errorf("textObject/resolve = %+v, %v; want %+v", r, err, want)
+		}
 	}
 	// 取得、ビルド、用意を、1 つの識別子の begin、report、end で知らせる（FR-178）。メッセージの行には出さない。
 	seen := waitProgress(t, progress, "パーサ myjson を用意した")

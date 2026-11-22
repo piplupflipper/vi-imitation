@@ -103,6 +103,11 @@ func TestMessageJSON(t *testing.T) {
 			`{"buffer":1,"version":2,"id":"o","cursor":{"line":5,"byte":6},"count":1}`)
 		roundTrip(t, TextObjectResolveResult{OK: true, Version: 2, Range: testRange, Linewise: true},
 			`{"ok":true,"version":2,"range":`+testRJSON+`,"linewise":true}`)
+		sel := testRange
+		roundTrip(t, TextObjectResolveParams{Buffer: 1, Version: 2, ID: "o", Count: 1, Selection: &sel},
+			`{"buffer":1,"version":2,"id":"o","cursor":{"line":0,"byte":0},"count":1,"selection":`+testRJSON+`}`)
+		roundTrip(t, TextObjectResolveResult{OK: true, Version: 2, Range: testRange, ReplaceSelection: true},
+			`{"ok":true,"version":2,"range":`+testRJSON+`,"replaceSelection":true}`)
 	})
 	t.Run("operator/apply", func(t *testing.T) {
 		roundTrip(t, OperatorApplyParams{Buffer: 1, Version: 3, ID: "op", Range: testRange, Count: 1, Args: json.RawMessage(`"\""`)},

@@ -133,7 +133,12 @@ func newHighlighter() (*highlighter, error) {
 		}
 	}
 	h.trees = newTreeStore()
-	h.objects = newTextObjects(h.langs, h.trees)
+	h.objects = newTextObjects(h.langs, h.trees, func(ft string) *language {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		l, _ := h.languageForLocked(ft)
+		return l
+	})
 	return h, nil
 }
 

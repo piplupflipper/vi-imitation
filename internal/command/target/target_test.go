@@ -181,17 +181,22 @@ func TestKindString(t *testing.T) {
 	}
 }
 
+// span は、start から end までの kind の範囲を返す。
+func span(start, end buffer.Position, kind Kind) Span {
+	return Span{Start: start, End: end, Kind: kind}
+}
+
 func TestSpanRange(t *testing.T) {
 	b := buffer.New("abc\nあい\n")
 	tests := []struct {
 		span Span
 		want string
 	}{
-		{Span{pos(0, 1), pos(0, 2), Exclusive}, "b"},
-		{Span{pos(0, 1), pos(0, 2), Inclusive}, "bc"},
-		{Span{pos(0, 1), pos(0, 3), Inclusive}, "bc"}, // 行末の位置は改行を含めない
-		{Span{pos(0, 2), pos(1, 3), Inclusive}, "c\nあい"},
-		{Span{pos(0, 2), pos(1, 0), Linewise}, "abc\nあい"},
+		{span(pos(0, 1), pos(0, 2), Exclusive), "b"},
+		{span(pos(0, 1), pos(0, 2), Inclusive), "bc"},
+		{span(pos(0, 1), pos(0, 3), Inclusive), "bc"}, // 行末の位置は改行を含めない
+		{span(pos(0, 2), pos(1, 3), Inclusive), "c\nあい"},
+		{span(pos(0, 2), pos(1, 0), Linewise), "abc\nあい"},
 	}
 	for _, tt := range tests {
 		got, err := b.Slice(tt.span.Range(b))
@@ -212,32 +217,32 @@ func TestAdjustExclusive(t *testing.T) {
 		{
 			name: "字下げの中から次の行の先頭までは行単位",
 			text: "  a\nb\n",
-			span: Span{pos(0, 1), pos(1, 0), Exclusive},
-			want: Span{pos(0, 1), pos(0, 0), Linewise},
+			span: span(pos(0, 1), pos(1, 0), Exclusive),
+			want: span(pos(0, 1), pos(0, 0), Linewise),
 		},
 		{
 			name: "行の途中から次の行の先頭までは前の行の最後の文字まで",
 			text: "a あ\nb",
-			span: Span{pos(0, 1), pos(1, 0), Exclusive},
-			want: Span{pos(0, 1), pos(0, 2), Inclusive},
+			span: span(pos(0, 1), pos(1, 0), Exclusive),
+			want: span(pos(0, 1), pos(0, 2), Inclusive),
 		},
 		{
 			name: "前の行が空なら空の行の先頭まで",
 			text: "a b\n\nc",
-			span: Span{pos(0, 2), pos(2, 0), Exclusive},
-			want: Span{pos(0, 2), pos(1, 0), Exclusive},
+			span: span(pos(0, 2), pos(2, 0), Exclusive),
+			want: span(pos(0, 2), pos(1, 0), Exclusive),
 		},
 		{
 			name: "同じ行の中は変えない",
 			text: "abc",
-			span: Span{pos(0, 0), pos(0, 0), Exclusive},
-			want: Span{pos(0, 0), pos(0, 0), Exclusive},
+			span: span(pos(0, 0), pos(0, 0), Exclusive),
+			want: span(pos(0, 0), pos(0, 0), Exclusive),
 		},
 		{
 			name: "Inclusive は変えない",
 			text: "a\nb",
-			span: Span{pos(0, 0), pos(1, 0), Inclusive},
-			want: Span{pos(0, 0), pos(1, 0), Inclusive},
+			span: span(pos(0, 0), pos(1, 0), Inclusive),
+			want: span(pos(0, 0), pos(1, 0), Inclusive),
 		},
 	}
 	for _, tt := range tests {
