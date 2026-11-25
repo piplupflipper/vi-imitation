@@ -95,8 +95,15 @@ const runningShowDelay = 150 * time.Millisecond
 // 約 100 ms なので、それより長くした（PR #425 の測り）。
 const settleDelay = 120 * time.Millisecond
 
+// burstWindow は、続けて打っている（settleDelay の待ちを置く）とみなす、続行とステップ実行の送信の間の上限である（仮。PR #425 の再レビューの
+// 必須 1 へのオーケストレータの決め）。待ちを常に置くと、vscode-js-debug で 0.4 秒の間で打ったとき、待ちの後に始めた読み込み（約 0.5 秒）が
+// 次の next と重なって遅れた。0.1 秒の間で打つと送信の間は約 160 ms、0.4 秒の間では約 460 ms である。250 ms では、debugpy で 0.1 秒の間の
+// 送信の間がときどき 250 ms を超え（一度遅れると、次の間も延びる）、10 回のうち 3 回が遅れたので、350 ms にした（PR #425 の測り）。
+// 1 回だけ止めたときと間を置いて打つときは待たず、止まった位置を出し終えたらすぐ読み始める。
+const burstWindow = 350 * time.Millisecond
+
 // runningHold は、区画を読み始めるのを待つ残りの時間を返す（無ければ 0）。動き出してから runningShowDelay が経っていないセッションか、
-// 止まった位置を出し始めてから settleDelay が経っていない止まっているセッションがあれば、その残りである。
+// 続けて打っている間に止まった位置を出し始めてから settleDelay が経っていない止まっているセッションがあれば、その残りである。
 func (d *debugger) runningHold() time.Duration {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -106,7 +113,7 @@ func (d *debugger) runningHold() time.Duration {
 		switch {
 		case !s.halted && !s.resumedAt.IsZero():
 			left = runningShowDelay - time.Since(s.resumedAt)
-		case s.halted && !s.shownAt.IsZero():
+		case s.halted && s.burst && !s.shownAt.IsZero():
 			left = settleDelay - time.Since(s.shownAt)
 		}
 		hold = max(hold, left)

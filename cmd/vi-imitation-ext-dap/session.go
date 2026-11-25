@@ -145,9 +145,11 @@ type session struct {
 	// resumedAt は、最後に動き出した（続行、ステップ実行、restart を送った、continued の event を受けた）時刻である。
 	// ペインは、動き出してから runningShowDelay の間は、区画を「動いている」に作り直さない（pane.refresh）。
 	resumedAt time.Time
-	// shownAt は、最後に止まった位置を出し始めた（showStopped、stoppedWithoutSource）時刻である。ペインは、そこから settleDelay の間は
-	// 区画を読み始めない（pane.refresh）。その間に次のステップ実行か続行が来れば、その停止の区画は読まない。
+	// shownAt は、最後に止まった位置を出し始めた（showStopped、stoppedWithoutSource）時刻である。続けて打っている（burst）ときは、
+	// ペインは、そこから settleDelay の間は区画を読み始めない（pane.refresh）。その間に次のステップ実行か続行が来れば、その停止の区画は読まない。
 	shownAt time.Time
+	// burst は、最後の続行かステップ実行を、その前の続行かステップ実行から burstWindow の内に送った（続けて打っている）ことを表す。
+	burst bool
 	// stopGen は、止まった位置を出し終える前（markStopped の後、showStopped か stoppedWithoutSource の前）の世代である。
 	// 0 なら出し終えた。世代が進めば（続けた、選び直した）意味を失う。ペインは、この間は区画を読まない（stopping）。
 	stopGen uint64
@@ -622,7 +624,9 @@ func (s *session) resume(ctx context.Context, command string) error {
 	s.d.mu.Lock()
 	wasHalted := s.halted
 	s.halted = false
-	s.resumedAt = time.Now()
+	now := time.Now()
+	s.burst = !s.resumedAt.IsZero() && now.Sub(s.resumedAt) < burstWindow
+	s.resumedAt = now
 	gen := s.gen.Add(1)
 	s.d.pane.markDirty(secThreads, secScopes, secWatches)
 	s.d.mu.Unlock()

@@ -233,6 +233,57 @@ func TestPaneWatchesQuickStep(t *testing.T) {
 	}
 }
 
+// TestSettleOnlyInBurst は、止まってから区画を読み始めるまでの待ち（settleDelay）を、続けて打っているとき（前の続行かステップ実行から
+// burstWindow の内に送った）だけ置き、1 回だけ止めたときと間を置いて打ったときは置かないことを確かめる（PR #425 の再レビューの必須 1）。
+//
+// req: FR-292
+func TestSettleOnlyInBurst(t *testing.T) {
+	h := paneHost(t, nil, nil, nil)
+	h.mustExec(cmdStart, 0)
+	h.waitSigns(bp2, bp5, exec2)
+	s := h.current()
+	hold := func() time.Duration {
+		// 止まった位置を出し始めた時刻を今にして、待ちの残りを引く。
+		h.d.mu.Lock()
+		s.shownAt = time.Now()
+		h.d.mu.Unlock()
+		return h.d.runningHold()
+	}
+	step := func() {
+		// 送る前の世代から、送信（+1）と停止（+1）で 2 つ進んで止まるまで待つ。
+		gen := s.gen.Load()
+		h.mustExec(cmdNext, 0)
+		deadline := time.Now().Add(testTimeout)
+		for time.Now().Before(deadline) {
+			h.d.mu.Lock()
+			done := s.halted && s.gen.Load() >= gen+2
+			h.d.mu.Unlock()
+			if done {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatal("the step did not stop")
+	}
+	// 1 回目のステップ実行は、前の送信が無いので続けて打っていない。
+	step()
+	if d := hold(); d != 0 {
+		t.Errorf("hold after a single step = %v, want 0", d)
+	}
+	// burstWindow の内に続けて打つと、待ちを置く。
+	step()
+	if d := hold(); d <= 0 || d > settleDelay {
+		t.Errorf("hold after a step in a burst = %v, want (0, %v]", d, settleDelay)
+	}
+	// 間を置いて打つと、待たない。
+	time.Sleep(burstWindow + 50*time.Millisecond)
+	step()
+	if d := hold(); d != 0 {
+		t.Errorf("hold after a spaced step = %v, want 0", d)
+	}
+	h.stopAndWait()
+}
+
 // TestPaneWatchesStale は、evaluate の応答を待つ間にステップ実行して止まり直したら、遅れて届いた前の停止の結果を表示に使わないことを確かめる。
 //
 // req: FR-305
