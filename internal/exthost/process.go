@@ -487,7 +487,7 @@ func (h *Host) handler(e *extension, r *run) rpc.Handler {
 				if !h.decode(id, n, &p) {
 					return
 				}
-				if err := p.Component.Validate(); err != nil {
+				if err := p.Validate(); err != nil {
 					h.log.Warn("invalid view/update from extension", "extension", id, "error", err)
 					return
 				}

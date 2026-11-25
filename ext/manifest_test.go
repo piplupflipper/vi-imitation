@@ -77,6 +77,25 @@ func TestManifestValidate(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "popupKeys の子を切り替える action と children",
+			modify: func(m *Manifest) {
+				m.Contributes.PopupKeys = []Contribution{
+					{ID: "next", Keys: "<Tab>", Action: PopupKeyChildNext},
+					{ID: "prev", Keys: "<S-Tab>", Action: PopupKeyChildPrev},
+					{ID: "first", Keys: "g0", Action: PopupKeyChildFirst},
+					{ID: "last", Keys: "g$", Action: PopupKeyChildLast},
+					{ID: "del", Keys: "d", Children: []string{"watches", "breakpoints"}},
+				}
+			},
+		},
+		{
+			name: "popupKeys の children の空の ID",
+			modify: func(m *Manifest) {
+				m.Contributes.PopupKeys = []Contribution{{ID: "del", Keys: "d", Children: []string{"watches", ""}}}
+			},
+			want: []string{"contributes.popupKeys[0].children に空の子の ID"},
+		},
 		{name: "id が空", modify: func(m *Manifest) { m.ID = "" }, want: []string{"id が空"}},
 		{name: "id が空白を含む", modify: func(m *Manifest) { m.ID = "sur round" }, want: []string{`id "sur round" が空白を含む`}},
 		{name: "command が空", modify: func(m *Manifest) { m.Command = "" }, want: []string{"command が空"}},

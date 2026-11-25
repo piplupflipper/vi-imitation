@@ -269,8 +269,23 @@ func TestTextLog(t *testing.T) {
 		t.Errorf("sent a view/append after Detach")
 	}
 
-	if err := log.Rebind(view2, "console"); !errors.Is(err, server.ErrChildUnsupported) {
-		t.Errorf("Rebind to a child = %v", err)
+	// 切り替えの部品の子へ付け替えると、子を指す view/update を送り、以後の書き足しも子を指す（FR-270）。
+	if err := log.Rebind(view2, "console"); err != nil {
+		t.Fatalf("Rebind to a child = %v", err)
+	}
+	vh.sync(t)
+	var up ext.ViewUpdateParams
+	if n := vh.last(); n.Method != ext.MethodViewUpdate || json.Unmarshal(n.Params, &up) != nil || up.Child != "console" || up.View != view2 {
+		t.Errorf("Rebind to a child sent %s %s", n.Method, n.Params)
+	}
+	_ = log.Append("child\n", "")
+	vh.sync(t)
+	var ap ext.ViewAppendParams
+	if n := vh.last(); n.Method != ext.MethodViewAppend || json.Unmarshal(n.Params, &ap) != nil || ap.Child != "console" || ap.Text != "child\n" {
+		t.Errorf("Append after Rebind to a child sent %s %s", n.Method, n.Params)
+	}
+	if v, c, ok := log.Attached(); !ok || v != view2 || c != "console" {
+		t.Errorf("Attached = %d %q %v", v, c, ok)
 	}
 	// 閉じた部品には結びつけない。
 	vh.closeView(t, view2)
@@ -313,7 +328,7 @@ func TestTextLog(t *testing.T) {
 	}
 	view3, _, _ := log.Attached()
 	vh.sync(t)
-	if got := vh.text(view3); !strings.HasSuffix(got, "hidden\ndetached\nduring\nopening\n") {
+	if got := vh.text(view3); !strings.HasSuffix(got, "hidden\ndetached\nchild\nduring\nopening\n") {
 		t.Errorf("after Open: %q", got)
 	}
 

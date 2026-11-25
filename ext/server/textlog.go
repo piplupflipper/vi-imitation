@@ -23,8 +23,11 @@ func (s *Server) AppendView(p ext.ViewAppendParams) error {
 // ErrOpening は、TextLog が開き直している最中（Open の open を呼んでいる間）に、Open か Rebind を呼んだことを表す。
 var ErrOpening = errors.New("server: the text log is being opened")
 
-// ErrChildUnsupported は、切り替えの部品の子（空でない child）へ Rebind したことを表す。
-// 子だけを置き換える view/update（基本設計 1.4 の「子を指す更新」）は、切り替えの部品を足すときに足す。
+// ErrChildUnsupported は、API 0.20.0 から 0.22.0 の間、切り替えの部品の子（空でない child）へ Rebind したことを表した。
+// API 0.23.0 で子を指す view/update を足したので、Rebind はこの誤りを返さなくなった。スクリプトの拡張機能が名前を参照していても
+// 動くように残す。
+//
+// Deprecated: Rebind は子への付け替えを断らない。
 var ErrChildUnsupported = errors.New("server: rebinding to a child of a switcher is not supported yet")
 
 // textLogKey は、写しを結びつける部品（部品の ID と、切り替えの部品の子の ID の組）である。
@@ -281,7 +284,7 @@ func (t *TextLog) Open(open func(ext.ViewComponent) (ext.ViewID, error), child s
 		return nil
 	}
 	if replace {
-		return t.s.notify(ext.MethodViewUpdate, ext.ViewUpdateParams{View: id, Component: t.component()})
+		return t.s.notify(ext.MethodViewUpdate, ext.ViewUpdateParams{View: id, Child: child, Component: t.component()})
 	}
 	if pending == nil {
 		return nil
@@ -294,12 +297,10 @@ func (t *TextLog) Open(open func(ext.ViewComponent) (ext.ViewID, error), child s
 // view/update と view/append を同じ錠の中で送るので、付け替えの前の書き足しは view/update の中身に入り、後の書き足しは
 // view/update の後の view/append になる。部品が既に閉じていれば、何も送らずに結びつけない。
 //
-// 切り替えの部品の子（空でない child）への付け替えは、子を指す view/update がまだ無いので、ErrChildUnsupported を返す。
+// 切り替えの部品（ext.ViewSwitcher）の子（空でない child）に付け替えるときは、子を指す view/update（API 0.23.0 から）で
+// その子だけを置き換える。
 // 開き直している最中（Open）は ErrOpening を返す。
 func (t *TextLog) Rebind(view ext.ViewID, child string) error {
-	if child != "" {
-		return ErrChildUnsupported
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.opening {
@@ -312,7 +313,7 @@ func (t *TextLog) Rebind(view ext.ViewID, child string) error {
 	if !t.bindLocked(view, child) {
 		return nil
 	}
-	return t.s.notify(ext.MethodViewUpdate, ext.ViewUpdateParams{View: view, Component: t.component()})
+	return t.s.notify(ext.MethodViewUpdate, ext.ViewUpdateParams{View: view, Child: child, Component: t.component()})
 }
 
 // Detach は、結びつきを外す。その後の Append は写しにだけ足す。

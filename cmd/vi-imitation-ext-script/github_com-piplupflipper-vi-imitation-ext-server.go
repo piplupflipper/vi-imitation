@@ -24,6 +24,7 @@ func init() {
 		"New":                 reflect.ValueOf(server.New),
 		"NewConsoleLog":       reflect.ValueOf(server.NewConsoleLog),
 		"NewTextLog":          reflect.ValueOf(server.NewTextLog),
+		"ViewChildSelected":   reflect.ValueOf(server.ViewChildSelected),
 		"ViewClosed":          reflect.ValueOf(server.ViewClosed),
 		"ViewExpanded":        reflect.ValueOf(server.ViewExpanded),
 		"ViewInputChanged":    reflect.ValueOf(server.ViewInputChanged),

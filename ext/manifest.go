@@ -3,6 +3,7 @@ package ext
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -171,6 +172,11 @@ type Contribution struct {
 	// Action は、Contributes.PopupKeys の項目で、キーを打ったときに view/key を送る代わりに本体がする操作である（API 0.10.0 で足した）。
 	// 省くと view/key を送る。ほかの種類の操作では読まない。
 	Action PopupKeyAction `json:"action,omitempty"`
+	// Children は、Contributes.PopupKeys の項目で、キーを効かせる切り替えの部品（ViewSwitcher）の子の ID の列である
+	// （FR-271。API 0.23.0 で足した）。並べた項目は、切り替えの部品でその子を出しているときだけ効き、ほかの部品では効かない。
+	// 省いた項目は、今までどおりその拡張機能のどの部品でも効く。同じキーを子ごとに別の項目にできる（DAP の区画ごとの d と s）。
+	// 古い本体は読まずに捨て、どの部品でも効かせる。ほかの種類の操作では読まない。
+	Children []string `json:"children,omitempty"`
 }
 
 // PopupKeyAction は、contributes.popupKeys のキーで、view/key の代わりに本体がする操作の名前である。
@@ -183,11 +189,23 @@ const (
 	// <CR> と同じ経路なので、選んだら閉じる中央のポップアップ（PaneOpenParams.CloseOnSelect）を閉じ、
 	// 分割したペインで選んだ後の editor/open は端末多重化ソフトのフォーカスを元の client へ戻す（基本設計 1.2）。
 	PopupKeySelect PopupKeyAction = "select"
+	// PopupKeyChildNext、PopupKeyChildPrev、PopupKeyChildFirst、PopupKeyChildLast は、切り替えの部品（ViewSwitcher）の
+	// 次、前、最初、最後の子へ切り替える（本体の操作 view.child-next などと同じ。API 0.23.0 で足した）。拡張機能を呼ばない。
+	// 利用者の切り替えなので、view/childSelect を送る。切り替えの部品でない部品では何もしない。
+	// DAP の拡張機能が、自分のペインの中だけで <Tab> と <S-Tab> を区画の切り替えにするのに使う（本体の既定の <Tab> は FR-98 のタブの移動）。
+	PopupKeyChildNext  PopupKeyAction = "view.child-next"
+	PopupKeyChildPrev  PopupKeyAction = "view.child-prev"
+	PopupKeyChildFirst PopupKeyAction = "view.child-first"
+	PopupKeyChildLast  PopupKeyAction = "view.child-last"
 )
 
 // Known は、a がこの版の API の知っている popupKeys の操作の名前か、空（view/key を送る）かを返す。
 func (a PopupKeyAction) Known() bool {
-	return a == "" || a == PopupKeySelect
+	switch a {
+	case "", PopupKeySelect, PopupKeyChildNext, PopupKeyChildPrev, PopupKeyChildFirst, PopupKeyChildLast:
+		return true
+	}
+	return false
 }
 
 // KnownActivation は、Activation のうち種類が既知の契機だけを返す。
@@ -254,7 +272,7 @@ func (m *Manifest) HandlesFileType(ft string) bool {
 //   - 設定からファイルの種類を作る契機（ActivationSettingsFileType）は、Pattern が "/" で始まること
 //   - Contributes の各操作の ID が空でなく、種類をまたいで重複しないこと
 //   - Contributes.StatusLine の各部品の ID が、拡張機能の ID と "." で始まり、その後が空でなく "." を含まず、空白を含まず、重複しないこと
-//   - Contributes.PopupKeys の各項目の ID とキーが空でなく、ID が PopupKeys の中で重複しないこと
+//   - Contributes.PopupKeys の各項目の ID とキーが空でなく、ID が PopupKeys の中で重複しないこと。Children に空の ID が無いこと
 //   - NoBufferSync が true なら、SaveHook と、Contributes の operators、motions、textObjects が無いこと
 //
 // 未知の種類の契機と、未知の操作の名前の provides と、Contributes.PopupKeys の未知の Action は、誤りにせず、warnings に 1 件ずつ返す。
@@ -319,6 +337,9 @@ func (m *Manifest) Validate() (warnings []error, err error) {
 			errs = append(errs, fmt.Errorf("%s.keys が空である", path))
 		case !c.Action.Known():
 			warnings = append(warnings, fmt.Errorf("%s.action %q は未知の操作なので無視する（view/key を送る）", path, c.Action))
+		}
+		if slices.Contains(c.Children, "") {
+			errs = append(errs, fmt.Errorf("%s.children に空の子の ID がある", path))
 		}
 		popupIDs[c.ID] = true
 	}
