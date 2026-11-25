@@ -3486,6 +3486,55 @@ _ = tl.Append("built\n", "")
 _ = tl.Append("error: x\n", "diagnostic.error")
 ```
 
+### 出力と入力の行の組を出す
+
+書き足す出力と 1 行の入力の行を組にした部品（`ext.ViewConsole`）は、REPL やチャットの欄のように、打った入力を送り、返事を出力に書き足す画面に使う（拡張機能 API の 0.22.0 から）。
+ペイン（`OpenPane`）にも中央のポップアップにも開ける。`OpenPopup` で開くと、`Placement` に依らず中央に出る。
+
+本体は、上に出力を、最後の行に前置き（`Prompt`）と入力の行を出し、入力の行をインサートモードにして開く。
+利用者が入力の行で `<CR>` を打つと、中身を `view/select`（`OnView` の `ViewSelected`。`Item` が中身）で知らせ、入力の行を空にする。空の中身でも知らせる。
+インサートモードの `<Up>` と `<Down>` で、送った中身の履歴をたどれる。
+インサートモードの `<BS>`、`<Del>`、`<Left>`、`<Right>`、`<Home>`、`<End>`、`<C-w>`、`<C-u>` で入力の行を直せる（`AskInput` の問いの入力と同じく、結合文字は前の文字と一緒に 1 文字として扱う）。
+`<Esc>` でノーマルモードへ戻っても閉じない。
+ノーマルモードの `<C-w>w` で出力へ移ると、`k`、`/`、`y` などで出力を読み返せ、もう一度 `<C-w>w` で入力の行へ戻る。
+中央のポップアップはノーマルモードの `<Esc>` で、ペインは `:q` か端末多重化ソフトの操作で閉じる。
+出力へは `AppendView` で書き足し、書き足しても、打ちかけの入力の行の中身、カーソル、モードは変わらない。
+`UpdateView` は出力と前置きだけを置き換え、入力の行と履歴は変えない。
+
+閉じた後に開き直して出力と履歴を戻すには、`server.NewConsoleLog` で作る写しを使う（使い方は `server.NewTextLog` と同じ）。
+履歴は本体が閉じたら捨てるので、受けた中身を `ext.AppendConsoleHistory` で積んでおき、`Open` に渡す関数の中で部品の `History` に入れる。
+次の例は、打った文字列をそのまま出力へ返すコマンド `echo.open` である。
+
+```go
+log := server.NewConsoleLog(s, "> ")
+var mu sync.Mutex
+var history []string
+s.OnView(func(_ context.Context, e *server.ViewEvent) {
+	view, _, ok := log.Attached()
+	if e.Kind != server.ViewSelected || !ok || e.View != view {
+		return
+	}
+	mu.Lock()
+	history = ext.AppendConsoleHistory(history, e.Item)
+	mu.Unlock()
+	_ = log.Append("> "+e.Item+"\n", "comment")
+	_ = log.Append(e.Item+"\n", "")
+})
+s.Command("echo.open", func(_ context.Context, _ *server.Buffer, _ *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
+	go func() {
+		_ = log.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
+			c.Title = "echo"
+			mu.Lock()
+			c.History = append([]string(nil), history...)
+			mu.Unlock()
+			res, err := s.OpenPane(context.Background(), ext.PaneOpenParams{Component: c, Direction: ext.PaneDown, Size: 30, Focus: true})
+			return res.View, err
+		}, "")
+	}()
+	return ext.CommandExecuteResult{OK: true}, nil
+})
+```
+
 ### 1 行の入力を聞く
 
 利用者に 1 行の文字列を聞くには、`AskInput` を使う（拡張機能 API の 0.21.0 から）。
