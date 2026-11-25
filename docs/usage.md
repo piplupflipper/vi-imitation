@@ -658,6 +658,7 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 | `modified` | ステータス行の未保存の印 | `[+]` | 任意の文字列 |
 | `popup.border` | 浮かべる窓（編集の画面の中に描く窓。端末多重化ソフトのポップアップの枠線は端末多重化ソフトが描くので効かない）と、画面の上に出すコマンドライン（[コマンドラインを画面の上に出す](#コマンドラインを画面の上に出す)）の枠線 | 空（浮かべる窓は枠線なし。画面の上に出すコマンドラインは ASCII の枠線 `+-+|+-+|`） | 空か、表示幅が 1 の文字を 8 つ。並びは左上、上、右上、右、右下、下、左下、左 |
 | `commandLine.title.command`、`commandLine.title.searchForward`、`commandLine.title.searchBackward` | 画面の上に出すコマンドラインの枠の題の、コマンドライン（`:`）、前方の検索（`/`）、後方の検索（`?`）。色は `commandLine.popup.border` と `commandLine.popup.border.search` | `Cmdline`、`Search forward`、`Search backward` | 任意の文字列。空なら題を出さない |
+| `commandLine.title.input` | 拡張機能が 1 行の入力を聞く問い（[1 行の入力を聞く](#1-行の入力を聞く)）を画面の上の枠に出すときの題。色は `commandLine.popup.border` | `Input` | 同上 |
 | `lineWrap.showBreak` | 長い行を折り返したとき（[長い行の折り返し](#長い行の折り返し)）に、続きの見た目の行の頭に付ける記号（Vim の `'showbreak'`）。色は `nontext` | 空（付けない） | 任意の文字列。本文の幅から 2 を引いた列数より広ければ付けない |
 | `whitespace.tab` | 空白の記号を描くとき（[空白の記号](#空白の記号)）の、タブ文字の記号（Vim の `'listchars'` の `tab`）。色は `whitespace` | `> ` | 空か、表示幅が 1 の文字を 2 つか 3 つ。空ならタブ文字を `^I` で描く |
 | `whitespace.space` | 行頭と行末でない空白の記号（`space`）。色は `whitespace` | 空（描かない） | 空か、表示幅が 1 の文字を 1 つ |
@@ -3483,6 +3484,33 @@ s.Command("log.show", func(_ context.Context, _ *server.Buffer, _ *ext.CommandEx
 // どの goroutine からでも書き足せる。色の名前を渡すと、書き足したテキストの全体にその色を付ける。
 _ = tl.Append("built\n", "")
 _ = tl.Append("error: x\n", "diagnostic.error")
+```
+
+### 1 行の入力を聞く
+
+利用者に 1 行の文字列を聞くには、`AskInput` を使う（拡張機能 API の 0.21.0 から）。
+本体は、コマンドラインの行（設定 `commandLine.popup` が真なら画面の上の枠）に、`Title` を前置きにして `Default` を入力の初めの中身として出す。
+利用者は `:` のコマンドラインと同じく、文字、`<Tab>`、`<BS>`、`<C-w>`、`<C-u>`、貼り付けで編集し、`<CR>` で確定し、`<Esc>` か `<C-c>` で取り消す。
+中身を消し切った後の `<BS>` では取り消さないので、空の文字列でも答えられる。
+結果の `Cancelled` で、空の文字列の確定と取り消しを見分ける。
+`Title` と `Default` に改行は入れられない。
+
+`AskChoice` の問いと同じ列に並び、一度に 1 つずつ出る。
+答えのキーはマクロに記録されないので、マクロの再生中の操作（`Sync` が真のコマンド）からは聞かない。
+`AskInput` は利用者の答えを待つので、コマンドのハンドラーの中からは `go` で別の goroutine を起こして呼ぶ。
+古い本体は誤りを返すので、`initialize` の `apiVersion` を `ext.VersionLess` で比べてから使う。
+
+```go
+s.Command("greet.ask", func(_ context.Context, _ *server.Buffer, _ *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
+	go func() {
+		res, err := s.AskInput(context.Background(), ext.InputAskParams{Title: "名前: ", Default: "world"})
+		if err != nil || res.Cancelled {
+			return
+		}
+		_ = s.ShowMessage(ext.MessageInfo, "hello, "+res.Value)
+	}()
+	return ext.CommandExecuteResult{OK: true}, nil
+})
 ```
 
 ### yaegi の制限
