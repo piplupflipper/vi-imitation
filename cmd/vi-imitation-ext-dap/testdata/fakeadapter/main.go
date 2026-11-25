@@ -109,6 +109,8 @@ type fakeOptions struct {
 	EvaluateDelayMs int `json:"evaluateDelayMs"`
 	// EvaluateDelayRepl は、EvaluateDelayMs を context が repl の evaluate にも当てる。
 	EvaluateDelayRepl bool `json:"evaluateDelayRepl"`
+	// CompletionsDelayMs は、completions の応答を遅らせる時間（ミリ秒）である。0 でなければ、受け取ったら "completions requested" を出す。
+	CompletionsDelayMs int `json:"completionsDelayMs"`
 }
 
 type message struct {
@@ -180,6 +182,8 @@ type capFlags struct {
 	noExceptions    bool
 	noExceptionInfo bool
 	clipboard       bool
+	// completions は、completions に対応する（supportsCompletionsRequest）。
+	completions bool
 }
 
 var flagCaps capFlags
@@ -197,6 +201,7 @@ func main() {
 	flag.BoolVar(&flagCaps.noExceptions, "no-exceptions", false, "do not show exception breakpoint filters")
 	flag.BoolVar(&flagCaps.noExceptionInfo, "no-exception-info", false, "do not support exceptionInfo")
 	flag.BoolVar(&flagCaps.clipboard, "clipboard", false, "support the clipboard context of evaluate")
+	flag.BoolVar(&flagCaps.completions, "completions", false, "support the completions request")
 	flag.Parse()
 	if *sleep {
 		select {}
@@ -392,6 +397,7 @@ func (a *adapter) handle(m *message) {
 			"supportsConditionalBreakpoints": !flagCaps.noConditional, "supportsRestartRequest": flagCaps.restart,
 			"supportsSetVariable": !flagCaps.noSetVariable, "supportsSetExpression": flagCaps.setExpression,
 			"supportsExceptionInfoRequest": !flagCaps.noExceptionInfo, "supportsClipboardContext": flagCaps.clipboard,
+			"supportsCompletionsRequest": flagCaps.completions,
 		}
 		if !flagCaps.noExceptions {
 			// dlv 1.27.2 の 2 つのフィルターと同じ形（片方は default が true）。
@@ -718,6 +724,8 @@ func (a *adapter) handle(m *message) {
 		})
 	case "evaluate":
 		a.evaluate(m)
+	case "completions":
+		a.completions(m)
 	case "continue", "next", "stepIn", "stepOut":
 		var targs struct {
 			ThreadID int `json:"threadId"`
@@ -996,6 +1004,76 @@ func (a *adapter) evaluate(m *message) {
 		a.output("console", "evaluate requested\n")
 		go func() {
 			time.Sleep(time.Duration(a.opts.EvaluateDelayMs) * time.Millisecond)
+			a.respond(m, body)
+		}()
+		return
+	}
+	a.respond(m, body)
+}
+
+// completions は、completions に答える。受け取ったら "completions <text> col=<column> frame=<frameId か none>" を出す。
+// 候補は text で決める（どれも column の前の、ASCII の英数字と _ の並びを語とする。start は debugpy と同じく 0 から数えた UTF-16 の
+// 符号単位の位置）。
+//
+//   - fail を含む: 失敗の応答
+//   - many: 語に依らず 5000 個（m0000〜m4999）
+//   - p. で始まる: start と length の無い候補 p.prop（入力の行の先頭から置き換える）と prop2（語を置き換える）
+//   - len を含む: start が無く length が語の長さの候補 lengthy
+//   - ほか: start と length が語の候補のうち、語で始まるもの（alpha、apple、beta）と、bad を含めば start がカーソルより後ろの候補 zz
+func (a *adapter) completions(m *message) {
+	var args struct {
+		Text    string `json:"text"`
+		Column  int    `json:"column"`
+		FrameID *int   `json:"frameId"`
+	}
+	_ = json.Unmarshal(m.Arguments, &args)
+	frame := "none"
+	if args.FrameID != nil {
+		frame = strconv.Itoa(*args.FrameID)
+	}
+	a.output("console", fmt.Sprintf("completions %s col=%d frame=%s\n", args.Text, args.Column, frame))
+	if !flagCaps.completions {
+		a.respondError(m, "completions is not supported")
+		return
+	}
+	if strings.Contains(args.Text, "fail") {
+		a.respondError(m, "completions failed")
+		return
+	}
+	q := args.Text[len(strings.TrimRightFunc(args.Text, func(r rune) bool {
+		return r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+	})):]
+	start := args.Column - 1 - len(q)
+	var targets []map[string]any
+	switch {
+	case args.Text == "many":
+		for i := range 5000 {
+			targets = append(targets, map[string]any{"label": fmt.Sprintf("m%04d", i), "type": "variable"})
+		}
+	case strings.HasPrefix(args.Text, "p."):
+		targets = []map[string]any{{"label": "p.prop", "type": "property"}, {"label": "prop2", "type": "property"}}
+	case strings.Contains(args.Text, "len"):
+		targets = []map[string]any{{"label": "lengthy", "length": len(q)}}
+	default:
+		for _, c := range []map[string]any{
+			{"label": "alpha", "type": "field", "sortText": "b"},
+			{"label": "apple", "text": "apple()", "type": "method", "sortText": "a"},
+			{"label": "beta", "type": "variable"},
+		} {
+			if strings.HasPrefix(c["label"].(string), q) {
+				c["start"], c["length"] = start, len(q)
+				targets = append(targets, c)
+			}
+		}
+		if strings.Contains(args.Text, "bad") {
+			targets = append(targets, map[string]any{"label": "zz", "start": args.Column + 3, "length": 0})
+		}
+	}
+	body := map[string]any{"targets": targets}
+	if a.opts.CompletionsDelayMs > 0 {
+		a.output("console", "completions requested\n")
+		go func() {
+			time.Sleep(time.Duration(a.opts.CompletionsDelayMs) * time.Millisecond)
 			a.respond(m, body)
 		}()
 		return

@@ -34,6 +34,8 @@ type capabilities struct {
 	SupportsExceptionInfoRequest bool `json:"supportsExceptionInfoRequest,omitempty"`
 	// ExceptionBreakpointFilters は、setExceptionBreakpoints の filters に使える例外のフィルターである（例外の区画。FR-294）。
 	ExceptionBreakpointFilters []exceptionFilter `json:"exceptionBreakpointFilters,omitempty"`
+	// SupportsCompletionsRequest は、completions に対応するかである（REPL の補完。FR-310。panecomplete.go）。
+	SupportsCompletionsRequest bool `json:"supportsCompletionsRequest,omitempty"`
 }
 
 // exceptionFilter は、仕様の ExceptionBreakpointsFilter のうち、使う項目である。
