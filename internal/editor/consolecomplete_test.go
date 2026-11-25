@@ -13,6 +13,17 @@ import (
 	"github.com/piplupflipper/vi-imitation/internal/editcmd"
 )
 
+// 結合文字と絵文字の試験の文字列。整形で見えない文字（U+0301、U+FE0F、U+200D）がそのまま書かれないよう、符号位置から作る。
+var (
+	// testEAcute は、e と U+0301（結合文字）の 2 符号位置の é である。
+	testEAcute = "e" + string(rune(0x301))
+	// testHeart は、U+2764 と U+FE0F（異体字セレクター。結合文字）である。
+	testHeart = string([]rune{0x2764, 0xfe0f})
+	// testFamily2 と testFamily3 は、ZWJ（U+200D）で 2 人と 3 人をつないだ絵文字の並びである。
+	testFamily2 = string([]rune{0x1F468, 0x200d, 0x1F469})
+	testFamily3 = testFamily2 + string([]rune{0x200d, 0x1F467})
+)
+
 // fakeCompleteWords は、fakeComplete が返す候補の語と種類である。
 var fakeCompleteWords = []struct{ word, kind string }{
 	{"alpha", "variable"},
@@ -21,9 +32,9 @@ var fakeCompleteWords = []struct{ word, kind string }{
 	{"あいう", "variable"},
 	{"あかい", "module"},
 	// 結合文字を含む語（e と U+0301、U+2764 と U+FE0F）と、ZWJ でつないだ絵文字の語（PR #428 の再レビューの必須）。
-	{"éclair", "variable"},
-	{"❤️ok", "variable"},
-	{"\U0001F468‍\U0001F469‍\U0001F467", "variable"},
+	{testEAcute + "clair", "variable"},
+	{testHeart + "ok", "variable"},
+	{testFamily3, "variable"},
 }
 
 // fakeComplete は、偽の拡張機能の console/complete の答えである（FR-297）。カーソルの前の語（空白、"."、"(" の後ろから
@@ -170,7 +181,7 @@ func TestConsoleCompleteSelect(t *testing.T) {
 }
 
 // 候補は、カーソルの前の語の一部（置き換える範囲）だけを置き換え、カーソルの後ろの文字を残す。カーソルだけを動かすと一覧を閉じ、
-// 補完のキー（一覧を出していないときの <Tab>）で問い合わせ直す。<C-y> も選んだ候補を入れ、<C-e> は一覧を閉じる。
+// 補完のキー（一覧を出していないときの <C-@>）で問い合わせ直す。<C-y> も選んだ候補を入れ、<C-e> は一覧を閉じる。
 // 多バイト文字の語も、文字の境目で置き換える。カーソルの前が空白なら問い合わせない。
 //
 // req: FR-297
@@ -193,7 +204,11 @@ func TestConsoleCompleteRange(t *testing.T) {
 
 	// <C-e> で閉じる。閉じた後の補完のキーでは問い合わせ直す。
 	h.keys("<End><C-u>(")
-	h.waitMenu("alpha,alps,beta,あいう,あかい,éclair,❤️ok,\U0001F468‍\U0001F469‍\U0001F467")
+	var all []string
+	for _, w := range fakeCompleteWords {
+		all = append(all, w.word)
+	}
+	h.waitMenu(strings.Join(all, ","))
 	h.keys("<C-e>")
 	if mi := h.cmenu(); mi.items != "" || mi.input != "(" {
 		t.Fatalf("<C-e> の後: %+v", mi)
@@ -341,10 +356,10 @@ func TestConsoleCompleteReplay(t *testing.T) {
 // req: FR-297
 func TestConsoleCompleteReplayCombining(t *testing.T) {
 	for _, tt := range []struct{ name, typed, want string }{
-		{"結合文字", "é", "éclair"},
+		{"結合文字", testEAcute, testEAcute + "clair"},
 		{"全角文字", "あ", "あいう"},
-		{"異体字セレクター", "❤️", "❤️ok"},
-		{"ZWJ の絵文字", "\U0001F468‍\U0001F469", "\U0001F468‍\U0001F469‍\U0001F467"},
+		{"異体字セレクター", testHeart, testHeart + "ok"},
+		{"ZWJ の絵文字", testFamily2, testFamily3},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := startComplete(t)
@@ -374,21 +389,20 @@ func TestConsoleCompleteReplayCombining(t *testing.T) {
 //
 // req: FR-297
 func TestReplaceKeys(t *testing.T) {
-	text := "xé"
+	text := "x" + testEAcute
 	record, keys := replaceKeys(text, 2, len(text), len(text), "Z")
-	str := func(ks []editcmd.Key) string { return editcmd.KeysString(ks) }
-	if got, want := str(record), "<BS>eZ"; got != want {
+	if got, want := editcmd.KeysString(record), "<BS>eZ"; got != want {
 		t.Errorf("record = %q, want %q", got, want)
 	}
-	if got, want := str(keys), "<BS><BS>eZ"; got != want {
+	if got, want := editcmd.KeysString(keys), "<BS><BS>eZ"; got != want {
 		t.Errorf("keys = %q, want %q", got, want)
 	}
 	// カーソルの後ろの 1 文字の途中で終わる範囲は、その文字の終わりまで消す。
-	record, keys = replaceKeys("aéb", 1, 1, 2, "")
-	if got, want := str(record), "<Del>"; got != want {
+	record, keys = replaceKeys("a"+testEAcute+"b", 1, 1, 2, "")
+	if got, want := editcmd.KeysString(record), "<Del>"; got != want {
 		t.Errorf("後ろの record = %q, want %q", got, want)
 	}
-	if got, want := str(keys), "<Del><Del>"; got != want {
+	if got, want := editcmd.KeysString(keys), "<Del><Del>"; got != want {
 		t.Errorf("後ろの keys = %q, want %q", got, want)
 	}
 }
