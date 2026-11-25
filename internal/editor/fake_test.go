@@ -330,6 +330,12 @@ func runFakeExt(mode string) int {
 				c := fakePopup("tree").Component
 				c.Items[1].Children = []ext.ViewItem{{ID: "lazy/x", Label: "lazy/x"}}
 				_ = s.UpdateView(ext.ViewUpdateParams{View: e.View, Component: c})
+			case e.Kind == server.ViewSelected && e.Item == "ask":
+				// 選んだ項目の後に input/ask で続けて聞き、答えを出力の欄 seq に書き足す（fakePopup の asklist。#420）。
+				go func() {
+					r, err := s.AskInput(hostCtx, ext.InputAskParams{Title: "引数: "})
+					_ = s.AppendOutput("seq", fmt.Sprintf("args value=%q cancelled=%v err=%v\n", r.Value, r.Cancelled, err))
+				}()
 			case e.Kind == server.ViewSelected && e.Item == "close":
 				_ = s.CloseView(e.View)
 			case e.Kind == server.ViewSelected && e.Item == "update":
@@ -764,6 +770,11 @@ func fakePopup(kind string) ext.PopupOpenParams {
 	case "files":
 		return ext.PopupOpenParams{Placement: ext.PopupCenter, Component: ext.ViewComponent{Kind: ext.ViewList, Title: "files", Items: []ext.ViewItem{
 			{ID: "open", Label: "opened.txt"}, {ID: "slow", Label: "slow"}, {ID: "late", Label: "late"},
+		}}}
+	case "asklist":
+		// 選ぶと input/ask で続けて聞く一覧（DAP の構成の一覧の後の inputs。#420）。
+		return ext.PopupOpenParams{Placement: ext.PopupCenter, Component: ext.ViewComponent{Kind: ext.ViewList, Title: "asklist", Items: []ext.ViewItem{
+			{ID: "ask", Label: "ask"},
 		}}}
 	case "finder":
 		// placement を書かなくても、本体はファインダーを中央に出す。
