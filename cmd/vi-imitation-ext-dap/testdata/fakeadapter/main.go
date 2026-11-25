@@ -109,6 +109,9 @@ type fakeOptions struct {
 	EvaluateDelayMs int `json:"evaluateDelayMs"`
 	// EvaluateDelayRepl は、EvaluateDelayMs を context が repl の evaluate にも当てる。
 	EvaluateDelayRepl bool `json:"evaluateDelayRepl"`
+	// StopOnExceptionRefusal は、StopDelayMs の間に setExceptionBreakpoints を断るとき、止まる予定を早めて stopped を送ってから、
+	// 200 ミリ秒後に断る応答を返す（動いている間に断られ、応答が届く前に止まった場面の代役）。
+	StopOnExceptionRefusal bool `json:"stopOnExceptionRefusal"`
 	// CompletionsDelayMs は、completions の応答を遅らせる時間（ミリ秒）である。0 でなければ、受け取ったら "completions requested" を出す。
 	CompletionsDelayMs int `json:"completionsDelayMs"`
 }
@@ -163,6 +166,9 @@ type adapter struct {
 	cur     int
 	// running は、StopDelayMs の間、デバッグ対象が動いていることを表す。
 	running bool
+	// stopTimer と stopCommand は、StopDelayMs の後に止まる予定と、そのときの続行かステップ実行のコマンドである。
+	stopTimer   *time.Timer
+	stopCommand string
 
 	childMu sync.Mutex
 	child   *exec.Cmd
@@ -705,8 +711,19 @@ func (a *adapter) handle(m *message) {
 		_ = json.Unmarshal(m.Arguments, &eargs)
 		a.stateMu.Lock()
 		running := a.running
+		stopNow := running && a.opts.StopOnExceptionRefusal && a.stopTimer != nil && a.stopTimer.Stop()
+		if stopNow {
+			a.running = false
+		}
+		command := a.stopCommand
 		a.stateMu.Unlock()
 		if running {
+			if stopNow {
+				// 断る応答より先に止まる（動いている間に断った後、応答が届く前に止まった場面の代役）。拡張機能が stopped を処理し終える
+				// まで、断る応答を 200 ミリ秒遅らせる。
+				a.resume(command)
+				time.Sleep(200 * time.Millisecond)
+			}
 			// dlv 1.27.2 と同じく、動いている間は断る。
 			a.respondError(m, "Unable to process `setExceptionBreakpoints`: debuggee is running")
 			return
@@ -761,12 +778,15 @@ func (a *adapter) handle(m *message) {
 			return
 		}
 		command := m.Command
-		time.AfterFunc(time.Duration(a.opts.StopDelayMs)*time.Millisecond, func() {
+		a.stateMu.Lock()
+		a.stopCommand = command
+		a.stopTimer = time.AfterFunc(time.Duration(a.opts.StopDelayMs)*time.Millisecond, func() {
 			a.stateMu.Lock()
 			a.running = false
 			a.stateMu.Unlock()
 			a.resume(command)
 		})
+		a.stateMu.Unlock()
 	case "pause":
 		a.stateMu.Lock()
 		a.running = false

@@ -411,8 +411,10 @@ func TestPaneReplCompleteSlow(t *testing.T) {
 	}
 
 	// 応答の前にステップ実行して止まり直したら、前の停止の候補を出さない。
-	stale := send(h.ctx(), "a")
-	h.waitOutput("completions requested")
+	// "completions requested" は前の b のものが残っているので、この問い合わせの行で待つ（待たずにステップ実行すると、問い合わせが
+	// 止まり直した後に届き、新しい停止の候補で正しく答える）。
+	stale := send(h.ctx(), "ap")
+	h.waitOutput("completions ap col=3")
 	h.mustExec(cmdNext, 0)
 	if a := recv(stale); a.err != nil || a.res.OK {
 		t.Errorf("stale = %+v, want not ok", a)
