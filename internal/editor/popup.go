@@ -968,6 +968,17 @@ func initExpanded(items []ext.ViewItem, prev, m map[string]bool) {
 	}
 }
 
+// floatBufferText は、部品の行 lines をバッファの中身にするテキスト（buffer.New に渡すもの）を返す。
+// buffer.New は末尾の改行を 1 つ行に数えないので、最後の行が空の行（2 行以上のとき）なら改行を 1 つ足し、空の行を残す
+// （テキストの部品の "a\n\n" を "a" と空の行の 2 行で出す。view/append。FR-272）。
+func floatBufferText(lines []string) string {
+	s := strings.Join(lines, "\n")
+	if n := len(lines); n > 1 && lines[n-1] == "" {
+		s += "\n"
+	}
+	return s
+}
+
 // setFloatContent は、ポップアップ f のバッファの中身を部品 c にする。
 // 一覧と木では、カーソルのあった項目の ID が c にもあればその行へカーソルを置き、無ければ行の番号を行数に収まる範囲で保つ。
 // 木の開閉の状態は、前の木にあった ID の項目はそのまま保ち、新しい ID の項目は c の Expanded にする（PR #242 のレビューの必須 2）。
@@ -998,7 +1009,7 @@ func (e *Editor) drawFloatContent(f *floatState, c ext.ViewComponent) {
 	follow := f.kind == floatText && cursor.Line >= f.bs.buf.LineCount()-1
 	lines, rows, decs := floatLines(c, f.expanded, e.itemIcons(f.iconColumnFor(c.Items)))
 	f.rows = rows
-	e.reload(f.bs, buffer.New(strings.Join(lines, "\n")))
+	e.reload(f.bs, buffer.New(floatBufferText(lines)))
 	line := min(cursor.Line, f.bs.buf.LineCount()-1)
 	if follow {
 		line = f.bs.buf.LineCount() - 1
@@ -1052,7 +1063,7 @@ func (e *Editor) newComponentFloat(c ext.ViewComponent, extID string) *floatStat
 	if title == "" {
 		title = "[ポップアップ]"
 	}
-	f.bs = e.newPopupBuffer(title, strings.Join(lines, "\n"), "", f.kind != floatInput)
+	f.bs = e.newPopupBuffer(title, floatBufferText(lines), "", f.kind != floatInput)
 	if len(decs) > 0 {
 		e.setPopupDecorations(f.bs, decs)
 	}

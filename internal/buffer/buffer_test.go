@@ -984,3 +984,36 @@ func TestApplyReload(t *testing.T) {
 		t.Errorf("版の不一致: %v", err)
 	}
 }
+
+// ApplyUnrecorded は、編集を禁止したバッファにも当て、アンドゥの履歴に積まない。前の履歴は捨て、変更ありかどうかは保つ。
+func TestApplyUnrecorded(t *testing.T) {
+	b := New("a")
+	if _, err := b.Apply(Transaction{BaseVersion: 0, Edits: []Edit{{Range: rng(0, 1, 0, 1), Text: "b"}}}); err != nil {
+		t.Fatal(err)
+	}
+	b.MarkSaved()
+	b.SetReadOnly(true)
+	ch, err := b.ApplyUnrecorded(Transaction{BaseVersion: 1, Edits: []Edit{
+		{Range: rng(0, 2, 0, 2), Text: "\nc\nd"},
+		{Range: rng(0, 0, 1, 0), Text: ""}, // 逐次の数え方で、先頭の行を捨てる
+	}})
+	if err != nil || ch.Before != 1 || ch.After != 2 || b.Text() != "c\nd" {
+		t.Fatalf("ApplyUnrecorded() = %+v, %v; text = %q", ch, err, b.Text())
+	}
+	if b.CanUndo() || b.CanRedo() || b.Modified() {
+		t.Errorf("after ApplyUnrecorded: undo %v redo %v modified %v", b.CanUndo(), b.CanRedo(), b.Modified())
+	}
+	b.SetReadOnly(false)
+	if _, err := b.Apply(Transaction{BaseVersion: 2, Edits: []Edit{{Range: rng(0, 0, 0, 0), Text: "x"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.Undo(); !ok || b.Text() != "c\nd" || b.Modified() {
+		t.Errorf("undo after ApplyUnrecorded: text %q modified %v", b.Text(), b.Modified())
+	}
+	if _, err := b.ApplyUnrecorded(Transaction{BaseVersion: 0, Edits: []Edit{{Text: "y"}}}); !errors.Is(err, ErrVersionMismatch) {
+		t.Errorf("版の不一致: %v", err)
+	}
+	if _, err := b.ApplyUnrecorded(Transaction{BaseVersion: b.Version(), Edits: []Edit{{Range: rng(9, 0, 9, 0), Text: "y"}}}); err == nil || b.Text() != "c\nd" {
+		t.Errorf("範囲の外: %v, text %q", err, b.Text())
+	}
+}

@@ -520,4 +520,3 @@ func (x *extension) message(level ext.MessageLevel, text string) {
 		x.log.Printf("message/show: %v", err)
 	}
 }
-

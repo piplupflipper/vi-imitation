@@ -55,17 +55,18 @@ const stubbornSIGTERM = "fake extension got SIGTERM"
 
 // テストから拡張機能へ送る、テスト専用のリクエスト。
 const (
-	methodState      = "test/state"      // 拡張機能が持つバッファの写しと、受け取ったメッセージの記録を返す
-	methodExit       = "test/exit"       // 応答せずに終了コード 3 で終わる
-	methodPanic      = "test/panic"      // panic する
-	methodHang       = "test/hang"       // 読み取りの goroutine の中で無限ループに入る
-	methodGrandchild = "test/grandchild" // 標準出力を継承した孫プロセス（sleep）を起動し、その pid を返す
-	methodForget     = "test/forget"     // バッファのバージョン番号を食い違わせる（次の buffer/change で buffer/resync を送る）
-	methodEdit       = "test/edit"       // params の BufferEditParams で本体へ buffer/edit を送り、その結果を返す
-	methodNotify     = "test/notify"     // decoration/set、message/show、progress/report を送る
-	methodGarbage    = "test/garbage"    // JSON-RPC として解釈できないメッセージを標準出力へ書く
-	methodFlood      = "test/flood"      // message/show を params の数だけ送る
-	methodEnv        = "test/env"        // 環境変数 ext.EnvExtensionDir と ext.EnvMCPSocket の値と作業ディレクトリを返す
+	methodState       = "test/state"       // 拡張機能が持つバッファの写しと、受け取ったメッセージの記録を返す
+	methodExit        = "test/exit"        // 応答せずに終了コード 3 で終わる
+	methodPanic       = "test/panic"       // panic する
+	methodHang        = "test/hang"        // 読み取りの goroutine の中で無限ループに入る
+	methodGrandchild  = "test/grandchild"  // 標準出力を継承した孫プロセス（sleep）を起動し、その pid を返す
+	methodForget      = "test/forget"      // バッファのバージョン番号を食い違わせる（次の buffer/change で buffer/resync を送る）
+	methodEdit        = "test/edit"        // params の BufferEditParams で本体へ buffer/edit を送り、その結果を返す
+	methodNotify      = "test/notify"      // decoration/set、message/show、progress/report を送る
+	methodGarbage     = "test/garbage"     // JSON-RPC として解釈できないメッセージを標準出力へ書く
+	methodFlood       = "test/flood"       // message/show を params の数だけ送る
+	methodAppendFlood = "test/appendFlood" // 部品 1 への view/append を params の数だけ送る（"0\n"、"1\n" ...）
+	methodEnv         = "test/env"         // 環境変数 ext.EnvExtensionDir と ext.EnvMCPSocket の値と作業ディレクトリを返す
 )
 
 // fakeArgs は、問い合わせの Args に入れる、テスト用の指示である。
@@ -295,6 +296,13 @@ func (f *fakeExt) request(ctx context.Context, req *rpc.Request, reply rpc.Repli
 		_ = json.Unmarshal(req.Params, &n)
 		for i := range n {
 			_ = f.conn.Notify(ext.MethodMessageShow, ext.MessageShowParams{Level: ext.MessageInfo, Text: fmt.Sprint(i)})
+		}
+		_ = reply(nil, nil)
+	case methodAppendFlood:
+		var n int
+		_ = json.Unmarshal(req.Params, &n)
+		for i := range n {
+			_ = f.conn.Notify(ext.MethodViewAppend, ext.ViewAppendParams{View: 1, Text: fmt.Sprintf("%d\n", i)})
 		}
 		_ = reply(nil, nil)
 	default:
