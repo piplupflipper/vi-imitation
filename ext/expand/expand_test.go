@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // counter は、名前と引数ごとに Value を呼んだ回数を数える Resolver を作る。
@@ -77,8 +78,16 @@ func TestExpandWholeValueOnce(t *testing.T) {
 		"env": {"A": "file=", "B": {"C": ["input=x"]}},
 		"port": "input=port"
 	}`)
-	if !reflect.DeepEqual(got, want) {
+	if encode(t, got) != encode(t, want) {
 		t.Errorf("Expand = %s\nwant %s", encode(t, got), encode(t, want))
+	}
+	// 置き換えた値の中の ${file} は、後の展開で読まないよう Text になる。ほかは string。
+	args := got.(map[string]any)["args"].([]any)
+	if _, ok := args[2].(Text); !ok {
+		t.Errorf("args[2] = %#v、Text のはず", args[2])
+	}
+	if _, ok := args[1].(string); !ok {
+		t.Errorf("args[1] = %#v、string のはず", args[1])
 	}
 	for v, n := range c.calls {
 		if n != 1 {
@@ -158,9 +167,151 @@ func TestExpandDefer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []any{"/a.go:${port}", "${foo:a:b}", "/home/x"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Expand = %v、want %v", got, want)
+	l := got.([]any)
+	if len(l) != 3 || l[2] != "/home/x" {
+		t.Fatalf("Expand = %#v", got)
+	}
+	for i, want := range []string{"/a.go:${port}", "${foo:a:b}"} {
+		tx, ok := l[i].(Text)
+		if !ok || tx.String() != want {
+			t.Errorf("[%d] = %#v、Text の %q のはず", i, l[i], want)
+		}
+	}
+	if vs := l[0].(Text).Vars(); !reflect.DeepEqual(vs, []Var{{Name: "port"}}) {
+		t.Errorf("Text.Vars = %v", vs)
+	}
+	// JSON では元の書き方の文字列になる（resolveCommand の標準入力に渡す形）。
+	if s := encode(t, got); s != `["/a.go:${port}","${foo:a:b}","/home/x"]` {
+		t.Errorf("JSON = %s", s)
+	}
+}
+
+// 2 段目は、1 段目で残した変数の位置だけを置き換える。1 段目で置き換えた値（${file}、${input:…}、${env:…} の値）の中の
+// ${port} と ${clientAddr} は置き換えない。1 段目を通らない値（外部のコマンドの値）の中の ${port} は、同じ Expand で置き換える。
+//
+// req: FR-276
+func TestExpandSecondStageOnlyDeferredPositions(t *testing.T) {
+	t.Setenv("REVIEW_X", "a${port}b")
+	first := Resolver{Vars: map[string]Entry{
+		"port":       {Defer: true},
+		"clientAddr": {Defer: true},
+		"file":       {Value: func(string) (string, error) { return "/tmp/${port}/a.go", nil }},
+		"input":      {Value: func(string) (string, error) { return "${clientAddr}", nil }},
+	}}
+	stage1, err := Expand(decode(t, `{"args": ["--listen=${port}", "${input:msg}", "${file}", "${env:REVIEW_X}"]}`), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := encode(t, stage1); s != `{"args":["--listen=${port}","${clientAddr}","/tmp/${port}/a.go","a${port}b"]}` {
+		t.Errorf("1 段目 = %s", s)
+	}
+	m := stage1.(map[string]any)
+	m["extra"] = "x${port}${env:HOME}" // 外部のコマンドが返した値（FR-283）
+	second := Resolver{
+		Vars: map[string]Entry{
+			"port":       {Value: func(string) (string, error) { return "5678", nil }},
+			"clientAddr": {Value: func(string) (string, error) { return "127.0.0.1:5678", nil }},
+		},
+		Unknown: Defer,
+		Env:     Defer,
+	}
+	got, err := Expand(m, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := encode(t, got); s != `{"args":["--listen=5678","${clientAddr}","/tmp/${port}/a.go","a${port}b"],"extra":"x5678${env:HOME}"}` {
+		t.Errorf("2 段目 = %s", s)
+	}
+	args := got.(map[string]any)["args"].([]any)
+	if _, ok := args[0].(string); !ok {
+		t.Errorf("残した変数を置き換え終えた値が string でない: %#v", args[0])
+	}
+}
+
+// []string や map[string]string など、扱えない型の中の変数を黙って見落とさず、経路を添えた誤りにする。
+//
+// req: FR-276
+func TestUnsupportedTypes(t *testing.T) {
+	in := map[string]any{
+		"adapter": map[string]any{
+			"args": []string{"${command:x}", "${file}"},
+			"env":  map[string]string{"A": "${env:HOME}"},
+		},
+	}
+	called := false
+	r := Resolver{Vars: map[string]Entry{"file": {Value: func(string) (string, error) { called = true; return "", nil }}}}
+	var te *TypeError
+	if _, err := Vars(in); !errors.As(err, &te) || te.Path != "$.adapter.args" || te.Type != "[]string" {
+		t.Errorf("Vars の誤り = %v", err)
+	}
+	if err := Check(in, r); !errors.As(err, &te) {
+		t.Errorf("Check の誤り = %v", err)
+	}
+	if got, err := Expand(in, r); got != nil || !errors.As(err, &te) || called {
+		t.Errorf("Expand = %v, %v", got, err)
+	}
+	if err := Check([]any{1, int64(2), json.Number("3"), float32(1), nil, true}, r); err != nil {
+		t.Errorf("数の型が誤りになった: %v", err)
+	}
+	type conf struct{ Args []string }
+	if err := Check(conf{}, r); !errors.As(err, &te) || te.Path != "$" {
+		t.Errorf("構造体の誤り = %v", err)
+	}
+}
+
+// 入れ子の変数は、評価する変数なら誤り（ErrNested）。残す変数（Defer）なら残す。
+//
+// req: FR-276
+func TestNested(t *testing.T) {
+	r := Resolver{Vars: map[string]Entry{
+		"input": {Value: func(string) (string, error) { return "v", nil }},
+		"port":  {Defer: true},
+	}}
+	for _, in := range []string{"${env:${input:x}}", "${input:${input:x}}"} {
+		if _, err := Expand(in, r); !errors.Is(err, ErrNested) {
+			t.Errorf("Expand(%q) の誤り = %v", in, err)
+		}
+	}
+	got, err := Expand("${port:${input:x}}", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tx, ok := got.(Text); !ok || tx.String() != "${port:${input:x}}" {
+		t.Errorf("Expand = %#v", got)
+	}
+}
+
+// Handling の範囲の外と、Unknown の Builtin は誤りにする。
+func TestHandlingOutOfRange(t *testing.T) {
+	for _, r := range []Resolver{{Env: 99}, {Unknown: 99}, {Unknown: Builtin}, {Unknown: -1}} {
+		if err := Check("x", r); err == nil {
+			t.Errorf("Check(%+v) が通った", r)
+		}
+		if _, err := Expand("x", r); err == nil {
+			t.Errorf("Expand(%+v) が通った", r)
+		}
+	}
+	for _, r := range []Resolver{{}, {Unknown: Fail, Env: Fail}, {Unknown: Defer, Env: Defer}, {Env: Builtin}} {
+		if err := Check("x", r); err != nil {
+			t.Errorf("Check(%+v) = %v", r, err)
+		}
+	}
+}
+
+// 閉じていない ${名前: の並びでも、読む時間が長さに比例する。
+func TestParseLinear(t *testing.T) {
+	big := strings.Repeat("${a:", 1<<18) // 1 MiB
+	start := time.Now()
+	vs, err := Vars([]any{big, strings.Repeat("${a", 1<<18), strings.Repeat("${ ", 1<<18)})
+	if err != nil || len(vs) != 0 {
+		t.Fatalf("Vars = %v, %v", vs, err)
+	}
+	got, err := Expand(big, Resolver{Unknown: Defer, Env: Defer})
+	if err != nil || got != big {
+		t.Fatalf("Expand の誤り %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("3 MiB を読むのに %v かかった", d)
 	}
 }
 
@@ -192,13 +343,9 @@ func TestExpandSecondStage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{
-		"args":  []any{"--listen", "127.0.0.1:5678", "/a.go"},
-		"cwd":   "/home/x",
-		"extra": []any{"${env:HOME}", "${foo}", "5678"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Expand = %v、want %v", got, want)
+	want := `{"args":["--listen","127.0.0.1:5678","/a.go"],"cwd":"/home/x","extra":["${env:HOME}","${foo}","5678"]}`
+	if s := encode(t, got); s != want {
+		t.Errorf("Expand = %s、want %s", s, want)
 	}
 }
 
@@ -274,7 +421,7 @@ func TestParseBoundaries(t *testing.T) {
 		{"${a:}", "A()"},
 		{"${a:b:c}", "A(b:c)"},
 		{"${a:editor.fontSize}", "A(editor.fontSize)"},
-		{"${a:x ${a}", "A(x ${a)"},
+		{"${a}}", "A()}"},
 		{"${a:}}", "A()}"},
 		{"${/}", "/"},
 		{"日本${a:語}の${a}", "日本A(語)のA()"},
@@ -294,19 +441,19 @@ func TestParseBoundaries(t *testing.T) {
 
 // Vars は、評価せずに重ねずに、現れた順に並べる（map はキーの辞書順）。
 func TestVars(t *testing.T) {
-	got := Vars(decode(t, `{"b": ["${x}", "${y:1}"], "a": "${y:1} ${x:} ${y:2}", "c": 1}`))
+	got, err := Vars(decode(t, `{"b": ["${x}", "${y:1}"], "a": "${y:1} ${x:} ${y:2}", "c": 1}`))
 	want := []Var{{Name: "y", Arg: "1"}, {Name: "x"}, {Name: "y", Arg: "2"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Vars = %v、want %v", got, want)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("Vars = %v, %v、want %v", got, err, want)
 	}
-	if got := Vars(42); got != nil {
-		t.Errorf("Vars(42) = %v", got)
+	if got, err := Vars(42); got != nil || err != nil {
+		t.Errorf("Vars(42) = %v, %v", got, err)
 	}
 }
 
-// 文字列でない値と、JSON の型でない値はそのまま返す。
+// 文字列でない値はそのまま返す。
 func TestExpandNonString(t *testing.T) {
-	for _, in := range []any{nil, 1.5, true, map[string]string{"a": "${x}"}, []any(nil), map[string]any(nil)} {
+	for _, in := range []any{nil, 1.5, true, json.Number("1"), []any(nil), map[string]any(nil)} {
 		got, err := Expand(in, Resolver{})
 		if err != nil || !reflect.DeepEqual(got, in) {
 			t.Errorf("Expand(%#v) = %#v, %v", in, got, err)
