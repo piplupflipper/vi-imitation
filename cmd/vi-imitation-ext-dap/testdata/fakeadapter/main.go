@@ -58,7 +58,35 @@ type fakeOptions struct {
 	// OrphanOnTerm は、SIGTERM で子プロセスを止めずに終わる（vscode-js-debug の dapDebugServer.js の代役）。
 	OrphanOnTerm bool `json:"orphanOnTerm"`
 	// StartDebugging は、configurationDone の後に、逆向きの request の startDebugging を送る（vscode-js-debug の子のセッションの代役）。
+	// 送った後は、ParentRuns でなければブレークポイントで止まらない（デバッグ対象は子のセッションにある）。
 	StartDebugging bool `json:"startDebugging"`
+	// ChildRequest は、startDebugging の request である。空なら、受けた launch か attach と同じ。
+	ChildRequest string `json:"childRequest"`
+	// ChildConfig は、startDebugging の configuration である。nil なら {"type":"fake","name":"child","__pendingTargetId":"t1"}。
+	ChildConfig map[string]any `json:"childConfig"`
+	// ChildListen は、子のセッションのために自分の中で TCP で待ち受け、configuration の connect に host と port を入れる
+	// （debugpy の子のプロセスの代役）。
+	ChildListen bool `json:"childListen"`
+	// ParentRuns は、startDebugging を送った後も、自分のブレークポイントで止まる（debugpy の親のプロセスの代役）。
+	ParentRuns bool `json:"parentRuns"`
+	// VerifyLater は、setBreakpoints の応答では verified を false にして ID を振り、configurationDone の後に、
+	// reason が changed の breakpoint の event で verified を true にする（vscode-js-debug の launch の代役）。
+	VerifyLater bool `json:"verifyLater"`
+	// NeverVerify は、setBreakpoints の応答で verified を false にして ID を振り、breakpoint の event を送らず、
+	// 止まったときの stopped の hitBreakpointIds で知らせる（vscode-js-debug の attach の代役）。
+	NeverVerify bool `json:"neverVerify"`
+	// ThreadZero は、スレッドの ID を 0 にする（vscode-js-debug の代役）。
+	ThreadZero bool `json:"threadZero"`
+	// RunForever は、continue に応答した後、止まらずに動き続ける（終わりもしない）。"continued after <launch か attach>" を出す。
+	RunForever bool `json:"runForever"`
+	// FirstStopDelayMs は、最初のブレークポイントで止まるまでの時間（ミリ秒）である。
+	FirstStopDelayMs int `json:"firstStopDelayMs"`
+	// Idle は、configurationDone の後に止まらずに動き続ける（ブレークポイントで止まらない、終わらない）。
+	Idle bool `json:"idle"`
+	// NoThreads は、threads に空の列を返す（vscode-js-debug の親のセッションの代役）。
+	NoThreads bool `json:"noThreads"`
+	// StackTraceDelayMs は、最初の stackTrace の応答を遅らせる時間（ミリ秒）である。受け取ったら "stackTrace requested" を出す。
+	StackTraceDelayMs int `json:"stackTraceDelayMs"`
 }
 
 type message struct {
@@ -87,8 +115,15 @@ type adapter struct {
 
 	opts      fakeOptions
 	launchSeq int
+	// command は、受けた launch か attach である。
+	command   string
 	bps       map[string][]int
 	terminate bool
+	// delayed は、StackTraceDelayMs で stackTrace を遅らせ終えたことを表す。
+	delayed bool
+	// bpIDs は、VerifyLater と NeverVerify で振ったブレークポイントの ID（置いた位置から）である。nextBPID は次に振る ID。
+	bpIDs    map[location]int
+	nextBPID int
 
 	// stateMu は、stops、cur、running を守る。StopDelayMs の停止は別の goroutine で起きる。
 	stateMu sync.Mutex
@@ -104,11 +139,23 @@ type adapter struct {
 	conn net.Conn
 }
 
+// capFlags は、initialize の応答の capabilities のうち、コマンドラインで変えるものである。
+type capFlags struct {
+	noConditional bool
+	restart       bool
+	restartFail   bool
+}
+
+var flagCaps capFlags
+
 func main() {
 	clientAddr := flag.String("client-addr", "", "unix:<path> of the client socket")
 	listen := flag.String("listen", "", "listen on this TCP address (host:port) and serve each connection (serverPort and server)")
 	terminate := flag.Bool("terminate", false, "support the terminate request")
 	sleep := flag.Bool("sleep", false, "sleep forever (the debuggee stand-in)")
+	flag.BoolVar(&flagCaps.noConditional, "no-conditional", false, "do not support conditional breakpoints")
+	flag.BoolVar(&flagCaps.restart, "restart", false, "support the restart request")
+	flag.BoolVar(&flagCaps.restartFail, "restart-fail", false, "fail the restart after acknowledging it (as dlv does on a build error)")
 	flag.Parse()
 	if *sleep {
 		select {}
@@ -129,7 +176,7 @@ func main() {
 		fmt.Println("fakeadapter stdout")
 	}
 	fmt.Fprintln(os.Stderr, "fakeadapter started")
-	a := &adapter{r: bufio.NewReader(r), w: w, bps: map[string][]int{}, cur: -1, terminate: *terminate}
+	a := &adapter{r: bufio.NewReader(r), w: w, bps: map[string][]int{}, bpIDs: map[location]int{}, cur: -1, terminate: *terminate}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM)
 	go func() {
@@ -139,6 +186,7 @@ func main() {
 		a.stateMu.Unlock()
 		if !orphan {
 			a.killChild()
+			killAllServed()
 		}
 		os.Exit(0)
 	}()
@@ -161,27 +209,42 @@ func serve(addr string, terminate bool) {
 		os.Exit(1)
 	}
 	fmt.Printf("listening %d\n", ln.Addr().(*net.TCPAddr).Port)
-	var mu sync.Mutex
-	var adapters []*adapter
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM)
 	go func() {
 		<-sigs
-		mu.Lock()
-		for _, a := range adapters {
-			a.killChild()
-		}
+		killAllServed()
 		os.Exit(0)
 	}()
+	acceptLoop(ln, terminate)
+	os.Exit(1)
+}
+
+var (
+	servedMu sync.Mutex
+	served   []*adapter
+)
+
+// killAllServed は、待ち受けて話したどの接続の子プロセスも終わらせる。
+func killAllServed() {
+	servedMu.Lock()
+	defer servedMu.Unlock()
+	for _, a := range served {
+		a.killChild()
+	}
+}
+
+// acceptLoop は、ln で接続を受け、接続ごとに DAP を話す。ln が閉じたら戻る。
+func acceptLoop(ln net.Listener, terminate bool) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
-			os.Exit(1)
+			return
 		}
-		a := &adapter{r: bufio.NewReader(c), w: c, bps: map[string][]int{}, cur: -1, terminate: terminate, conn: c}
-		mu.Lock()
-		adapters = append(adapters, a)
-		mu.Unlock()
+		a := &adapter{r: bufio.NewReader(c), w: c, bps: map[string][]int{}, bpIDs: map[location]int{}, cur: -1, terminate: terminate, conn: c}
+		servedMu.Lock()
+		served = append(served, a)
+		servedMu.Unlock()
 		go func() {
 			for {
 				m, err := a.read()
@@ -255,8 +318,8 @@ func (a *adapter) output(category, text string) {
 func (a *adapter) handle(m *message) {
 	if m.Type == "response" {
 		// 逆向きの request への応答である。
-		if a.opts.StartDebugging {
-			a.output("console", fmt.Sprintf("startDebugging success=%v\n", m.Success))
+		if m.Command == "startDebugging" {
+			a.output("console", fmt.Sprintf("startDebugging success=%v %s\n", m.Success, m.Message))
 			return
 		}
 		a.output("console", fmt.Sprintf("runInTerminal success=%v\n", m.Success))
@@ -275,14 +338,35 @@ func (a *adapter) handle(m *message) {
 	switch m.Command {
 	case "initialize":
 		var args struct {
-			LinesStartAt1 bool `json:"linesStartAt1"`
+			LinesStartAt1                 bool `json:"linesStartAt1"`
+			SupportsStartDebuggingRequest bool `json:"supportsStartDebuggingRequest"`
 		}
 		_ = json.Unmarshal(m.Arguments, &args)
 		if !args.LinesStartAt1 {
 			a.respondError(m, "this fake requires linesStartAt1")
 			return
 		}
-		a.respond(m, map[string]any{"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": a.terminate})
+		a.respond(m, map[string]any{
+			"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": a.terminate,
+			"supportsConditionalBreakpoints": !flagCaps.noConditional, "supportsRestartRequest": flagCaps.restart,
+		})
+		a.output("console", fmt.Sprintf("initialize supportsStartDebuggingRequest=%v\n", args.SupportsStartDebuggingRequest))
+	case "restart":
+		a.output("console", fmt.Sprintf("restart args %s\n", m.Arguments))
+		a.respond(m, nil)
+		if flagCaps.restartFail {
+			// dlv 1.27.2 の onRestartRequest と同じく、成功の応答の後に、同じ request へ失敗の応答を送り、セッションを終える。
+			a.respondError(m, "Failed to restart: build error in main.go")
+			a.event("terminated", nil)
+			return
+		}
+		a.stateMu.Lock()
+		a.stops, a.cur, a.running = nil, -1, false
+		a.stateMu.Unlock()
+		// dlv と同じく、始め直した後に initialized を送り、setBreakpoints と configurationDone を待ってから走らせる。
+		a.launchSeq = 0
+		a.bps = map[string][]int{}
+		a.event("initialized", nil)
 	case "launch", "attach":
 		var args struct {
 			Program string      `json:"program"`
@@ -291,15 +375,18 @@ func (a *adapter) handle(m *message) {
 		_ = json.Unmarshal(m.Arguments, &args)
 		a.stateMu.Lock()
 		a.opts = args.Fake
+		a.command = m.Command
 		a.stateMu.Unlock()
 		if a.opts.FailLaunch {
 			a.respondError(m, "cannot build "+args.Program)
 			return
 		}
 		// 受け取った引数の全体（fake を除く）を 1 行の JSON で出す。テストが type、request、name、env などを確かめる。
+		// どのアダプターのプロセスが受けたかを、_pid に入れる（子のセッションのテスト）。
 		var all map[string]any
 		_ = json.Unmarshal(m.Arguments, &all)
 		delete(all, "fake")
+		all["_pid"] = os.Getpid()
 		body, _ := json.Marshal(all)
 		a.output("console", fmt.Sprintf("%s args %s\n", m.Command, body))
 		if v := os.Getenv("FAKEADAPTER_ENV"); v != "" {
@@ -341,7 +428,13 @@ func (a *adapter) handle(m *message) {
 			if b.Condition != "" {
 				a.output("console", fmt.Sprintf("condition %d %q\n", line, b.Condition))
 			}
-			res = append(res, map[string]any{"verified": !slices.Contains(a.opts.Unverified, b.Line), "line": line})
+			r := map[string]any{"verified": !slices.Contains(a.opts.Unverified, b.Line), "line": line}
+			if a.opts.VerifyLater || a.opts.NeverVerify {
+				a.nextBPID++
+				r["id"], r["verified"] = a.nextBPID, false
+				a.bpIDs[location{args.Source.Path, line}] = a.nextBPID
+			}
+			res = append(res, r)
 		}
 		a.bps[args.Source.Path] = lines
 		a.output("console", fmt.Sprintf("setBreakpoints %s %v\n", filepath.Base(args.Source.Path), lines))
@@ -353,22 +446,58 @@ func (a *adapter) handle(m *message) {
 		}
 		a.output("stdout", "hello from debuggee\n")
 		a.output("telemetry", "telemetry must not be shown\n")
+		if a.opts.VerifyLater {
+			for _, id := range a.bpIDs {
+				a.event("breakpoint", map[string]any{"reason": "changed", "breakpoint": map[string]any{"id": id, "verified": true}})
+			}
+		}
 		if a.opts.Reverse {
 			a.send(message{Type: "request", Command: "runInTerminal", Arguments: json.RawMessage(`{"args":["true"]}`)})
 			return
 		}
 		if a.opts.StartDebugging {
-			// 子のセッションを求め、応答を待つ（ブレークポイントでは止まらない）。
-			a.send(message{Type: "request", Command: "startDebugging", Arguments: json.RawMessage(`{"request":"launch","configuration":{"type":"fake"}}`)})
+			// 子のセッションを求める。ParentRuns でなければ、自分のブレークポイントでは止まらない。
+			if err := a.requestChild(); err != nil {
+				a.output("stderr", "startDebugging: "+err.Error()+"\n")
+			}
+			if !a.opts.ParentRuns {
+				return
+			}
+		}
+		if a.opts.Idle {
 			return
 		}
 		a.run()
 	case "threads":
-		a.respond(m, map[string]any{"threads": []map[string]any{{"id": 1, "name": "main"}}})
+		if a.opts.NoThreads {
+			a.respond(m, map[string]any{"threads": []map[string]any{}})
+			return
+		}
+		a.respond(m, map[string]any{"threads": []map[string]any{{"id": a.threadID(), "name": "main"}}})
 	case "stackTrace":
 		a.stateMu.Lock()
+		if a.cur < 0 || a.cur >= len(a.stops) {
+			// ブレークポイントでなく一時停止で止まった（位置を持たない）。
+			a.stateMu.Unlock()
+			a.respond(m, map[string]any{"stackFrames": []map[string]any{}})
+			return
+		}
 		loc := a.stops[a.cur]
+		delay := a.opts.StackTraceDelayMs > 0 && !a.delayed
+		a.delayed = a.delayed || delay
 		a.stateMu.Unlock()
+		if delay {
+			// 応答を遅らせる間も、ほかの request（continue など）を受けられるよう、別の goroutine で応答する。
+			a.output("console", "stackTrace requested\n")
+			go func() {
+				time.Sleep(time.Duration(a.opts.StackTraceDelayMs) * time.Millisecond)
+				a.respond(m, map[string]any{"stackFrames": []map[string]any{{
+					"id": 1000, "name": "main.main", "line": loc.line, "column": 1,
+					"source": map[string]any{"name": filepath.Base(loc.path), "path": loc.path},
+				}}})
+			}()
+			return
+		}
 		col := a.opts.Column
 		if col == 0 {
 			col = 1
@@ -382,6 +511,14 @@ func (a *adapter) handle(m *message) {
 		}
 		a.respond(m, map[string]any{"stackFrames": []map[string]any{frame}})
 	case "continue", "next", "stepIn", "stepOut":
+		var targs struct {
+			ThreadID int `json:"threadId"`
+		}
+		_ = json.Unmarshal(m.Arguments, &targs)
+		if targs.ThreadID != a.threadID() {
+			a.respondError(m, fmt.Sprintf("unknown thread %d", targs.ThreadID))
+			return
+		}
 		a.stateMu.Lock()
 		running := a.running
 		a.running = a.opts.StopDelayMs > 0
@@ -395,6 +532,13 @@ func (a *adapter) handle(m *message) {
 			body = map[string]any{"allThreadsContinued": true}
 		}
 		a.respond(m, body)
+		if a.opts.RunForever && m.Command == "continue" {
+			a.stateMu.Lock()
+			a.running = true
+			a.stateMu.Unlock()
+			a.output("console", "continued after "+a.command+"\n")
+			return
+		}
 		if a.opts.StopDelayMs == 0 {
 			a.resume(m.Command)
 			return
@@ -423,7 +567,7 @@ func (a *adapter) handle(m *message) {
 			TerminateDebuggee bool `json:"terminateDebuggee"`
 		}
 		_ = json.Unmarshal(m.Arguments, &args)
-		a.output("console", fmt.Sprintf("disconnect terminateDebuggee=%v\n", args.TerminateDebuggee))
+		a.output("console", fmt.Sprintf("disconnect terminateDebuggee=%v after %s\n", args.TerminateDebuggee, a.command))
 		a.respond(m, nil)
 		if args.TerminateDebuggee {
 			a.killChild()
@@ -437,6 +581,33 @@ func (a *adapter) handle(m *message) {
 	default:
 		a.respondError(m, "unknown command "+m.Command)
 	}
+}
+
+// requestChild は、逆向きの request の startDebugging を送る。ChildListen なら、子のセッションのために待ち受け、
+// configuration の connect にそのホストとポートを入れる。
+func (a *adapter) requestChild() error {
+	cfg := a.opts.ChildConfig
+	if cfg == nil {
+		cfg = map[string]any{"type": "fake", "name": "child", "__pendingTargetId": "t1"}
+	}
+	if a.opts.ChildListen {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		go acceptLoop(ln, a.terminate)
+		cfg["connect"] = map[string]any{"host": "127.0.0.1", "port": ln.Addr().(*net.TCPAddr).Port}
+	}
+	request := a.opts.ChildRequest
+	if request == "" {
+		request = a.command
+	}
+	args, err := json.Marshal(map[string]any{"request": request, "configuration": cfg})
+	if err != nil {
+		return err
+	}
+	a.send(message{Type: "request", Command: "startDebugging", Arguments: args})
+	return nil
 }
 
 // startChild は、自分を -sleep で別のプロセスグループに起動し、pid を出力する。
@@ -500,7 +671,12 @@ func (a *adapter) run() {
 			a.stops = append(a.stops, location{p, l})
 		}
 	}
+	delay := a.opts.FirstStopDelayMs
 	a.stateMu.Unlock()
+	if delay > 0 {
+		time.AfterFunc(time.Duration(delay)*time.Millisecond, func() { a.next("breakpoint") })
+		return
+	}
 	a.next("breakpoint")
 }
 
@@ -521,7 +697,22 @@ func (a *adapter) next(reason string) {
 func (a *adapter) stopped(reason string) {
 	body := map[string]any{"reason": reason, "allThreadsStopped": true}
 	if !a.opts.NoThreadID {
-		body["threadId"] = 1
+		body["threadId"] = a.threadID()
+	}
+	if reason == "breakpoint" {
+		a.stateMu.Lock()
+		if id, ok := a.bpIDs[a.stops[a.cur]]; ok {
+			body["hitBreakpointIds"] = []int{id}
+		}
+		a.stateMu.Unlock()
 	}
 	a.event("stopped", body)
+}
+
+// threadID は、スレッドの ID である。ThreadZero なら 0、そうでなければ 1。
+func (a *adapter) threadID() int {
+	if a.opts.ThreadZero {
+		return 0
+	}
+	return 1
 }

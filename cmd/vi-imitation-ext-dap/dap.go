@@ -24,9 +24,12 @@ import (
 // 本体との接続の既定値（rpc.DefaultMaxMessageSize）に揃える。
 const maxDAPMessageSize = rpc.DefaultMaxMessageSize
 
-// reverseRequestEvent は、対応しない逆向きの request を受けたことを onEvent へ渡すときの名前の前置きである
+// reverseRequestEvent は、逆向きの request を、session の event の列へ積むときの名前の前置きである
 // （後ろに request の command を付ける。DAP の event の名前と重ならない）。body は、その request の引数である。
 const reverseRequestEvent = "$reverseRequest:"
+
+// lateFailureEvent は、待っていない request への失敗の応答を onEvent へ渡すときの名前の前置きである（後ろに command を付ける）。
+const lateFailureEvent = "$lateFailure:"
 
 // errDAPClosed は、デバッグアダプターとの接続が終わっていることを表す。
 var errDAPClosed = errors.New("dap: connection closed")
@@ -94,14 +97,16 @@ func (e *dapError) Error() string {
 // 読み取りは、newDAPConn が起動する 1 つの goroutine が行う。
 // event は受け取った順に onEvent へ渡す。onEvent は読み取りの goroutine から呼ばれるので、
 // その中で call の応答を待ってはならない（応答を読む goroutine が止まる）。
-// 逆向きの request（runInTerminal、startDebugging）には、最初の範囲では対応しないので、
-// 読み取りの goroutine が success を false にした response を返す。
+// 逆向きの request は onRequest へ渡し、onRequest が false を返したら（引き受けないなら）、
+// 読み取りの goroutine が success を false にした response を返す（runInTerminal は作らない。FR-288）。
+// 引き受けた request（startDebugging。FR-285）には、引き受けた側が後から respond で応答する。
 //
 // call は複数の goroutine から並行に呼んでよい。書き込みは mu で直列にする。
 type dapConn struct {
-	w       io.Writer
-	closer  io.Closer
-	onEvent func(event string, body json.RawMessage)
+	w         io.Writer
+	closer    io.Closer
+	onEvent   func(event string, body json.RawMessage)
+	onRequest func(seq int, command string, args json.RawMessage) bool
 
 	mu      sync.Mutex
 	seq     int
@@ -112,13 +117,15 @@ type dapConn struct {
 
 // newDAPConn は、r から読み、w へ書く接続を作り、読み取りを始める。
 // closer は、close で閉じるもの（子プロセスの標準入力やソケット）で、nil でもよい。
-func newDAPConn(r io.Reader, w io.Writer, closer io.Closer, onEvent func(string, json.RawMessage)) *dapConn {
+// onRequest は nil でもよく、nil ならどの逆向きの request も断る。
+func newDAPConn(r io.Reader, w io.Writer, closer io.Closer, onEvent func(string, json.RawMessage), onRequest func(int, string, json.RawMessage) bool) *dapConn {
 	c := &dapConn{
-		w:       w,
-		closer:  closer,
-		onEvent: onEvent,
-		pending: make(map[int]chan *dapMessage),
-		done:    make(chan struct{}),
+		w:         w,
+		closer:    closer,
+		onEvent:   onEvent,
+		onRequest: onRequest,
+		pending:   make(map[int]chan *dapMessage),
+		done:      make(chan struct{}),
 	}
 	go c.readLoop(bufio.NewReader(r))
 	return c
@@ -161,27 +168,36 @@ func (c *dapConn) readLoop(r *bufio.Reader) {
 			c.mu.Unlock()
 			if ok {
 				ch <- &m
+			} else if !m.Success && c.onEvent != nil {
+				// 待っていない request への失敗の応答（dlv 1.27.2 の restart は、成功の応答の後にビルドに失敗すると、
+				// 同じ request_seq へ失敗の応答をもう 1 つ送る。service/dap/server.go の onRestartRequest）。
+				// 黙って捨てずに、lateFailureEvent の名前で onEvent へ渡す。body は誤りの文（JSON の文字列）である。
+				text, _ := json.Marshal(responseError(m.Command, &m).Error())
+				c.onEvent(lateFailureEvent+m.Command, text)
 			}
 		case "event":
 			if c.onEvent != nil {
 				c.onEvent(m.Event, m.Body)
 			}
 		case "request":
-			// 逆向きの request には対応しない（runInTerminal は作らない。FR-288。startDebugging は子のセッションの issue で作る）。
-			// 何を求められたかをログに残せるよう、reverseRequestEvent の名前で onEvent へも渡す。
-			if c.onEvent != nil {
-				c.onEvent(reverseRequestEvent+m.Command, m.Arguments)
+			if c.onRequest == nil || !c.onRequest(m.Seq, m.Command, m.Arguments) {
+				_ = c.respond(m.Seq, m.Command, errors.New("not supported by vi-imitation-ext-dap"))
 			}
-			_ = c.write(func(seq int) any {
-				return dapResponse{
-					Seq: seq, Type: "response", RequestSeq: m.Seq, Success: false,
-					Command: m.Command, Message: "not supported by vi-imitation-ext-dap",
-				}
-			})
 		default:
 			// 知らない種類のメッセージは捨てる。
 		}
 	}
+}
+
+// respond は、seq の逆向きの request（command）へ応答する。err が nil なら success を true にし、そうでなければ err の文を message にする。
+func (c *dapConn) respond(seq int, command string, err error) error {
+	return c.write(func(s int) any {
+		r := dapResponse{Seq: s, Type: "response", RequestSeq: seq, Success: err == nil, Command: command}
+		if err != nil {
+			r.Message = err.Error()
+		}
+		return r
+	})
 }
 
 // write は、次の seq を振ってメッセージを書く。
@@ -232,16 +248,7 @@ func (c *dapConn) call(ctx context.Context, command string, args, result any) er
 			return fmt.Errorf("dap: %s: %w", command, errDAPClosed)
 		}
 		if !m.Success {
-			e := &dapError{Command: command, Message: m.Message}
-			var body struct {
-				Error *struct {
-					Format string `json:"format"`
-				} `json:"error"`
-			}
-			if json.Unmarshal(m.Body, &body) == nil && body.Error != nil {
-				e.Format = body.Error.Format
-			}
-			return e
+			return responseError(command, m)
 		}
 		if result == nil || len(m.Body) == 0 {
 			return nil
@@ -256,6 +263,20 @@ func (c *dapConn) call(ctx context.Context, command string, args, result any) er
 		c.mu.Unlock()
 		return ctx.Err()
 	}
+}
+
+// responseError は、失敗の response m を、command の *dapError にする。body.error.format があれば、それを誤りの文に使う。
+func responseError(command string, m *dapMessage) *dapError {
+	e := &dapError{Command: command, Message: m.Message}
+	var body struct {
+		Error *struct {
+			Format string `json:"format"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(m.Body, &body) == nil && body.Error != nil {
+		e.Format = body.Error.Format
+	}
+	return e
 }
 
 // close は、接続を閉じる。読み取りの goroutine は、相手の終了か読み取りの誤りで終わる。

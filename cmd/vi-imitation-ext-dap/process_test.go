@@ -72,7 +72,7 @@ func TestKillTerminatesDebuggee(t *testing.T) {
 	child := h.waitPID("child")
 	h.waitSigns(bp2, exec2)
 	h.d.mu.Lock()
-	s := h.d.sess
+	s := h.d.rootLocked()
 	h.d.mu.Unlock()
 	s.kill()
 	waitGone(t, "debuggee", child)
@@ -232,7 +232,7 @@ func (h *host) startDebugging() (*session, int) {
 	child := h.waitPID("child")
 	h.waitSigns(bp2, exec2)
 	h.d.mu.Lock()
-	s := h.d.sess
+	s := h.d.rootLocked()
 	h.d.mu.Unlock()
 	return s, child
 }

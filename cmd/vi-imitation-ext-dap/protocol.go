@@ -15,12 +15,30 @@ type initializeArguments struct {
 	PathFormat      string `json:"pathFormat,omitempty"`
 	// SupportsVariableType は、変数の型（Variable の type）を受け取るかどうかである（基本設計 6.4 の開始の流れの 8）。
 	SupportsVariableType bool `json:"supportsVariableType,omitempty"`
+	// SupportsStartDebuggingRequest は、逆向きの request の startDebugging（子のセッション。FR-285）を受け付けるかどうかである。
+	SupportsStartDebuggingRequest bool `json:"supportsStartDebuggingRequest,omitempty"`
 }
 
-// capabilities は、initialize の response の body（仕様の Capabilities）のうち、使う項目である。
+// capabilities は、initialize の response の body（仕様の Capabilities）のうち、使う項目である（FR-286）。
 type capabilities struct {
 	SupportsConfigurationDoneRequest bool `json:"supportsConfigurationDoneRequest,omitempty"`
 	SupportsTerminateRequest         bool `json:"supportsTerminateRequest,omitempty"`
+	SupportsConditionalBreakpoints   bool `json:"supportsConditionalBreakpoints,omitempty"`
+	SupportsRestartRequest           bool `json:"supportsRestartRequest,omitempty"`
+}
+
+// restartArguments は、restart の引数（仕様の RestartArguments）である。
+// Arguments は、launch か attach の構成の最新の値である。
+type restartArguments struct {
+	Arguments any `json:"arguments,omitempty"`
+}
+
+// startDebuggingArguments は、逆向きの request の startDebugging の引数（仕様の StartDebuggingRequestArguments）である。
+type startDebuggingArguments struct {
+	// Configuration は、子のセッションの launch か attach の引数である。変数を含まない（同仕様）。
+	Configuration map[string]any `json:"configuration"`
+	// Request は、launch か attach である。
+	Request string `json:"request"`
 }
 
 // source は、仕様の Source のうち、使う項目である。
@@ -46,10 +64,19 @@ type setBreakpointsArguments struct {
 
 // breakpoint は、仕様の Breakpoint のうち、使う項目である。
 type breakpoint struct {
+	// ID は、アダプターが振ったブレークポイントの ID である。無ければ 0。breakpoint の event で、検証の結果が後から変わったことを知らせるのに使う。
+	ID int `json:"id,omitempty"`
 	// Verified は、ブレークポイントを置けたかどうかである（望んだ位置とは限らない）。
 	Verified bool `json:"verified"`
 	// Line は、実際に置いた位置の開始の行である。無ければ 0。
 	Line int `json:"line,omitempty"`
+}
+
+// breakpointEvent は、breakpoint の event の body（仕様の BreakpointEvent）である。
+// reason が changed なら、setBreakpoints の応答で返した ID のブレークポイントの検証の結果か位置が変わったことを表す。
+type breakpointEvent struct {
+	Reason     string     `json:"reason"`
+	Breakpoint breakpoint `json:"breakpoint"`
 }
 
 // setBreakpointsResponse は、setBreakpoints の response の body である。
@@ -110,6 +137,8 @@ type stoppedEvent struct {
 	Reason      string `json:"reason"`
 	Description string `json:"description,omitempty"`
 	ThreadID    *int   `json:"threadId,omitempty"`
+	// HitBreakpointIDs は、止まったブレークポイントの ID（setBreakpoints の応答の id）である。
+	HitBreakpointIDs []int `json:"hitBreakpointIds,omitempty"`
 }
 
 // outputEvent は、output の event の body のうち、使う項目である。

@@ -191,6 +191,64 @@ func spawn(d *debugger, spec *runSpec) (*session, error) {
 	return s, nil
 }
 
+// spawnChild は、親のセッション parent が受けた startDebugging（request と configuration）から、子のセッションを作る
+// （FR-285。基本設計 6.4 の「セッションと状態の分離」）。接続と DAP の初期化は run が行う。待たない処理だけで、debugger.mu を持って呼ぶ。
+//
+// 子のつなぎ方は次のとおりに決める。
+//
+//   - 親のアダプターの connectFrom のキーを configuration が持てば、そのつなぐ先へ直に繋ぐ（debugpy の子のプロセス）
+//   - 持たず、親が直に繋いだ（connectFrom）なら、親と同じつなぐ先へ新しく繋ぐ
+//   - serverPort なら、親が起動したアダプターの同じホストとポートへ新しく繋ぐ（vscode-js-debug）。アダプターは親と子で共に使い、
+//     最後の使い手が抜けたときに止める（adapterProc の users）
+//   - server なら、同じホストとポートへ新しく繋ぐ
+//   - stdio と clientSocket なら、同じ起動の方法でアダプターをもう 1 つ起動する
+//
+// 子の構成は configuration をそのまま送り、変数の展開も resolveCommand もしない。名前は configuration の name（無ければ親の名前）、
+// アダプターの表の名前と adapterID は親と同じにする。終え方は親の request で引く（runSpec の endAs）。
+//
+// req: FR-285
+func spawnChild(d *debugger, parent *session, request string, config map[string]any) (*session, error) {
+	ps := parent.spec
+	name, _ := config["name"].(string)
+	if name == "" {
+		name = ps.name
+	}
+	a := ps.adapter
+	a.direct = nil
+	if a.connectFrom != "" {
+		if raw, ok := config[a.connectFrom]; ok {
+			ep, err := parseEndpoint(raw)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", a.connectFrom, err)
+			}
+			a.direct = &ep
+		}
+	}
+	if a.direct == nil && ps.adapter.direct != nil {
+		ep := *ps.adapter.direct
+		a.direct = &ep
+	}
+	spec := &runSpec{name: name, request: request, endAs: ps.endAs, config: config, adapter: a}
+	if a.direct == nil && a.transport == transportServerPort {
+		s := newSession(d, spec)
+		s.parent = parent
+		p := parent.getProc()
+		p.acquire()
+		s.proc = p
+		if parent.dial != nil {
+			ep := *parent.dial
+			s.dial = &ep
+		}
+		return s, nil
+	}
+	s, err := spawn(d, spec)
+	if err != nil {
+		return nil, err
+	}
+	s.parent = parent
+	return s, nil
+}
+
 // startProcess は、アダプターの子プロセスを起動し、つなぎ方に従って標準入出力をつなぐ。
 func (s *session) startProcess(p adapterProcess) error {
 	d := s.d
@@ -234,7 +292,7 @@ func (s *session) startProcess(p adapterProcess) error {
 			return fail(err)
 		}
 		cmd.Stdout, cmd.Stderr = w, w
-		go s.forward(r, func(text string) { d.appendOutput(text) })
+		go s.forward(r, s.appendOutput)
 	case transportServerPort:
 		// アダプターの出力はアダプターのログなので、拡張機能のログ（本体が記録する）へ書く。
 		r, w, err := pipe()

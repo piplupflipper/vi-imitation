@@ -70,14 +70,20 @@ type adapterRun struct {
 	launch map[string]any
 	// direct は、構成が connectFrom のキーを持つときのつなぐ先である。あれば、アダプターを起動せずにここへ直に繋ぐ。
 	direct *endpoint
+	// connectFrom は、アダプターの表の connectFrom（構成のキーの名前）である。子のセッションの構成にも当てる（FR-285）。
+	connectFrom string
 }
 
 // runSpec は、選んで値を決め終えた構成と、アダプターの起動の方法である（debug.runLast と debug.restart の「前回の設定」）。
+// 子のセッション（FR-285）では、startDebugging の引数とつなぎ方から作る（spawnChild）。
 // 書き換えない。
 type runSpec struct {
 	name string
-	// request は、launch か attach である。
+	// request は、アダプターへ送る request（launch か attach）である。
 	request string
+	// endAs は、終え方の表（FR-284）を引く request である。最上位のセッションでは request と同じで、
+	// 子のセッションでは親の endAs を継ぐ（基本設計 6.4 の「終了と切断」。子の startDebugging の request では引かない）。
+	endAs string
 	// config は、アダプターへ launch か attach の引数として送る構成である（拡張機能が読む項目を除いたもの）。
 	config  map[string]any
 	adapter adapterRun
@@ -334,8 +340,9 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 	spec := &runSpec{
 		name:    cand.name,
 		request: request,
+		endAs:   request,
 		config:  cfg,
-		adapter: adapterRun{name: a.name, transport: a.transport, adapterID: a.adapterID, launch: launch},
+		adapter: adapterRun{name: a.name, transport: a.transport, adapterID: a.adapterID, launch: launch, connectFrom: a.connectFrom},
 	}
 	if a.connectFrom != "" {
 		if raw, ok := cfg[a.connectFrom]; ok {
