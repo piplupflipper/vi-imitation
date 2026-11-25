@@ -187,7 +187,9 @@ func parseResolveOutput(out map[string]any) (map[string]any, error) {
 			return nil, errors.New("configuration がオブジェクトでない")
 		}
 		for k := range m {
-			if slices.Contains(extensionKeys, k) {
+			// type はアダプターを差し替えることになるので扱えない（PR #410 の再レビューの推奨 C へのオーケストレータの決め）。
+			// request は置き換えられ、置き換えた値で launch か attach か（終え方を含む）を決める（resolve.go）。
+			if slices.Contains(extensionKeys, k) || k == "type" {
 				bad = append(bad, "configuration."+k)
 			}
 		}

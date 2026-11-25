@@ -627,6 +627,8 @@ func TestResolveCommand(t *testing.T) {
 		{"name": "badjson", "resolveCommand": map[string]any{"command": []any{"sh", "-c", "echo '{'"}}},
 		{"name": "badkey", "resolveCommand": map[string]any{"command": []any{"sh", "-c", `echo '{"configuration":{"envFile":"x"},"other":1}'`}}},
 		{"name": "adapter", "resolveCommand": map[string]any{"command": []any{"sh", "-c", `echo '{"adapter":{"command":"/bin/sh"}}'`}}},
+		{"name": "typekey", "resolveCommand": map[string]any{"command": []any{"sh", "-c", `echo '{"configuration":{"type":"other"}}'`}}},
+		{"name": "toattach", "resolveCommand": map[string]any{"command": []any{"sh", "-c", `echo '{"configuration":{"request":"attach"}}'`}}},
 		{"name": "timeout", "resolveCommand": map[string]any{"command": []any{"sh", "-c", "sleep 10"}, "timeoutMs": 300}},
 		{"name": "leaky", "resolveCommand": map[string]any{"command": []any{"sh", "-c", leaky() + `echo '{"configuration":{"program":"/leaky"}}'`}, "timeoutMs": 3000}},
 		{"name": "leakytimeout", "resolveCommand": map[string]any{"command": []any{"sh", "-c", leaky() + "sleep 10"}, "timeoutMs": 300}},
@@ -693,6 +695,16 @@ func TestResolveCommand(t *testing.T) {
 	h.waitMessage("扱えない項目がある: configuration.envFile, other")
 	pick("adapter")
 	h.waitMessage("扱えない項目がある: adapter")
+	// type はアダプターを差し替えるので扱えない。request は返した値で送り、終え方もそれで決める（PR #410 の再レビューの推奨 C）。
+	pick("typekey")
+	h.waitMessage("扱えない項目がある: configuration.type")
+	pick("toattach")
+	if args := h.waitArgs("attach"); args["request"] != "attach" {
+		t.Errorf("attach args = %v", args)
+	}
+	h.waitSigns(bp2, exec2)
+	h.stopAndWait()
+	h.waitOutput("disconnect terminateDebuggee=false")
 	pick("timeout")
 	h.waitMessage("期限")
 

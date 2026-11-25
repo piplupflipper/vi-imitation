@@ -2870,7 +2870,7 @@ Go 以外の言語と、`attach` を使うときは、`extensions.settings.dap` 
 - `console` が `integratedTerminal` か `externalTerminal` の構成は、`internalConsole` に替えて送り、そのことを知らせる。デバッグ対象の標準入力へは書けないので、入力の要るプログラムは端末で起動してから attach する
 - `preLaunchTask`、`postDebugTask`、`serverReadyAction` を含む構成は、無視して続けるかを聞く。`compounds` は候補に出さない
 - `${pickProcess}` は、値の全体がその変数だけなら、プロセス ID を数にして送る（dlv の `attach` は数でしか受けない）
-- `resolveCommand` に書いた外部のコマンド（`{ "command": ["コマンド", "引数"], "timeoutMs": 10000 }`）は、標準入力に構成と文脈の JSON を受け、標準出力に `{"configuration": {...}}` を返す。返した値で、構成の同じ名前の項目を置き換える（`null` は消す。値の中の `${…}` は展開し直さずに文字のまま送る）。venv の python や作業ディレクトリを、始めるたびに決めるのに使う。失敗したとき、期限を超えたとき、JSON が不正なときは始めない。動いている間の `<leader>dt` で止める
+- `resolveCommand` に書いた外部のコマンド（`{ "command": ["コマンド", "引数"], "timeoutMs": 10000 }`）は、標準入力に構成と文脈の JSON を受け、標準出力に `{"configuration": {...}}` を返す。返した値で、構成の同じ名前の項目を置き換える（`null` は消す。値の中の `${…}` は展開し直さずに文字のまま送る）。`type` は返せない（アダプターを差し替えることになるため）。`request` を返すと、その値で `launch` か `attach` か（終え方を含む）を決める。venv の python や作業ディレクトリを、始めるたびに決めるのに使う。失敗したとき、期限を超えたとき、JSON が不正なときは始めない。動いている間の `<leader>dt` で止める
 - `resolveCommand` は、利用者の設定の構成にだけ書ける。`.vscode/launch.json` の構成に書かれていれば、動かさずに知らせて始めない（リポジトリのファイルが、構成を選んだだけでコマンドを動かさないため）。アダプターの起動の方法（`adapters` の `command`、`args`、`env`、`cwd`、`transport`）は、利用者の設定だけが決め、外部のコマンドの出力と `.vscode/launch.json` からは変えられない
 - 外部のコマンドが背景に子プロセスを残して終わっても、0 で終わっていれば、それまでに出した JSON を使う
 

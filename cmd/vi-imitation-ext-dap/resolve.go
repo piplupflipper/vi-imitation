@@ -313,6 +313,11 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 			return nil, failStart("構成 %s を始めない: %v", cand.name, err)
 		}
 		overlay(cfg, c2)
+		// 外部のコマンドが request を返したら、その値で launch か attach か（送る request と終え方）を決める。
+		if r, ok := cfg["request"]; !ok || (r != "launch" && r != "attach") {
+			return nil, failStart("構成 %s を始めない: resolveCommand が返した request が launch か attach でない: %v", cand.name, r)
+		}
+		request = cfg["request"].(string)
 	}
 	for _, k := range extensionKeys {
 		delete(cfg, k)

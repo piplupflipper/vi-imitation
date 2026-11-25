@@ -164,6 +164,46 @@ func TestExtensionKilledOrphaningAdapter(t *testing.T) {
 	waitGone(t, "debuggee", child)
 }
 
+// sessionOf は、pid のプロセスのセッションの ID と制御端末（tty_nr。無ければ 0）を /proc/<pid>/stat から読む。
+func sessionOf(t *testing.T, pid int) (sid, tty int) {
+	t.Helper()
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	// ')' の後の欄は、状態、親、プロセスグループ、セッション、制御端末の順である。
+	fields := strings.Fields(s[strings.LastIndexByte(s, ')')+1:])
+	if _, err := fmt.Sscan(fields[3], &sid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Sscan(fields[4], &tty); err != nil {
+		t.Fatal(err)
+	}
+	return sid, tty
+}
+
+// TestAdapterOwnSession は、アダプターとデバッグ対象を、拡張機能と別の、制御端末を持たないセッションで動かすことを確かめる
+// （PR #410 の再レビューの必須 A。端末多重化ソフトの外で、debugpy のランチャーが本体の端末の前面を取らないため）。
+//
+// req: FR-31
+func TestAdapterOwnSession(t *testing.T) {
+	h := newHost(t, fakeSettings(t, nil, map[string]any{"child": true}))
+	h.open(1, srcPath, srcText)
+	h.mustExec(cmdToggleBreakpoint, 2)
+	h.mustExec(cmdStart, 0)
+	adapter := h.waitPID("adapter")
+	child := h.waitPID("child")
+	h.waitSigns(bp2, exec2)
+	mySID, _ := sessionOf(t, os.Getpid())
+	for name, pid := range map[string]int{"adapter": adapter, "debuggee": child} {
+		sid, tty := sessionOf(t, pid)
+		if sid == mySID || tty != 0 {
+			t.Errorf("%s: session %d (extension %d), tty %d; want another session without a controlling terminal", name, sid, mySID, tty)
+		}
+	}
+}
+
 // hostShutdownTimeout は、本体が shutdown を送ってから、拡張機能のプロセスグループへ SIGTERM を送るまでの期限である
 // （internal/exthost の DefaultShutdownTimeout。基本設計 5.2。値は仮）。
 const hostShutdownTimeout = 3 * time.Second

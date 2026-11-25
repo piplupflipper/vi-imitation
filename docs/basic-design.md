@@ -3298,7 +3298,7 @@ VS Code の文書「Debug configuration」（https://code.visualstudio.com/docs/
 
 | 項目 | 扱い |
 |---|---|
-| 置き場 | ワークスペースの根（下の `${workspaceFolder}`）の `.vscode/launch.json`。無ければ候補にしない。上のディレクトリへはたどらない（DAP の拡張機能が 6.7 の「プロジェクトの根と実行ファイルの探索」の `ext/project` を使うように改めるまでの仮） |
+| 置き場 | バッファのファイル（無ければ作業ディレクトリ）から親へたどって最初に見つかる `.vscode/launch.json`（`ext/project` の `Root`）。Git の作業ツリーの中なら Git の根より上へはたどらない。無ければ候補にしない（#408 で決め、2026-11-25 にオーナーが認めた） |
 | 形式 | JSONC（`github.com/tailscale/hujson` で読む。要件定義 6 章の JSONC の読み方）。読めなければ、その誤りをメッセージの行に出し、設定の構成だけを候補にする |
 | `version` | 読まない |
 | OS ごとの上書き | `linux` の中のキーで、構成の同じキーを置き換える（文書の「Platform-specific properties」）。`type` は OS ごとに変えられない（同じ節）ので、`linux` の中の `type` は扱えない項目にする |
@@ -3338,7 +3338,7 @@ VS Code の文書「Variables reference」の「Predefined variables」の表の
 
 | 変数 | 値 |
 |---|---|
-| `${workspaceFolder}` | `.vscode/launch.json` の構成では、その `.vscode` のあるディレクトリ。設定の構成では、`editor/state` の `workDir`（操作中の client の作業ディレクトリ）。どちらも、DAP の拡張機能が 6.7 の「プロジェクトの根と実行ファイルの探索」の `ext/project` を使うように改めるまでの仮である |
+| `${workspaceFolder}` | `.vscode/launch.json` の構成では、その `.vscode` のあるディレクトリ。設定の構成では、バッファのファイル（無ければ作業ディレクトリ）の Git の根（`ext/project` の `GitRoot`）、Git の作業ツリーの外なら `editor/state` の `workDir`（操作中の client の作業ディレクトリ）。#408 で決め、2026-11-25 にオーナーが認めた |
 | `${workspaceFolderBasename}` | `${workspaceFolder}` の最後の名前 |
 | `${file}`、`${fileBasename}`、`${fileBasenameNoExtension}`、`${fileExtname}`、`${fileDirname}`、`${fileDirnameBasename}` | `provider/invoke` のバッファのファイルのパスから作る。ファイルでないバッファでは決められない |
 | `${relativeFile}`、`${relativeFileDirname}`、`${fileWorkspaceFolder}` | `${workspaceFolder}` からの相対のパスと、`${workspaceFolder}` |
@@ -3493,7 +3493,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 上の表に無い点は、次のとおりに決めた（どれも仮）。
 
 - 構成の候補の一覧と `${pickProcess}` の一覧は、上の表のとおり `pane/open` の `center` と `closeOnSelect` の一覧で出す。`choice/ask` は番号のキーで選ぶ 9 つまでの問いなので、無視できる項目を続けるかの問いにだけ使う
-- 設定の構成と今までの 1 組の設定の構成の `${workspaceFolder}` は、バッファのファイル（無ければ操作中の client の作業ディレクトリ）の Git の根（`ext/project` の `GitRoot`）にし、Git の作業ツリーの外なら作業ディレクトリにする（10 章の未決を、この形に決めた）
+- 設定の構成と今までの 1 組の設定の構成の `${workspaceFolder}` は、バッファのファイル（無ければ操作中の client の作業ディレクトリ）の Git の根（`ext/project` の `GitRoot`）にし、Git の作業ツリーの外なら作業ディレクトリにする（2026-11-25 にオーナーが認めた）
 - `.vscode/launch.json` は、バッファのファイル（無ければ作業ディレクトリ）から親へたどって探し（`ext/project` の `Root` に `.vscode/launch.json` を目印に渡す）、Git の作業ツリーの中なら Git の根より上へはたどらない。ホームディレクトリの `.vscode` などを拾わないためである
 - 構成に書いていない値（venv の python、`cwd`）は、`ext/project` で補わない（6.7 の「各拡張機能が `ext/project` に移るまでの通し方」のとおり、構成と `resolveCommand` で決める）
 - `transport` を省いたアダプターは `stdio` にする。設定の形の誤り（知らない `transport`、文字列でない `command` など）は、今までどおり `initialize` を失敗させる
@@ -3515,6 +3515,11 @@ PR #410 のレビュー（2026-11-25）を受けて、次のとおりに改め�
 - **`serverPort` のポートの取り合い**（推奨 4）: 決めたポートを別のプロセスに先に取られてアダプターが待ち受ける前に終わったら、ポートを選び直して 1 回だけ起動し直す。別のプロセスが先に待ち受けていて、そこへ繋がってしまう場合は防げない（ソケットのパスを渡す形は、vscode-js-debug が子のセッションの接続もそのパスで受けるかを確かめてから、子のセッションの issue で決める）
 - **既に動いている dlv への `attach` の終え方**（推奨 3）: `attach` のセッションを終えるときは、`disconnect` の前に、置いたブレークポイントを空の `setBreakpoints` で外し、止まっていれば `continue` を送る。`disconnect` の `suspendDebuggee` は false で明示する。DAP の仕様の `DisconnectArguments.suspendDebuggee` は「If unspecified, the debuggee should resume execution」だが、dlv 1.27.2 の `--accept-multiclient` のサーバーは、切断の後もデバッグ対象を止まったまま残し（`service/dap/server.go` の `onDisconnectRequest`。レビューで確かめた）、ブレークポイントも残すので、続けても次のブレークポイントでまた止まった（2026-11-25 に、`dlv exec --headless --accept-multiclient --continue` で確かめた）
 - **一覧の知らせの溜め置き**（推奨 6）: 応答を待っている `pane/open` があるときだけ、受け口の無い部品の知らせを溜め、待つものが無くなったら捨てる
+
+PR #410 の再レビュー（2026-11-25）を受けて、次のとおりに改めた。
+
+- **制御端末の無いセッション**（必須 A）: Linux では、見張りと外部のコマンドを `Setsid` で起動し、本体と別の、制御端末を持たないセッションにする（`Pdeathsig` は今までどおり付ける）。端末多重化ソフトの外では、拡張機能は本体と同じセッションにいて本体の端末を制御端末に持つので、debugpy 1.8.22 のランチャー（`launcher/debuggee.py`）が `/dev/tty` を開いて `os.tcsetpgrp` でデバッグ対象を端末の前面にし、本体が次のキーで止められていた。直した後、pty の上の対話シェルから本体を直に起動して（端末多重化ソフトの外）、debugpy、dlv、vscode-js-debug の `launch` で本体が止められないことと、`debug.terminate`、拡張機能への SIGKILL、`:qa!` の後に何も残らないことを確かめた。2026-11-25 のオーナーの裁定で、デバッグの機能は端末多重化ソフトの中で使う前提とし、外での振る舞いはこの直しの範囲で扱う
+- **外部のコマンドの `type` と `request`**（推奨 C へのオーケストレータの決め）: 出力の `configuration.type` は、アダプターを差し替えることになるので扱えない項目として始めない。`configuration.request` は置き換えられ、置き換えた値で `launch` か `attach` か（送る request と終え方）を決める
 
 2026-11-25 に、実物のアダプターで次のとおり確かめた（拡張機能を本体の役のテストから動かした。dlv の `launch` は `make dist` の本体を tmux で起動した画面でも確かめた）。
 
@@ -4609,7 +4614,7 @@ VS Code の文書は「Variable substitution is supported inside some key and va
 | 壊れた `.git` のシンボリックリンク | `isGitRoot` が `os.Lstat` なので Git の根とみなし、その下の `node_modules/.bin` を使う | `os.Stat` なので Git の外とみなし、`node_modules/.bin` を探さない（nvim と同じ） | 壊れた `.git` の下の `node_modules/.bin/biome` を使わず、PATH へ進む |
 | 仮想環境の数え方 | `.venv/bin/<名前>` があれば使う | `bin/python` を実行できる `.venv`、`venv` だけ（nvim と同じ） | `bin/python` の無い `.venv/bin/ruff` は見つからない |
 | 実行できるかの見方 | どれかの x のビット | 今の利用者が実行できるか（`access(2)`） | root が `0o700` で作った `.venv/bin/ruff` を飛ばして PATH へ進む |
-- DAP の拡張機能の変数の意味（`${workspaceFolder}`）と、構成に書いていない値を `ext/project` で補うかは、DAP の拡張機能を `ext/project` に移す issue で決める（10 章）
+- DAP の拡張機能の `${workspaceFolder}` と `.vscode/launch.json` の探し方は、#408 で `ext/project` の `GitRoot` と `Root` を使う形にし、2026-11-25 にオーナーが認めた。構成に書いていない値は補わない（6.4 の「#408 の設定の作り替え」）
 
 ### 6.8 diff
 
@@ -6121,7 +6126,6 @@ tmux の中の構成（server と編集の client が別のプロセス）の起
 | プレビューのスクロールの操作（`preview.page-down` など。#308）の名前と既定のキーと 1 画面の行数。fzf-lua の `preview-reset`（`<S-Left>`）は足していない。`<C-w>w` でプレビューへフォーカスを移した後も、同じ操作でスクロールする（1.4 の表の「フォーカス」） | 1.4 |
 | マクロの再生で、ファインダーの候補を読み終える前に `<CR>` が来たとき、今の入力に答えた最初の空でない一覧（読みかけの一覧のこともある）で選ぶこと。一致が無い入力の `<CR>` は、選ばずに待ったままになる（PR #249 の仮の扱い）。ほかの拡張機能が再生中にポップアップを開くときも、応答の前に開けば同じく残りのキーがポップアップへ渡る | 1.4、3 |
 | ペインの部品（`pane/open`）の書き足し（`view/append` など）、末尾を追う指定、`contributes.popupKeys` のモードの宣言（今はノーマルモードだけで引く）。ACP の返答（FR-111）、デバッグ対象の出力（FR-108）、ファインダー（FR-106）で要る（PR #242 のレビューの推奨 5）。#399 で、書き足しを `view/append` にし、末尾の追従をカーソルが最後の行にあるかで決める形にした（1.4 の「#399 の切り替えの部品と書き足し」。FR-272）。`popupKeys` のモードの宣言は、ACP の取り消しのキー（FR-111）の issue で決める | 1.4、5.3 |
-| DAP の `${workspaceFolder}` と `.vscode/launch.json` の探し方。#408 で、ファイルの Git の根（外なら作業ディレクトリ）と、ファイルから Git の根までたどる形にし、構成に書いていない値（venv の python、`cwd`）は `ext/project` で補わないことにした（6.4 の「#408 の設定の作り替え」。仮で、オーナーの確認が要る） | 6.4、6.7 |
 | 切り替えの部品（FR-269）の中でだけ別の操作にするキーの割り当ての口。オーナーの nvim は DAP のペインの中の `<Tab>` と `<S-Tab>` で区画を切り替えるが、本体の `<Tab>` はタブの移動（FR-98）で、`keymap` は部品を区別しない（1.4 の「#399 の切り替えの部品と書き足し」）。裁定までは既定のキーと子の `key` だけで作り（PR #401 の裁定要 1 の A）、部品の中だけの割り当てを後で足せるよう、キーを引く順の 2 番目を空けておく。推奨は、`keymap` に部品の中だけの割り当ての置き場を足す形（同じく B） | 1.4、7 |
 | `${input:ID}` のように文字列で展開した値を、数を要る構成の項目に渡すときに数に直すか（6.7 の「設定の文字列の変数の展開」）。`${pickProcess}` だけは、#408 で、値の全体がその変数だけなら数にした（6.4 の「#408 の設定の作り替え」） | 6.4、6.7 |
 | DAP の `serverPort` のつなぎ方で、空いたポートを決めてからアダプターが待ち受けるまでの間に、別のプロセスが同じ番号を取りうること（6.4 の「アダプターのつなぎ方」） | 6.4 |
