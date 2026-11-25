@@ -252,6 +252,137 @@ func TestChildSessionConnectFrom(t *testing.T) {
 	h.waitSigns(bp2, bp5)
 }
 
+// connectFromChild は、親と、親が待ち受けて直に繋がせる子（debugpy の子のプロセスの形）の 2 つのセッションを作る本体の役を返す。
+// parent と child は、親と子のテスト用のアダプターの振る舞い（fake の項目）に足すものである。
+func connectFromChild(t *testing.T, parent, child map[string]any) *host {
+	t.Helper()
+	def := fakeDef(transportStdio)
+	def["connectFrom"] = "connect"
+	childFake := map[string]any{}
+	for k, v := range child {
+		childFake[k] = v
+	}
+	fake := map[string]any{
+		"startDebugging": true, "childListen": true, "parentRuns": true, "childRequest": "attach",
+		"childConfig": map[string]any{"name": "Subprocess 1", "type": "fake", "fake": childFake},
+	}
+	for k, v := range parent {
+		fake[k] = v
+	}
+	return sessionHost(t, def, map[string]any{"fake": fake})
+}
+
+// TestContinueStoppedSession は、2 つのセッションが止まっているときに、後から止まったセッションが今のセッションを奪わず、
+// 今のセッションを続けて動き出した後の続行が、止まっているもう一方のセッションへ届くことを確かめる
+// （PR #414 のレビューの必須 1。debugpy の Popen の子と親が同時に止まる場面。nvim-dap の first_stopped_session と同じ扱い）。
+//
+// req: FR-285
+func TestContinueStoppedSession(t *testing.T) {
+	h := connectFromChild(t, map[string]any{"runForever": true}, map[string]any{"runForever": true})
+	var mu sync.Mutex
+	var sels []selection
+	h.d.mu.Lock()
+	h.d.onSelect = func(sel selection) {
+		mu.Lock()
+		defer mu.Unlock()
+		sels = append(sels, sel)
+	}
+	h.d.mu.Unlock()
+	h.mustExec(cmdStart, 0)
+	ss := h.waitSessions(2)
+	h.waitHalted(ss[0])
+	h.waitHalted(ss[1])
+	first := h.current()
+	mu.Lock()
+	for _, sel := range sels {
+		if sel.session != first {
+			t.Errorf("the current session moved to session %d though session %d was stopped", sel.session.id, first.id)
+		}
+	}
+	mu.Unlock()
+	other := ss[0]
+	if first == ss[0] {
+		other = ss[1]
+	}
+
+	// 今のセッションを続けると、それは動き続ける。もう一度続けると、止まっているもう一方へ届く。
+	h.mustExec(cmdContinue, 0)
+	h.waitOutput("continued after " + first.spec.request)
+	h.mustExec(cmdContinue, 0)
+	h.waitOutput("continued after " + other.spec.request)
+	h.waitMessage("止まっているセッション " + other.label())
+	if h.current() != other {
+		t.Errorf("current session = %d, want %d", h.current().id, other.id)
+	}
+	h.stopAndWait()
+}
+
+// TestReplayOtherSessionStops は、再生中（sync）のステップ実行が今のセッションの停止を待つ間に、別のセッションが止まっても、
+// カーソルを動かさず（editor/open を送らず）、今のセッションを替えず、待っていたセッションの停止で応答することを確かめる。
+//
+// req: FR-19, FR-285
+func TestReplayOtherSessionStops(t *testing.T) {
+	h := connectFromChild(t, map[string]any{"stopDelayMs": 1000}, map[string]any{"firstStopDelayMs": 400})
+	h.mustExec(cmdStart, 0)
+	ss := h.waitSessions(2)
+	root, child := ss[0], ss[1]
+	h.waitHalted(root)
+	h.waitCurrent(root)
+	h.drainOpens()
+	res := h.replay(cmdNext, 0)
+	if !res.OK || res.Open == nil || res.Open.Position == nil || res.Open.Position.Line != 3 {
+		t.Fatalf("next (sync) = %+v (open %+v), want the parent's stop at line 3", res, res.Open)
+	}
+	h.d.mu.Lock()
+	childHalted := child.halted
+	h.d.mu.Unlock()
+	if !childHalted {
+		t.Fatal("the child did not stop during the replay")
+	}
+	h.noOpen("the child's stop during the replay")
+	if h.current() != root {
+		t.Errorf("current session = %d, want the parent", h.current().id)
+	}
+	h.stopAndWait()
+}
+
+// TestPauseBeforeStop は、一度も止まる前の一時停止を、スレッドを持つセッション（vscode-js-debug の子）へ送り、
+// どのセッションにもスレッドが無ければ、そのことを知らせることを確かめる（PR #414 のレビューの推奨 1）。
+//
+// req: FR-285
+func TestPauseBeforeStop(t *testing.T) {
+	t.Run("child", func(t *testing.T) {
+		h := sessionHost(t, fakeDef(transportStdio), map[string]any{"fake": map[string]any{
+			"startDebugging": true, "noThreads": true,
+			"childConfig": map[string]any{"name": "child", "type": "fake", "fake": map[string]any{"idle": true}},
+		}})
+		h.mustExec(cmdStart, 0)
+		ss := h.waitSessions(2)
+		h.waitOutput("startDebugging success=true")
+		h.d.mu.Lock()
+		configured := false
+		for !configured {
+			configured = ss[1].configured
+			h.d.mu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+			h.d.mu.Lock()
+		}
+		h.d.mu.Unlock()
+		h.mustExec(ext.OpDebugPause, 0)
+		h.waitMessage("停止した（pause")
+		h.waitHalted(ss[1])
+		h.stopAndWait()
+	})
+	t.Run("no threads", func(t *testing.T) {
+		h := sessionHost(t, fakeDef(transportStdio), map[string]any{"fake": map[string]any{"noThreads": true, "idle": true}})
+		h.mustExec(cmdStart, 0)
+		h.waitMessage("デバッグを開始した")
+		h.mustExec(ext.OpDebugPause, 0)
+		h.waitMessage("一時停止できるスレッドが無い")
+		h.stopAndWait()
+	})
+}
+
 // TestChildSessionEndsWithParent は、親のアダプターが terminated を送って終わったときも、子のセッションを終えることを確かめる。
 //
 // req: FR-285
@@ -384,18 +515,34 @@ func TestCapabilities(t *testing.T) {
 		if res := h.invoke(1, ext.OpBreakpointConditional, 5, `{"text":"i > 3"}`); !res.OK {
 			t.Fatal("conditional: ok = false")
 		}
+		h.mustExec(cmdToggleBreakpoint, 2)
 		h.mustExec(cmdStart, 0)
-		seen := h.waitOutput("setBreakpoints main.go [6]")
+		// 条件付きのものは置かず、条件の無いものだけを置く。置かなかったものは検証できなかった印にする。
+		seen := h.waitOutput("setBreakpoints main.go [3]")
 		for _, s := range seen {
 			if strings.Contains(s, "condition ") {
-				t.Errorf("the condition was sent to an adapter without supportsConditionalBreakpoints: %q", s)
+				t.Errorf("the conditional breakpoint was sent to an adapter without supportsConditionalBreakpoints: %q", s)
 			}
 		}
-		m := h.waitMessage("条件付きのブレークポイントに対応していない")
+		m := h.waitMessage("条件付きのブレークポイントを置かない")
 		if m.Level != ext.MessageError {
 			t.Errorf("message = %+v", m)
 		}
-		h.waitSigns(bp5, exec5)
+		h.waitSigns(bp2, ext.Sign{Line: 5, Kind: ext.SignBreakpointUnverified}, exec2)
+	})
+	t.Run("restart failure", func(t *testing.T) {
+		h := newHost(t, fakeSettings(t, []string{"-restart", "-restart-fail"}, nil))
+		h.open(1, srcPath, srcText)
+		h.mustExec(cmdToggleBreakpoint, 2)
+		h.mustExec(cmdStart, 0)
+		h.waitSigns(bp2, exec2)
+		h.mustExec(ext.OpDebugRestart, 0)
+		// 成功の応答の後に届いた失敗の応答の理由を出す（dlv のビルドの失敗。PR #414 のレビューの推奨 3）。
+		m := h.waitMessage("restart に失敗した")
+		if m.Level != ext.MessageError || !strings.Contains(m.Text, "build error in main.go") {
+			t.Errorf("message = %+v", m)
+		}
+		h.waitEnded()
 	})
 	t.Run("restart", func(t *testing.T) {
 		h := newHost(t, fakeSettings(t, []string{"-restart"}, map[string]any{"child": true}))

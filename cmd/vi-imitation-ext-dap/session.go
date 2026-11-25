@@ -473,8 +473,10 @@ func (s *session) reconfigure() {
 }
 
 // sendBreakpoints は、path のブレークポイントのすべてを setBreakpoints で送り、応答で印を付け直す。
-// アダプターが条件付きのブレークポイントに対応していなければ（supportsConditionalBreakpoints が無ければ）、条件を外して送り、
-// 対応していないことをセッションごとに 1 回メッセージの行に出す（FR-286）。
+// アダプターが条件付きのブレークポイントに対応していなければ（supportsConditionalBreakpoints が無ければ）、条件付きのものを送らずに
+// （置かずに）、対応していないことをセッションごとに 1 回メッセージの行に出す。送らなかったものは、そのセッションでは
+// 検証できなかったものとして印を付ける。条件の無いものは送る（FR-286。PR #414 のレビューの裁定要 2 へのオーケストレータの決め）。
+// nvim-dap は、知らせるだけで条件ごと送る（基本設計 6.4 の「#412 の複数のセッション」）。
 //
 // req: FR-286
 func (s *session) sendBreakpoints(ctx context.Context, path string) error {
@@ -485,17 +487,17 @@ func (s *session) sendBreakpoints(ctx context.Context, path string) error {
 	bps, gen := s.d.snapshotBreakpoints(path)
 	conditional := s.supports(func(c *capabilities) bool { return c.SupportsConditionalBreakpoints })
 	args := setBreakpointsArguments{Source: source{Name: filepath.Base(path), Path: path}, Breakpoints: []sourceBreakpoint{}}
-	dropped := false
-	for _, b := range bps {
-		sb := sourceBreakpoint{Line: toDAPLine(b.line, linesStartAt1), Condition: b.cond}
+	// sent は、送ったブレークポイントの、bps の中の添え字である。
+	var sent []int
+	for i, b := range bps {
 		if b.cond != "" && !conditional {
-			sb.Condition = ""
-			dropped = true
+			continue
 		}
-		args.Breakpoints = append(args.Breakpoints, sb)
+		args.Breakpoints = append(args.Breakpoints, sourceBreakpoint{Line: toDAPLine(b.line, linesStartAt1), Condition: b.cond})
+		sent = append(sent, i)
 	}
-	if dropped && s.condWarned.CompareAndSwap(false, true) {
-		s.d.showError(fmt.Sprintf("アダプター %s は条件付きのブレークポイントに対応していないので、条件を外して送った", s.spec.adapter.name))
+	if len(sent) < len(bps) && s.condWarned.CompareAndSwap(false, true) {
+		s.d.showError(fmt.Sprintf("アダプター %s は条件付きのブレークポイントに対応していないので、条件付きのブレークポイントを置かない", s.spec.adapter.name))
 	}
 	var res setBreakpointsResponse
 	if err := c.call(ctx, "setBreakpoints", args, &res); err != nil {
@@ -507,7 +509,12 @@ func (s *session) sendBreakpoints(ctx context.Context, path string) error {
 		s.d.logf("session %d: setBreakpoints %s: %d results for %d breakpoints; ignored", s.id, path, len(res.Breakpoints), len(args.Breakpoints))
 		return nil
 	}
-	s.d.applyBreakpoints(s, path, gen, res.Breakpoints)
+	// 拡張機能が持つ列の並びに戻す。送らなかったものは、検証できなかったものにする。
+	full := make([]breakpoint, len(bps))
+	for j, i := range sent {
+		full[i] = res.Breakpoints[j]
+	}
+	s.d.applyBreakpoints(s, path, gen, full)
 	return nil
 }
 
@@ -580,16 +587,12 @@ func (s *session) resume(ctx context.Context, command string) error {
 	return nil
 }
 
-// pause は、DAP の pause を、選んでいるスレッド（選んでいなければ threads の最初のスレッド）へ送る（基本設計 6.4）。
+// pause は、DAP の pause を、スレッド tid へ送る（送り先は debugger.pauseTarget が決める。基本設計 6.4）。
 // delve は、pause の threadId に依らずにデバッグ対象の全体を止める。
-func (s *session) pause(ctx context.Context) error {
+func (s *session) pause(ctx context.Context, tid int) error {
 	c := s.getConn()
 	if c == nil {
 		return errDAPClosed
-	}
-	tid, err := s.threadID(ctx)
-	if err != nil {
-		tid = 1
 	}
 	s.gen.Add(1)
 	return c.call(ctx, "pause", threadArguments{ThreadID: tid}, nil)
@@ -860,6 +863,14 @@ func (s *session) handleEvent(e dapEvent) {
 		}
 		s.appendOutput(body.Output)
 	default:
+		if command, ok := strings.CutPrefix(e.name, lateFailureEvent); ok {
+			// 応答を待ち終えた request へ、後から届いた失敗の応答（dlv の restart のビルドの失敗。PR #414 のレビューの推奨 3）。
+			var text string
+			_ = json.Unmarshal(e.body, &text)
+			s.d.logf("session %d: late failure response to %s: %s", s.id, command, text)
+			s.d.showError(fmt.Sprintf("%s に失敗した: %s", command, text))
+			return
+		}
 		if command, ok := strings.CutPrefix(e.name, reverseRequestEvent); ok {
 			if command == "startDebugging" {
 				// 子のセッションの接続は待ちを含むので、event の処理を止めないよう別の goroutine で行う。
@@ -931,14 +942,14 @@ func (s *session) startChild(seq int, body json.RawMessage) {
 	go child.run()
 }
 
-// stopped は、stopped の event を処理する。このセッションを今のセッションにし、止まったスレッドを選び、
-// 先頭のフレームの位置へカーソルを移し、実行位置の印を付ける。
+// stopped は、stopped の event を処理する。止まったスレッドを選び、実行位置の印を付ける。
+// 今のセッションが止まっていなければ、このセッションを今のセッションにし、先頭のフレームの位置へカーソルを移す（markStopped）。
 // stackTrace の応答が届くまでに世代が進んだら（続けた、選び直した。FR-287）、表示に使わずに捨てる。
 func (s *session) stopped(body *stoppedEvent) {
 	if len(body.HitBreakpointIDs) > 0 {
 		s.d.breakpointsHit(s, body.HitBreakpointIDs)
 	}
-	gen := s.d.markStopped(s, body.ThreadID)
+	gen, focus := s.d.markStopped(s, body.ThreadID)
 	ctx, cancel := context.WithTimeout(s.eventCtx, s.d.timeouts.request)
 	defer cancel()
 	tid, err := s.threadID(ctx)
@@ -969,7 +980,7 @@ func (s *session) stopped(body *stoppedEvent) {
 	}
 	f := st.StackFrames[0]
 	line := fromDAPLine(f.Line, linesStartAt1)
-	s.d.showStopped(ctx, s, gen, f.ID, f.Source.Path, line, f.Column, body.Reason)
+	s.d.showStopped(ctx, s, gen, focus, f.ID, f.Source.Path, line, f.Column, body.Reason)
 }
 
 // dapEvent は、受け取った 1 件の event か、逆向きの request である。

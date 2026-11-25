@@ -28,6 +28,9 @@ const maxDAPMessageSize = rpc.DefaultMaxMessageSize
 // （後ろに request の command を付ける。DAP の event の名前と重ならない）。body は、その request の引数である。
 const reverseRequestEvent = "$reverseRequest:"
 
+// lateFailureEvent は、待っていない request への失敗の応答を onEvent へ渡すときの名前の前置きである（後ろに command を付ける）。
+const lateFailureEvent = "$lateFailure:"
+
 // errDAPClosed は、デバッグアダプターとの接続が終わっていることを表す。
 var errDAPClosed = errors.New("dap: connection closed")
 
@@ -165,6 +168,12 @@ func (c *dapConn) readLoop(r *bufio.Reader) {
 			c.mu.Unlock()
 			if ok {
 				ch <- &m
+			} else if !m.Success && c.onEvent != nil {
+				// 待っていない request への失敗の応答（dlv 1.27.2 の restart は、成功の応答の後にビルドに失敗すると、
+				// 同じ request_seq へ失敗の応答をもう 1 つ送る。service/dap/server.go の onRestartRequest）。
+				// 黙って捨てずに、lateFailureEvent の名前で onEvent へ渡す。body は誤りの文（JSON の文字列）である。
+				text, _ := json.Marshal(responseError(m.Command, &m).Error())
+				c.onEvent(lateFailureEvent+m.Command, text)
 			}
 		case "event":
 			if c.onEvent != nil {
@@ -239,16 +248,7 @@ func (c *dapConn) call(ctx context.Context, command string, args, result any) er
 			return fmt.Errorf("dap: %s: %w", command, errDAPClosed)
 		}
 		if !m.Success {
-			e := &dapError{Command: command, Message: m.Message}
-			var body struct {
-				Error *struct {
-					Format string `json:"format"`
-				} `json:"error"`
-			}
-			if json.Unmarshal(m.Body, &body) == nil && body.Error != nil {
-				e.Format = body.Error.Format
-			}
-			return e
+			return responseError(command, m)
 		}
 		if result == nil || len(m.Body) == 0 {
 			return nil
@@ -263,6 +263,20 @@ func (c *dapConn) call(ctx context.Context, command string, args, result any) er
 		c.mu.Unlock()
 		return ctx.Err()
 	}
+}
+
+// responseError は、失敗の response m を、command の *dapError にする。body.error.format があれば、それを誤りの文に使う。
+func responseError(command string, m *dapMessage) *dapError {
+	e := &dapError{Command: command, Message: m.Message}
+	var body struct {
+		Error *struct {
+			Format string `json:"format"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(m.Body, &body) == nil && body.Error != nil {
+		e.Format = body.Error.Format
+	}
+	return e
 }
 
 // close は、接続を閉じる。読み取りの goroutine は、相手の終了か読み取りの誤りで終わる。

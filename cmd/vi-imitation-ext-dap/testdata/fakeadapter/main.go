@@ -77,6 +77,14 @@ type fakeOptions struct {
 	NeverVerify bool `json:"neverVerify"`
 	// ThreadZero は、スレッドの ID を 0 にする（vscode-js-debug の代役）。
 	ThreadZero bool `json:"threadZero"`
+	// RunForever は、continue に応答した後、止まらずに動き続ける（終わりもしない）。"continued after <launch か attach>" を出す。
+	RunForever bool `json:"runForever"`
+	// FirstStopDelayMs は、最初のブレークポイントで止まるまでの時間（ミリ秒）である。
+	FirstStopDelayMs int `json:"firstStopDelayMs"`
+	// Idle は、configurationDone の後に止まらずに動き続ける（ブレークポイントで止まらない、終わらない）。
+	Idle bool `json:"idle"`
+	// NoThreads は、threads に空の列を返す（vscode-js-debug の親のセッションの代役）。
+	NoThreads bool `json:"noThreads"`
 	// StackTraceDelayMs は、最初の stackTrace の応答を遅らせる時間（ミリ秒）である。受け取ったら "stackTrace requested" を出す。
 	StackTraceDelayMs int `json:"stackTraceDelayMs"`
 }
@@ -135,6 +143,7 @@ type adapter struct {
 type capFlags struct {
 	noConditional bool
 	restart       bool
+	restartFail   bool
 }
 
 var flagCaps capFlags
@@ -146,6 +155,7 @@ func main() {
 	sleep := flag.Bool("sleep", false, "sleep forever (the debuggee stand-in)")
 	flag.BoolVar(&flagCaps.noConditional, "no-conditional", false, "do not support conditional breakpoints")
 	flag.BoolVar(&flagCaps.restart, "restart", false, "support the restart request")
+	flag.BoolVar(&flagCaps.restartFail, "restart-fail", false, "fail the restart after acknowledging it (as dlv does on a build error)")
 	flag.Parse()
 	if *sleep {
 		select {}
@@ -344,6 +354,12 @@ func (a *adapter) handle(m *message) {
 	case "restart":
 		a.output("console", fmt.Sprintf("restart args %s\n", m.Arguments))
 		a.respond(m, nil)
+		if flagCaps.restartFail {
+			// dlv 1.27.2 の onRestartRequest と同じく、成功の応答の後に、同じ request へ失敗の応答を送り、セッションを終える。
+			a.respondError(m, "Failed to restart: build error in main.go")
+			a.event("terminated", nil)
+			return
+		}
 		a.stateMu.Lock()
 		a.stops, a.cur, a.running = nil, -1, false
 		a.stateMu.Unlock()
@@ -448,11 +464,24 @@ func (a *adapter) handle(m *message) {
 				return
 			}
 		}
+		if a.opts.Idle {
+			return
+		}
 		a.run()
 	case "threads":
+		if a.opts.NoThreads {
+			a.respond(m, map[string]any{"threads": []map[string]any{}})
+			return
+		}
 		a.respond(m, map[string]any{"threads": []map[string]any{{"id": a.threadID(), "name": "main"}}})
 	case "stackTrace":
 		a.stateMu.Lock()
+		if a.cur < 0 || a.cur >= len(a.stops) {
+			// ブレークポイントでなく一時停止で止まった（位置を持たない）。
+			a.stateMu.Unlock()
+			a.respond(m, map[string]any{"stackFrames": []map[string]any{}})
+			return
+		}
 		loc := a.stops[a.cur]
 		delay := a.opts.StackTraceDelayMs > 0 && !a.delayed
 		a.delayed = a.delayed || delay
@@ -503,6 +532,13 @@ func (a *adapter) handle(m *message) {
 			body = map[string]any{"allThreadsContinued": true}
 		}
 		a.respond(m, body)
+		if a.opts.RunForever && m.Command == "continue" {
+			a.stateMu.Lock()
+			a.running = true
+			a.stateMu.Unlock()
+			a.output("console", "continued after "+a.command+"\n")
+			return
+		}
 		if a.opts.StopDelayMs == 0 {
 			a.resume(m.Command)
 			return
@@ -635,7 +671,12 @@ func (a *adapter) run() {
 			a.stops = append(a.stops, location{p, l})
 		}
 	}
+	delay := a.opts.FirstStopDelayMs
 	a.stateMu.Unlock()
+	if delay > 0 {
+		time.AfterFunc(time.Duration(delay)*time.Millisecond, func() { a.next("breakpoint") })
+		return
+	}
 	a.next("breakpoint")
 }
 

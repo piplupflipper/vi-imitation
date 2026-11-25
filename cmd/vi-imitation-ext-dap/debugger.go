@@ -156,6 +156,8 @@ type debugger struct {
 	// waitScope は、stopWaiter が待つセッションである。そのセッションか、その子孫のセッションの停止と、そのセッションの終わりで結果を届ける。
 	// nil なら、どのセッションの停止でも届ける（debug.restart で、始め直すセッションをまだ作っていない間）。
 	waitScope *session
+	// waitTree は、waitScope の子孫のセッションの停止でも結果を届けるかである（開始と restart）。
+	waitTree bool
 }
 
 // bpResult は、1 つのセッションの、1 つのファイルの setBreakpoints の応答である。gen は、送ったときのブレークポイントの列の世代（debugger.gens）である。
@@ -275,18 +277,18 @@ func (d *debugger) openLater(open *ext.EditorOpenParams) {
 	}
 }
 
-// waitStopLocked は、セッション scope（とその子孫）の次の停止か、scope の終わりに結果を届ける waiter を置いて返す。mu を持って呼ぶ。
-// scope が nil なら、どのセッションの停止でも届ける。
+// waitStopLocked は、セッション scope（tree なら、とその子孫）の次の停止か、scope の終わりに結果を届ける waiter を置いて返す。
+// mu を持って呼ぶ。scope が nil なら、どのセッションの停止でも届ける。
 // 前の waiter が残っていれば（本体が待つのをやめた後の取り消しがまだ届いていないなど）、失敗を届けて置き換える。
 //
-// 複数のセッションがあるとき、再生中の操作（FR-19）は、その操作を送ったセッションの停止を待つ（基本設計 5.5）。
-// デバッグの開始は、最上位のセッションか、その子のセッションの最初の停止を待つ（vscode-js-debug は子のセッションで止まる）。
+// 複数のセッションがあるとき、再生中の続行、ステップ実行、一時停止（FR-19）は、その操作を送ったセッションだけの停止を待つ（基本設計 5.5）。
+// デバッグの開始と restart は、最上位のセッションか、その子孫のセッションの最初の停止を待つ（vscode-js-debug は子のセッションで止まる）。
 //
 // req: FR-19
-func (d *debugger) waitStopLocked(scope *session) *waiter {
+func (d *debugger) waitStopLocked(scope *session, tree bool) *waiter {
 	d.stopWaiter.resolve(ext.ProviderInvokeResult{OK: false})
 	d.stopWaiter = newWaiter()
-	d.waitScope = scope
+	d.waitScope, d.waitTree = scope, tree
 	return d.stopWaiter
 }
 
@@ -301,18 +303,27 @@ func (d *debugger) takeStopWaiterLocked() *waiter {
 // takeStopWaiterForLocked は、置いてある waiter が s の停止を待っていれば（s が待つセッションかその子孫なら）外して返す。
 // そうでなければ nil。mu を持って呼ぶ。
 func (d *debugger) takeStopWaiterForLocked(s *session) *waiter {
-	if d.stopWaiter == nil {
+	if d.stopWaiter == nil || !d.inScopeLocked(s) {
 		return nil
 	}
-	for x := s; d.waitScope != nil; x = x.parent {
-		if x == nil {
-			return nil
-		}
+	return d.takeStopWaiterLocked()
+}
+
+// inScopeLocked は、s が、置いてある waiter の待つセッション（waitTree なら、かその子孫）か（待つセッションが nil なら常に）を返す。
+// mu を持って呼ぶ。
+func (d *debugger) inScopeLocked(s *session) bool {
+	if d.waitScope == nil || s == d.waitScope {
+		return true
+	}
+	if !d.waitTree {
+		return false
+	}
+	for x := s.parent; x != nil; x = x.parent {
 		if x == d.waitScope {
-			break
+			return true
 		}
 	}
-	return d.takeStopWaiterLocked()
+	return false
 }
 
 // dropStopWaiter は、w が置いてある waiter なら外す。
@@ -503,7 +514,7 @@ func (d *debugger) notifySelect(sel selection) {
 // selectSession は、s を今のセッションにする（後の issue のスレッドの区画でセッションを選んだとき）。s の世代を進める（FR-287）。
 // s が動いていなければ false を返す。
 //
-// req: FR-285, FR-287
+// req: FR-287
 func (d *debugger) selectSession(s *session) bool {
 	return d.choose(s, func() {})
 }
@@ -512,7 +523,7 @@ func (d *debugger) selectSession(s *session) bool {
 // （後の issue のスレッドの区画でスレッドを選んだとき）。s の世代を進めるので、それより前に送った stackTrace などの応答は捨てる（FR-287）。
 // s が動いていなければ false を返す。
 //
-// req: FR-285, FR-287
+// req: FR-287
 func (d *debugger) selectThread(s *session, thread int) bool {
 	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, 0, false })
 }
@@ -520,7 +531,7 @@ func (d *debugger) selectThread(s *session, thread int) bool {
 // selectFrame は、s を今のセッションにし、そのスレッド thread とフレーム frame を選ぶ（後の issue のスレッドの区画でフレームを選んだとき）。
 // s の世代を進める（FR-287）。s が動いていなければ false を返す。
 //
-// req: FR-285, FR-287
+// req: FR-287
 func (d *debugger) selectFrame(s *session, thread, frame int) bool {
 	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, frame, true })
 }
@@ -543,21 +554,56 @@ func (d *debugger) choose(s *session, set func()) bool {
 
 // markStopped は、s が止まった（stopped の event）ことを記録する。s を今のセッションにし、止まったスレッド tid（nil は未知）を選び、
 // フレームの選択を外し、世代を進めて、その世代を返す（FR-285、FR-287）。
-func (d *debugger) markStopped(s *session, tid *int) uint64 {
+//
+// s を今のセッションにするのは、今のセッションが無いか、s か、止まっていないときだけである（nvim-dap（コミット
+// cfa2d58f4537aca6ca83e2de1a0d9f1491121264）の lua/dap.lua の listeners.after.event_stopped['dap.sessions'] と同じ）。
+// 今のセッションが止まっていれば、利用者がそのセッションを調べている途中なので、今のセッションを替えず、カーソルも移さない。
+// 再生中（sync）の操作が別のセッションの停止を待っているとき（s が待っているセッションの子孫でないとき）も、替えない
+// （カーソルが動くと本体が再生を止め、再生の次の操作が別のセッションへ届くため）。
+// focus は、s を今のセッションにしたか（止まった位置へカーソルを移すか）である。
+//
+// req: FR-285
+func (d *debugger) markStopped(s *session, tid *int) (gen uint64, focus bool) {
 	d.mu.Lock()
 	s.halted = true
 	s.thread, s.hasThread, s.frame, s.hasFrame = 0, tid != nil, 0, false
 	if tid != nil {
 		s.thread = *tid
 	}
-	gen := s.gen.Add(1)
-	if slices.Contains(d.sessions, s) {
+	gen = s.gen.Add(1)
+	cur := d.cur
+	focus = cur == nil || cur == s || !slices.Contains(d.sessions, cur) || !cur.halted
+	if focus && d.stopWaiter != nil && !d.inScopeLocked(s) {
+		focus = false
+	}
+	focus = focus && slices.Contains(d.sessions, s)
+	if focus {
 		d.cur = s
 	}
 	sel := d.selectionLocked()
 	d.mu.Unlock()
-	d.notifySelect(sel)
-	return gen
+	if focus {
+		d.notifySelect(sel)
+	}
+	return gen, focus
+}
+
+// targetLocked は、続行とステップ実行を送るセッションを返す。今のセッションが止まっていればそれ、止まっていなければ、
+// 止まっているセッション（始めた順の最初のもの）を今のセッションにしてそれを返す（nvim-dap の lua/dap.lua の first_stopped_session と同じ）。
+// どれも止まっていなければ今のセッションを返す。changed は、今のセッションを替えたかである。mu を持って呼ぶ。
+//
+// req: FR-285
+func (d *debugger) targetLocked() (s *session, changed bool) {
+	if d.cur != nil && d.cur.halted {
+		return d.cur, false
+	}
+	for _, x := range d.sessions {
+		if x.halted {
+			d.cur = x
+			return x, true
+		}
+	}
+	return d.cur, false
 }
 
 // continued は、s の continued の event を処理する。s の実行位置の印を消し、世代を進める（FR-287）。
@@ -873,13 +919,13 @@ func (d *debugger) restart(ctx context.Context, b *server.Buffer, p *ext.Provide
 	var w *waiter
 	switch {
 	case byRequest && p.Sync:
-		w = d.waitStopLocked(s)
+		w = d.waitStopLocked(s, true)
 	case byRequest:
 	default:
 		d.restartPending = true
 		if p.Sync {
 			// 始め直すのは sessionEnded なので、waiter は終わりでは外さずに、始め直した後の停止まで残す。
-			w = d.waitStopLocked(nil)
+			w = d.waitStopLocked(nil, true)
 		}
 	}
 	d.mu.Unlock()
@@ -933,7 +979,7 @@ func (d *debugger) pause(_ context.Context, _ *server.Buffer, p *ext.ProviderInv
 	stopped := s != nil && s.halted
 	var w *waiter
 	if ready && p.Sync && !stopped {
-		w = d.waitStopLocked(s)
+		w = d.waitStopLocked(s, false)
 	}
 	d.mu.Unlock()
 	if s == nil || !ready {
@@ -945,10 +991,23 @@ func (d *debugger) pause(_ context.Context, _ *server.Buffer, p *ext.ProviderInv
 	go func() { //nolint:gosec // G118: ハンドラーの ctx は応答すると取り消されるので引き継がない
 		ctx, cancel := context.WithTimeout(context.Background(), d.timeouts.request)
 		defer cancel()
-		if err := s.pause(ctx); err != nil && !errors.Is(err, errDAPClosed) {
+		target, tid, err := d.pauseTarget(ctx, s)
+		if err == nil {
+			d.mu.Lock()
+			if w != nil && d.stopWaiter == w {
+				d.waitScope = target
+			}
+			d.mu.Unlock()
+			err = target.pause(ctx, tid)
+		}
+		if err != nil && !errors.Is(err, errDAPClosed) {
 			d.logf("pause: %v", err)
 			d.dropStopWaiter(w)
 			w.resolve(ext.ProviderInvokeResult{OK: false})
+			if errors.Is(err, errNoThreads) {
+				d.showError("一時停止できるスレッドが無い（どのセッションの threads も空）")
+				return
+			}
 			d.showError(fmt.Sprintf("pause に失敗した: %v", err))
 		}
 	}()
@@ -956,6 +1015,44 @@ func (d *debugger) pause(_ context.Context, _ *server.Buffer, p *ext.ProviderInv
 		return ext.ProviderInvokeResult{}, w
 	}
 	return ok()
+}
+
+// errNoThreads は、一時停止を送れるスレッドが、どのセッションにも無いことを表す。
+var errNoThreads = errors.New("no threads to pause")
+
+// pauseTarget は、一時停止を送るセッションとスレッドを決める。s がスレッドを選んでいればそれにする。
+// 選んでいなければ（一度も止まっていない）、s、後に始めたセッションの順に threads を問い合わせ、スレッドを持つ最初のセッションの
+// 最初のスレッドにする。vscode-js-debug の親のセッションはデバッグ対象を持たず、threads が空なので、一度も止まる前の一時停止は、
+// 子のセッションへ送る（PR #414 のレビューの推奨 1）。どのセッションにもスレッドが無ければ errNoThreads を返す。
+func (d *debugger) pauseTarget(ctx context.Context, s *session) (*session, int, error) {
+	d.mu.Lock()
+	if s.hasThread {
+		tid := s.thread
+		d.mu.Unlock()
+		return s, tid, nil
+	}
+	cands := []*session{s}
+	for i := len(d.sessions) - 1; i >= 0; i-- {
+		if x := d.sessions[i]; x != s && x.configured {
+			cands = append(cands, x)
+		}
+	}
+	d.mu.Unlock()
+	for _, x := range cands {
+		c := x.getConn()
+		if c == nil {
+			continue
+		}
+		var res threadsResponse
+		if err := c.call(ctx, "threads", nil, &res); err != nil {
+			d.logf("session %d: threads: %v", x.id, err)
+			continue
+		}
+		if len(res.Threads) > 0 {
+			return x, res.Threads[0].ID, nil
+		}
+	}
+	return nil, 0, errNoThreads
 }
 
 // start は、デバッグを始める（基本設計 6.4 の開始の流れ）。
@@ -1029,10 +1126,10 @@ func (d *debugger) startLocked(spec *runSpec, sync bool) (ext.ProviderInvokeResu
 	d.last = spec
 	var w *waiter
 	if sync {
-		w = d.waitStopLocked(s)
+		w = d.waitStopLocked(s, true)
 	} else if d.stopWaiter != nil && d.waitScope == nil {
-		// debug.restart（再生中）が始め直すのを待っている。始め直したセッションの停止を待たせる。
-		d.waitScope = s
+		// debug.restart（再生中）が始め直すのを待っている。始め直したセッションとその子孫の停止を待たせる。
+		d.waitScope, d.waitTree = s, true
 	}
 	go s.run()
 	if w != nil {
@@ -1079,7 +1176,8 @@ func (d *debugger) stop(_ context.Context, _ *server.Buffer, p *ext.ProviderInvo
 // 送る前に実行位置の印を消す。DAP の仕様では、続行を意味する request の後に continued の event は届かないためである。
 // request が失敗したら、印を戻して利用者に知らせる。
 //
-// 送る先は、今のセッション（最後に止まったセッション）の選んでいるスレッドである（FR-285）。
+// 送る先は、今のセッションが止まっていればそのセッション、止まっていなければ止まっているセッション（targetLocked）の、
+// 選んでいるスレッドである（FR-285）。今のセッションが動き出した後も、ほかに止まっているセッションを続けられる。
 // 再生中（sync）なら、そのセッションのデバッグ対象が次に止まるか、そのセッションが終わるまで応答を遅らせ、止まった位置を応答の open で返す
 // （showStopped）。DAP の request の応答は、デバッグ対象が動き始めたことしか表さない（next の応答の後に stopped の event が届く）ので、
 // request の応答で答えると、再生の次のステップ実行が、まだ動いているデバッグ対象へ届いて失敗する（#210）。
@@ -1088,14 +1186,19 @@ func (d *debugger) stop(_ context.Context, _ *server.Buffer, p *ext.ProviderInvo
 func (d *debugger) resume(_ context.Context, _ *server.Buffer, p *ext.ProviderInvokeParams) (ext.ProviderInvokeResult, *waiter) {
 	command := resumeCommands[p.Operation]
 	d.mu.Lock()
-	s := d.cur
+	s, changed := d.targetLocked()
 	ready := s != nil && s.configured
 	var w *waiter
 	if ready && p.Sync {
 		// request を送る前に置き、request の応答より先に届く stopped の event も取りこぼさない。
-		w = d.waitStopLocked(s)
+		w = d.waitStopLocked(s, false)
 	}
+	sel := d.selectionLocked()
 	d.mu.Unlock()
+	if changed {
+		d.notifySelect(sel)
+		d.showInfo(fmt.Sprintf("今のセッションが動いているので、止まっているセッション %s へ %s を送る", s.label(), command))
+	}
 	if !ready {
 		return d.fail("デバッグを始めていない")
 	}
@@ -1269,9 +1372,10 @@ func (d *debugger) mergeBreakpointsLocked(path string) {
 // 実行位置の印はセッションごとに持ち（FR-285）、選んでいるフレームを先頭のフレーム frame にする。
 // gen は、止まったときの s の世代で、ここまでに世代が進んでいれば（続けた、選び直した）、何も表示しない（FR-287）。
 // 再生中の操作は、待っているセッション（とその子孫）の停止でだけ応答する（waitStopLocked）。
+// focus が false（今のセッションにしなかった。markStopped）で、再生中の操作も待っていなければ、印とメッセージだけにし、カーソルを移さない。
 //
 // req: FR-31, FR-19, FR-285, FR-287
-func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, frame int, path string, line, column int, reason string) {
+func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focus bool, frame int, path string, line, column int, reason string) {
 	d.mu.Lock()
 	if s.gen.Load() != gen || !slices.Contains(d.sessions, s) {
 		d.mu.Unlock()
@@ -1284,13 +1388,20 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, fram
 	w := d.takeStopWaiterForLocked(s)
 	buf, opened := d.buffers[path]
 	multi := len(d.sessions) > 1
+	isCur := d.cur == s
 	sel := d.selectionLocked()
 	d.mu.Unlock()
-	d.notifySelect(sel)
+	if isCur {
+		d.notifySelect(sel)
+	}
 	if multi {
 		d.showInfo(fmt.Sprintf("停止した（%s、%s）: %s:%d", reason, s.label(), path, line+1))
 	} else {
 		d.showInfo(fmt.Sprintf("停止した（%s）: %s:%d", reason, path, line+1))
+	}
+	if !focus && w == nil {
+		// 今のセッションでないセッションが止まった（markStopped）。印とメッセージだけにし、カーソルは移さない。
+		return
 	}
 	if w != nil {
 		if !replayStopReason(reason) {
