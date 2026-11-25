@@ -1011,7 +1011,7 @@ func (a *adapter) evaluate(m *message) {
 	a.respond(m, body)
 }
 
-// completions は、completions に答える。受け取ったら "completions <text> col=<column> frame=<frameId か none>" を出す。
+// completions は、completions に答える。受け取ったら "completions <text> col=<column> frame=<frameId か none> line=<line>" を出す。
 // 候補は text で決める（どれも column の前の、ASCII の英数字と _ の並びを語とする。start は debugpy と同じく 0 から数えた UTF-16 の
 // 符号単位の位置）。
 //
@@ -1024,6 +1024,7 @@ func (a *adapter) completions(m *message) {
 	var args struct {
 		Text    string `json:"text"`
 		Column  int    `json:"column"`
+		Line    int    `json:"line"`
 		FrameID *int   `json:"frameId"`
 	}
 	_ = json.Unmarshal(m.Arguments, &args)
@@ -1031,7 +1032,7 @@ func (a *adapter) completions(m *message) {
 	if args.FrameID != nil {
 		frame = strconv.Itoa(*args.FrameID)
 	}
-	a.output("console", fmt.Sprintf("completions %s col=%d frame=%s\n", args.Text, args.Column, frame))
+	a.output("console", fmt.Sprintf("completions %s col=%d frame=%s line=%d\n", args.Text, args.Column, frame, args.Line))
 	if !flagCaps.completions {
 		a.respondError(m, "completions is not supported")
 		return

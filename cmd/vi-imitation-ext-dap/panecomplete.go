@@ -44,11 +44,14 @@ func newReplCompleter() replCompleter {
 const completionPollInterval = 10 * time.Millisecond
 
 // completionsArguments は、completions の引数（DAP の仕様の CompletionsArguments）である。
-// Column は Text の中のカーソルの位置で、UTF-16 の符号単位で数える（columnsStartAt1 なら 1 から）。Line は 1 行なので省く。
+// Column は Text の中のカーソルの位置で、UTF-16 の符号単位で数える（columnsStartAt1 なら 1 から）。Line は、入力の行が 1 行なので
+// 最初の行（linesStartAt1 なら 1）にする。VS Code は position.lineNumber を送り、vscode-js-debug は line が 1 のときだけ cd の後の
+// 実行コンテキストの候補を返す（PR #431 のレビューの推奨 2）。
 type completionsArguments struct {
 	FrameID *int   `json:"frameId,omitempty"`
 	Text    string `json:"text"`
 	Column  int    `json:"column"`
+	Line    int    `json:"line"`
 }
 
 // completionsResponse は、completions の response の body（同仕様の CompletionsResponse）である。
@@ -58,6 +61,9 @@ type completionsResponse struct {
 
 // completionItem は、同仕様の CompletionItem のうち、使う項目である。selectionStart、selectionLength、detail は本体へ写せないので読まない
 // （本体はカーソルを入れた文字列の後ろに置き、一覧に詳しい説明の欄を持たない。基本設計 6.4 の capabilities の表の後の段落）。
+// selectionStart を持つ候補（vscode-js-debug が配列の後ろに返す [index]）も、文字列のまま入れる。VS Code は選んだ部分を
+// スニペットの置き場にして入れるが、nvim-dap の completions_to_items とオーナーの nvim の blink_dap.lua も selectionStart を読まず、
+// 文字列のまま入れる（PR #431 のレビューの推奨 3。利用者は index を打ち直す）。
 type completionItem struct {
 	Label    string `json:"label"`
 	Text     string `json:"text,omitempty"`
@@ -94,7 +100,8 @@ func (p *pane) complete(ctx context.Context, prm *ext.ConsoleCompleteParams, rep
 //  1. アダプターへ送ってある completions の応答を待つ（replCompleter.sem）。待つ間に ctx が終わったら ctx.Err() を返す
 //  2. 待った後に、より新しい問い合わせが届いていれば送らない（古い問い合わせ。本体も最後に送った seq でない答えを捨てる）
 //  3. 今のセッションが止まっていて、止まった位置を出し終え、続けて打っている間の待ち（runningHold）が明けるまで待つ（PR #425 の取り決め。
-//     止まった位置の stackTrace と、続けて打つステップ実行より先に completions をアダプターへ積まない）。動き出したら送らない
+//     止まった位置の stackTrace と、続けて打つステップ実行より先に completions をアダプターへ積まない）。待つ間に動き出したか、
+//     続行かステップ実行を送ったか、今のセッションが替わったら送らない
 //  4. 選んでいるフレームを付けて completions を送る。応答は本体の ctx が終わっても待ち（アダプターに積んである request を 1 つに保つ）、
 //     その間に止まった状態が変わった（世代が進んだ）か、新しい問い合わせが届いていれば、候補を捨てる
 //
@@ -109,6 +116,8 @@ func (p *pane) completeRepl(ctx context.Context, ticket uint64, prefix string) (
 	wait, cancel := p.ctx()
 	defer cancel()
 	var x sessionSnap
+	var first *session
+	var resumed time.Time
 	for {
 		if p.comp.ticket.Load() != ticket {
 			return ext.ConsoleCompleteResult{}, nil
@@ -117,6 +126,14 @@ func (p *pane) completeRepl(ctx context.Context, ticket uint64, prefix string) (
 		var ok bool
 		x, ok = current(ss, cur)
 		if !ok || !x.configured || !x.halted || !x.s.supports(func(c *capabilities) bool { return c.SupportsCompletionsRequest }) {
+			return ext.ConsoleCompleteResult{}, nil
+		}
+		// 待つ間に今のセッションが替わったか、続行かステップ実行を送ったら、送らない。見直しの間に動いて止まり直すと halted だけでは
+		// 気づけず、続けて打つステップ実行の間に completions を積むことになる（PR #431 のレビューの必須 1 のテストで見つけた）。
+		r := p.d.lastResumed(x.s)
+		if first == nil {
+			first, resumed = x.s, r
+		} else if x.s != first || !r.Equal(resumed) {
 			return ext.ConsoleCompleteResult{}, nil
 		}
 		if !x.stopping && p.d.runningHold() <= 0 {
@@ -130,7 +147,7 @@ func (p *pane) completeRepl(ctx context.Context, ticket uint64, prefix string) (
 			return ext.ConsoleCompleteResult{}, nil
 		}
 	}
-	args := completionsArguments{Text: prefix, Column: utf16Len(prefix)}
+	args := completionsArguments{Text: prefix, Column: utf16Len(prefix), Line: toDAPLine(0, linesStartAt1)}
 	if linesStartAt1 {
 		args.Column++
 	}
@@ -150,6 +167,13 @@ func (p *pane) completeRepl(ctx context.Context, ticket uint64, prefix string) (
 		return ext.ConsoleCompleteResult{}, nil
 	}
 	return ext.ConsoleCompleteResult{OK: true, Items: replCompletionItems(prefix, res.Targets)}, nil
+}
+
+// lastResumed は、セッション s に最後に続行かステップ実行を送った時刻（session.resumedAt）を返す。
+func (d *debugger) lastResumed(s *session) time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return s.resumedAt
 }
 
 // replCompletionItems は、カーソルまでの入力の行 prefix への completions の候補 targets を、本体の候補（ext.ConsoleCompletionItem）にする。

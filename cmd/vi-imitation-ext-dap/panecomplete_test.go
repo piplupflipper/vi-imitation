@@ -155,7 +155,7 @@ func TestPaneReplComplete(t *testing.T) {
 	if want := "apple|apple()|method|4-5\nalpha|alpha|field|4-5\n"; !res.OK || itemsString(res.Items) != want {
 		t.Errorf("obj.a = %v %q, want %q", res.OK, itemsString(res.Items), want)
 	}
-	h.waitOutput("completions obj.a col=6 frame=1000")
+	h.waitOutput("completions obj.a col=6 frame=1000 line=1")
 
 	// カーソルの後ろは送らず、column は UTF-16 の符号単位で数える（😀 は 2）。
 	text := "😀+o.b + rest"
@@ -227,6 +227,116 @@ func TestPaneReplCompleteUnsupported(t *testing.T) {
 	h.submit(p.id, "x")
 	if out := h.outputsUntil("evaluate repl x frame=1000"); strings.Contains(out, "completions") {
 		t.Errorf("completions was sent to an adapter without supportsCompletionsRequest: %q", out)
+	}
+	h.stopAndWait()
+}
+
+// TestPaneReplCompleteAfterStop は、止まった位置を出し終えるまで（session.stopGen が今の世代の間）completions をアダプターへ送らずに待ち、
+// 出し終えたら送ることを確かめる（PR #425 の取り決め。PR #431 のレビューの必須 1）。
+// 止まった位置を出し終える前の状態は、止まった後に stopGen を今の世代に戻して作る（実際の停止では、止まった位置の stackTrace の応答を
+// 待つ間がこの状態である。止まった直後に打った問い合わせを、その間に確実に届けるのは難しいため）。
+//
+// req: FR-310
+func TestPaneReplCompleteAfterStop(t *testing.T) {
+	h := paneHost(t, []string{"-completions"}, nil, map[string]any{"defaultSection": "repl"})
+	h.toggleUI()
+	p := h.waitPane()
+	h.mustExec(cmdStart, 0)
+	h.waitSigns(bp2, bp5, exec2)
+	s := h.current()
+	h.d.mu.Lock()
+	s.stopGen = s.gen.Load()
+	h.d.mu.Unlock()
+
+	ch := make(chan ext.ConsoleCompleteResult, 1)
+	go func() {
+		r, err := h.completeErr(h.ctx(), p.id, secRepl, "obj.a", 5)
+		if err != nil {
+			t.Errorf("console/complete: %v", err)
+		}
+		ch <- r
+	}()
+	select {
+	case r := <-ch:
+		t.Fatalf("answered %+v before the stop was shown", r)
+	case <-time.After(150 * time.Millisecond):
+	}
+	h.submit(p.id, "x")
+	if out := h.outputsUntil("evaluate repl x"); strings.Contains(out, "completions") {
+		t.Errorf("completions was sent before the stop was shown: %q", out)
+	}
+	// 出し終えたら送る。
+	h.d.mu.Lock()
+	s.stopGen = 0
+	h.d.mu.Unlock()
+	select {
+	case r := <-ch:
+		if want := "apple|apple()|method|4-5\nalpha|alpha|field|4-5\n"; !r.OK || itemsString(r.Items) != want {
+			t.Errorf("obj.a = %v %q, want %q", r.OK, itemsString(r.Items), want)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("console/complete did not answer after the stop was shown")
+	}
+	h.waitOutput("completions obj.a col=6 frame=1000 line=1")
+	h.stopAndWait()
+}
+
+// TestPaneReplCompleteInBurst は、ステップ実行を続けて打っている間に止まったとき、止まってから読み始めるまでの待ち（settleDelay）が
+// 明けるまで completions を送らず、待つ間に次のステップ実行を打てば送らずに ok を false で答えることを確かめる（PR #425 の取り決め。
+// PR #431 のレビューの必須 1）。
+//
+// req: FR-310
+func TestPaneReplCompleteInBurst(t *testing.T) {
+	h := paneHost(t, []string{"-completions"}, nil, map[string]any{"defaultSection": "repl"})
+	h.toggleUI()
+	p := h.waitPane()
+	h.mustExec(cmdStart, 0)
+	h.waitSigns(bp2, bp5, exec2)
+	s := h.current()
+	// 続けて打っている間に止まった位置を出し始めたことにする（TestSettleOnlyInBurst と同じ）。
+	burst := func() time.Time {
+		h.d.mu.Lock()
+		defer h.d.mu.Unlock()
+		s.burst = true
+		s.shownAt = time.Now()
+		return s.shownAt
+	}
+
+	// 待ちが明けてから送る。
+	shown := burst()
+	res := h.complete(p.id, secRepl, "obj.a", 5)
+	sent := time.Now()
+	if !res.OK || len(res.Items) != 2 {
+		t.Errorf("obj.a in a burst = %+v", res)
+	}
+	h.waitOutput("completions obj.a")
+	if d := sent.Sub(shown); d < settleDelay {
+		t.Errorf("answered %v after the stop was shown, want >= %v (the settle delay)", d, settleDelay)
+	}
+
+	// 待つ間に次のステップ実行を打てば、送らない。
+	burst()
+	type answer struct {
+		res ext.ConsoleCompleteResult
+		err error
+	}
+	ch := make(chan answer, 1)
+	go func() {
+		r, err := h.completeErr(h.ctx(), p.id, secRepl, "obj.b", 5)
+		ch <- answer{r, err}
+	}()
+	time.Sleep(30 * time.Millisecond)
+	h.mustExec(cmdNext, 0)
+	select {
+	case a := <-ch:
+		if a.err != nil || a.res.OK {
+			t.Errorf("obj.b answered %+v, want not ok", a)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("console/complete did not answer")
+	}
+	if out := h.outputsUntil("stopped 2"); strings.Contains(out, "completions obj.b") {
+		t.Errorf("completions was sent while waiting for the settle delay: %q", out)
 	}
 	h.stopAndWait()
 }
