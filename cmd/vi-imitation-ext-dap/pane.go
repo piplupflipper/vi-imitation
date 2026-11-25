@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/ext/server"
@@ -208,6 +209,8 @@ type pane struct {
 	replHistory []string
 	replLast    string
 	replDone    chan struct{}
+	// holdTimer は、動き出したばかりの間に作り直しを待たせ、後で run を起こす予定があることを表す（holdOnce）。
+	holdTimer bool
 
 	// repl は、REPL の区画の出力の写しである。作った後は変えない。どの goroutine からも書き足せる（server.TextLog）。
 	repl *server.TextLog
@@ -521,6 +524,11 @@ func (p *pane) refresh() {
 			// 止まった位置を出し終えるまで待つ。印は残し、出し終えたときの印で作り直す。
 			continue
 		}
+		if hold := p.d.runningHold(); reads && hold > 0 {
+			// 動き出したばかりなので、「動いている」の中身を送らずに待つ。その間に止まれば、止まった後の中身だけを送る（runningShowDelay）。
+			p.holdOnce(hold)
+			continue
+		}
 		c := p.build(sec, visible)
 		if p.isDirty(sec) {
 			// 作っている間に止まった状態が変わった。古い中身を送らず、次の作り直しを待つ。
@@ -530,6 +538,17 @@ func (p *pane) refresh() {
 			p.d.logf("view/update %s: %v", sec, err)
 		}
 	}
+}
+
+// holdOnce は、d の後に run を起こす（印の残った区画を作り直させる）。既に起こす予定があれば何もしない。run で呼ぶ。
+func (p *pane) holdOnce(d time.Duration) {
+	if p.holdTimer {
+		return
+	}
+	p.holdTimer = true
+	time.AfterFunc(d, func() {
+		p.post(func() { p.holdTimer = false })
+	})
 }
 
 // onEvent は、本体からのペインの知らせを処理する。run で呼ぶ。

@@ -94,10 +94,11 @@ func (p *pane) replEval(text string) {
 		p.replWrite("（止まった状態が変わったので、結果を出さない）\n", "comment")
 		return
 	case err != nil:
-		p.replWrite(adapterMessage(err)+"\n", "diagnostic.error")
+		// 末尾の改行は除く（vscode-js-debug の誤りの文は改行で終わり、空の行が挟まるため）。
+		p.replWrite(strings.TrimRight(adapterMessage(err), "\r\n")+"\n", "diagnostic.error")
 		return
 	}
-	p.replWrite(res.Result+"\n", "")
+	p.replWrite(strings.TrimRight(res.Result, "\r\n")+"\n", "")
 	if res.VariablesReference <= 0 || !x.halted {
 		return
 	}

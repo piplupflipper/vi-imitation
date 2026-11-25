@@ -162,9 +162,32 @@ func (p *pane) toggleException(item string) {
 		ctx, cancel := p.ctx()
 		err := s.sendExceptionBreakpoints(ctx)
 		cancel()
-		if err != nil && !errors.Is(err, errDAPClosed) {
-			d.showError(fmt.Sprintf("例外のフィルターを送れない（%s）: %s", s.label(), adapterMessage(err)))
+		if err == nil || errors.Is(err, errDAPClosed) {
+			continue
 		}
+		d.mu.Lock()
+		running := !s.halted
+		d.mu.Unlock()
+		if running {
+			// dlv 1.27.2 は、動いている間の setExceptionBreakpoints を「debuggee is running」で断る（2026-11-25 に実物で確かめた。
+			// nvim-dap-view の exceptions/init.lua も、delve の動いているセッションには送らない）。次に止まったときに送り直す。
+			s.excPending.Store(true)
+			d.showInfo(fmt.Sprintf("動いている間は例外のフィルターを送れなかった（%s）。次に止まったときに送る", s.label()))
+			continue
+		}
+		d.showError(fmt.Sprintf("例外のフィルターを送れない（%s）: %s", s.label(), adapterMessage(err)))
+	}
+}
+
+// resendExceptionBreakpoints は、動いている間に送れなかった例外のフィルターがあれば（toggleException）、止まった位置を出した後に送り直す。
+//
+// req: FR-294
+func (s *session) resendExceptionBreakpoints(ctx context.Context) {
+	if !s.excPending.Swap(false) {
+		return
+	}
+	if err := s.sendExceptionBreakpoints(ctx); err != nil {
+		s.d.showError(fmt.Sprintf("例外のフィルターを送れない（%s）: %s", s.label(), adapterMessage(err)))
 	}
 }
 

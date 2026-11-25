@@ -695,6 +695,14 @@ func (a *adapter) handle(m *message) {
 			Filters []string `json:"filters"`
 		}
 		_ = json.Unmarshal(m.Arguments, &eargs)
+		a.stateMu.Lock()
+		running := a.running
+		a.stateMu.Unlock()
+		if running {
+			// dlv 1.27.2 と同じく、動いている間は断る。
+			a.respondError(m, "Unable to process `setExceptionBreakpoints`: debuggee is running")
+			return
+		}
 		a.output("console", fmt.Sprintf("setExceptionBreakpoints %v\n", eargs.Filters))
 		a.respond(m, map[string]any{})
 	case "exceptionInfo":

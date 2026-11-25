@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 )
@@ -102,6 +103,10 @@ func (p *pane) buildWatches() (ext.ViewComponent, error) {
 	if w.fresh(x) {
 		w.results = map[int]evalResult{}
 	}
+	if err := p.prefetchWatches(x); err != nil {
+		w.vars = nil
+		return ext.ViewComponent{}, err
+	}
 	items := make([]ext.ViewItem, 0, len(w.exprs))
 	for _, e := range w.exprs {
 		item, err := p.watchItem(x, e)
@@ -115,6 +120,155 @@ func (p *pane) buildWatches() (ext.ViewComponent, error) {
 	w.last, w.lastReal, w.lastFor = c, c, x.s
 	c.Cursor, w.cursor = w.cursor, ""
 	return c, nil
+}
+
+// prefetchWatches は、まだ評価していない式の evaluate と、開いて出す結果の最初の子の variables を、それぞれ maxInFlight 個ずつ並行に送る
+// （inFlight）。1 つずつ送ると、アダプターの応答の間が足し合わされ、評価し終えるまでに打ったステップ実行が遅れた（maxInFlight の doc）。
+// 読む前と読んでいる間に止まった状態が変わったら、errStale を返す。
+func (p *pane) prefetchWatches(x sessionSnap) error {
+	w := &p.watches
+	var jobs []watchExpr
+	for _, e := range w.exprs {
+		if _, ok := w.results[e.id]; !ok {
+			jobs = append(jobs, e)
+		}
+	}
+	if len(jobs) > 0 {
+		if x.s.gen.Load() != x.gen {
+			return errStale
+		}
+		res := make([]evalResult, len(jobs))
+		errs := make([]error, len(jobs))
+		p.inFlight(x, len(jobs), func(i int) error {
+			args := evaluateArguments{Expression: jobs[i].expr, Context: "watch"}
+			if x.hasFrame {
+				f := x.frame
+				args.FrameID = &f
+			}
+			ctx, cancel := p.ctx()
+			defer cancel()
+			errs[i] = x.s.callGen(ctx, x.gen, "evaluate", args, &res[i].res)
+			return errs[i]
+		})
+		if x.s.gen.Load() != x.gen {
+			return errStale // 呼ばなかった式がある
+		}
+		for i, e := range jobs {
+			if errors.Is(errs[i], errStale) {
+				return errStale
+			}
+			if errs[i] != nil {
+				res[i].failure = adapterMessage(errs[i])
+			}
+			w.results[e.id] = res[i]
+		}
+	}
+	var keys []varsKey
+	for _, e := range w.exprs {
+		r := w.results[e.id]
+		if r.failure == "" && r.res.VariablesReference > 0 && w.open(watchItemID(e.id), true) {
+			keys = append(keys, firstKeys(r.res.VariablesReference, r.res.IndexedVariables, r.res.NamedVariables)...)
+		}
+	}
+	return p.prefetchVars(&w.varTree, x, keys)
+}
+
+// maxInFlight は、ウォッチ式の区画が一度にアダプターへ送っておく request の数の上限である（仮）。
+// 2026-11-25 に、10 個の式（構造を持つ結果を含む）で、止まってから評価し終えるまでを測った。1 つずつ送ると debugpy 1.8.22 で約 0.65 秒、
+// vscode-js-debug で約 0.7 秒かかり、その間（0.4 秒の間を置いて打ったとき）のステップ実行が、送ってある request の後ろに並んで
+// 約 40 ms 遅れた。上限を置かずに並行に送ると、vscode-js-debug は約 0.3 秒で終えたが、debugpy は 1.2〜1.8 秒に延びた。
+// 2 つずつなら debugpy は約 0.3 秒、vscode-js-debug は約 0.5 秒で終えた。3 つずつでは debugpy が約 0.46 秒に延びた（#424 の PR の測り）。
+const maxInFlight = 2
+
+// inFlight は、f(0) から f(n-1) を、一度に maxInFlight 個まで並行に呼び、すべて終わるまで待つ。
+// 呼ぶ前に止まった状態が変わっていれば（世代が進んでいれば）、残りを呼ばない（ステップ実行を、読み残しの request の後ろに並べないため）。
+// f が errStale を返したら、残りを呼ばない。
+func (p *pane) inFlight(x sessionSnap, n int, f func(i int) error) {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	next, stop := 0, false
+	take := func() (int, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if stop || next >= n || x.s.gen.Load() != x.gen {
+			stop = true
+			return 0, false
+		}
+		next++
+		return next - 1, true
+	}
+	for range min(maxInFlight, n) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i, ok := take()
+				if !ok {
+					return
+				}
+				if errors.Is(f(i), errStale) {
+					mu.Lock()
+					stop = true
+					mu.Unlock()
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// firstKeys は、参照 ref の変数（添字の子 indexed 個、名前の子 named 個）を開いたときに、childItems が最初に読む鍵である。
+func firstKeys(ref, indexed, named int) []varsKey {
+	if indexed <= pageSize {
+		return []varsKey{{ref: ref}}
+	}
+	var keys []varsKey
+	if named > 0 {
+		keys = append(keys, varsKey{ref: ref, filter: "named"})
+	}
+	return append(keys, varsKey{ref: ref, filter: "indexed", start: 0, count: min(pageSize, indexed)})
+}
+
+// prefetchVars は、木 sv がまだ読んでいない鍵 keys の variables を、maxInFlight 個ずつ並行に送って読む（prefetchWatches）。
+func (p *pane) prefetchVars(sv *varTree, x sessionSnap, keys []varsKey) error {
+	var todo []varsKey
+	for _, k := range keys {
+		_, done := sv.vars[k]
+		_, failed := sv.verr[k]
+		if !done && !failed && !slices.Contains(todo, k) {
+			todo = append(todo, k)
+		}
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	if x.s.gen.Load() != x.gen {
+		return errStale
+	}
+	res := make([]variablesResponse, len(todo))
+	errs := make([]error, len(todo))
+	p.inFlight(x, len(todo), func(i int) error {
+		k := todo[i]
+		ctx, cancel := p.ctx()
+		defer cancel()
+		errs[i] = x.s.callGen(ctx, x.gen, "variables", variablesArguments{VariablesReference: k.ref, Filter: k.filter, Start: k.start, Count: k.count}, &res[i])
+		return errs[i]
+	})
+	if x.s.gen.Load() != x.gen {
+		return errStale
+	}
+	for i, k := range todo {
+		switch {
+		case errors.Is(errs[i], errStale):
+			return errStale
+		case errs[i] != nil:
+			sv.verr[k] = errs[i]
+		default:
+			sv.vars[k] = res[i].Variables
+		}
+	}
+	return nil
 }
 
 // plain は、評価せずに式だけを並べた木を作る。note は、式の後に添える、評価していない理由である。

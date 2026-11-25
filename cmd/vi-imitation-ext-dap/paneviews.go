@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 )
@@ -71,6 +72,29 @@ func (d *debugger) snapshot() (ss []sessionSnap, cur *session, started bool) {
 func (d *debugger) stoppingAny() bool {
 	ss, _, _ := d.snapshot()
 	return slices.ContainsFunc(ss, func(x sessionSnap) bool { return x.stopping })
+}
+
+// runningShowDelay は、動き出してから、区画を「動いている」の中身に作り直すまでの間である（仮）。
+// ステップ実行は、ふつうこの間に止まる（2026-11-25 の手元の測りで、止まった位置へ移るまで dlv は約 12 ms、debugpy と vscode-js-debug は
+// 約 55 ms）ので、動いている間の中身を送らずに、止まった後の中身だけを送る。ステップ実行のたびに「動いている」の中身を本体へ送ると、
+// 本体がその描き直しをしている間に止まった位置への移動が届き、元のペインの移動が遅れた（#424 の測り。ウォッチ式を 10 個出して約 9 ms）。
+// nvim-dap-view も、続けたときにスコープとウォッチ式の区画を描き直さない（listeners.lua）。
+const runningShowDelay = 150 * time.Millisecond
+
+// runningHold は、動き出してから runningShowDelay が経っていないセッションがあれば、その残りの時間を返す（無ければ 0）。
+func (d *debugger) runningHold() time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var hold time.Duration
+	for _, s := range d.sessions {
+		if s.halted || s.resumedAt.IsZero() {
+			continue
+		}
+		if left := runningShowDelay - time.Since(s.resumedAt); left > hold {
+			hold = left
+		}
+	}
+	return hold
 }
 
 // sessionByID は、番号 id の動いているセッションを返す。無ければ nil。

@@ -160,6 +160,32 @@ func TestPaneWatchesRunning(t *testing.T) {
 	h.stopAndWait()
 }
 
+// TestPaneWatchesQuickStep は、動き出してから runningShowDelay の間に止まるステップ実行では、ウォッチ式とスコープの区画に
+// 「動いている」の中身を送らず、止まった後の中身だけを送ることと、それより長く動くときは送ることを確かめる。
+//
+// req: FR-292
+func TestPaneWatchesQuickStep(t *testing.T) {
+	for _, tc := range []struct {
+		delay   int
+		running bool
+	}{{30, false}, {600, true}} {
+		h := paneHost(t, nil, map[string]any{"stopDelayMs": tc.delay}, nil)
+		h.toggleUI()
+		p := h.waitPane()
+		h.addWatch(p.id, keyWatchesAppend, "none", "x")
+		h.mustExec(cmdStart, 0)
+		h.waitLabel(secWatches, "x = 1")
+		h.mustExec(cmdNext, 0)
+		var seen []ext.ViewComponent
+		h.waitUpdate(secWatches, func(c ext.ViewComponent) bool { return strings.Contains(labels(c.Items), "x = 2") }, &seen)
+		got := slices.ContainsFunc(seen, func(c ext.ViewComponent) bool { return strings.Contains(labels(c.Items), runningLabel) })
+		if got != tc.running {
+			t.Errorf("stop after %d ms: running shown = %v, want %v", tc.delay, got, tc.running)
+		}
+		h.stopAndWait()
+	}
+}
+
 // TestPaneWatchesStale は、evaluate の応答を待つ間にステップ実行して止まり直したら、遅れて届いた前の停止の結果を表示に使わないことを確かめる。
 //
 // req: FR-305
@@ -315,6 +341,22 @@ func TestPaneExceptions(t *testing.T) {
 	h.waitLabel(secExceptions, "[ ] Unrecovered Panics")
 	h.mustExec(cmdStart, 0)
 	h.waitOutput("setExceptionBreakpoints [all]")
+	h.stopAndWait()
+
+	// 動いている間に断られたら（dlv）、次に止まったときに送り直す。
+	h = paneHost(t, nil, map[string]any{"stopDelayMs": 1500}, map[string]any{"defaultSection": "exceptions"})
+	h.toggleUI()
+	p = h.waitPane()
+	h.mustExec(cmdStart, 0)
+	h.waitLabel(secExceptions, "[x] Unrecovered Panics")
+	h.waitSigns(bp2, bp5, exec2)
+	h.mustExec(cmdNext, 0)
+	h.notifyView(ext.MethodViewSelect, ext.ViewSelectParams{View: p.id, Item: exceptionItemID("all"), Child: secExceptions})
+	h.waitMessage("動いている間は例外のフィルターを送れなかった（parent）。次に止まったときに送る")
+	all = h.outputsUntil("stopped 2", "setExceptionBreakpoints [panic all]")
+	if strings.Index(all, "setExceptionBreakpoints [panic all]") < strings.Index(all, "stopped 2") {
+		t.Errorf("the filters were sent before the stop: %q", all)
+	}
 	h.stopAndWait()
 
 	h = paneHost(t, []string{"-no-exceptions"}, nil, map[string]any{"defaultSection": "exceptions"})

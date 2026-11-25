@@ -659,6 +659,9 @@ func (d *debugger) targetLocked() (s *session, changed bool) {
 // continued は、s の continued の event を処理する。s の実行位置の印を消し、世代を進める（FR-287）。
 func (d *debugger) continued(s *session) {
 	d.mu.Lock()
+	if s.halted {
+		s.resumedAt = time.Now()
+	}
 	s.halted = false
 	s.gen.Add(1)
 	d.pane.markDirty(secThreads, secScopes, secWatches)
@@ -1006,6 +1009,7 @@ func (d *debugger) restartByRequest(s *session, w *waiter) {
 	}
 	d.mu.Lock()
 	s.halted = false
+	s.resumedAt = time.Now()
 	s.gen.Add(1)
 	d.pane.markDirty(secThreads, secScopes, secWatches)
 	d.mu.Unlock()
