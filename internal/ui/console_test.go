@@ -138,7 +138,8 @@ func TestConsoleMenu(t *testing.T) {
 	if got := rows[3][10:]; !strings.HasPrefix(got, " abc method") {
 		t.Errorf("一覧の 1 行目 = %q（画面:\n%s）", got, s.Grid.String())
 	}
-	if got := rows[4][10:]; !strings.HasPrefix(got, " abd variable") {
+	// 選んでいる候補（2 行目）は、左の空白の列に印を置く。
+	if got := rows[4][10:]; !strings.HasPrefix(got, ">abd variable") {
 		t.Errorf("一覧の 2 行目 = %q", got)
 	}
 	if rows[2] != " o2" || !strings.HasPrefix(rows[5], " > x = obj.ab") {

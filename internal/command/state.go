@@ -221,8 +221,11 @@ type State struct {
 	matchCache *matchCache
 	recording  rune // マクロの記録先。0 なら記録していない
 	recorded   []editcmd.Key
-	lastPlayed rune // @@ が再生するレジスター
-	playDepth  int
+	// feedRecorded は、Feed が次に feed へ渡すキーをマクロに記録したことを表す。hookRecorded は、KeyHook を呼んでいるキーを
+	// 記録したことを表す（SubstituteKey が記録を置き換えるかを決める）。
+	feedRecorded, hookRecorded bool
+	lastPlayed                 rune // @@ が再生するレジスター
+	playDepth                  int
 	// playUndoStart は、いちばん外側の再生（play、ContinueReplay、ResumeReplay）を始めたときのアンドゥの履歴の末尾の識別子である
 	// （buffer.Buffer.UndoTip）。止めたときの末尾と違えば、止める前の再生が単位を作っている（suspendQuery、ResumeReplay）。
 	playUndoStart uint64
@@ -377,9 +380,25 @@ func (s *State) Feed(k editcmd.Key) Result {
 	s.shellJoin = nil
 	if s.recording != 0 {
 		s.recorded = append(s.recorded, k)
+		s.feedRecorded = true
 	}
 	s.feed(k)
 	return s.take()
+}
+
+// SubstituteKey は、KeyHook の中から呼び、KeyHook が受けているキーの代わりに、キーの列 keys を KeyHook を通さずに通常のキーとして
+// 解釈する。受けているキーをマクロに記録していれば、その記録を keys に置き換える。インサートモードなら、keys の入力はドットリピートの
+// 記録にも入る。呼んだ KeyHook は done を true で返す。
+// 拡張機能の答えで決まる入力（書き足すテキストと入力の行の組の補完で入れた候補。internal/editor）を、答えでなく入れた文字列として
+// 記録し、再生とドットリピートが答えの届く時機に依らずに同じ文字列を入れるために使う（#427）。
+func (s *State) SubstituteKey(keys []editcmd.Key) {
+	if s.hookRecorded && len(s.recorded) > 0 {
+		s.recorded = append(s.recorded[:len(s.recorded)-1], keys...)
+		s.hookRecorded = false
+	}
+	for _, k := range keys {
+		s.dispatch(k)
+	}
 }
 
 // FeedUnrecorded は、Feed と同じくキーを 1 個解釈するが、記録中のマクロに記録しない。
@@ -393,12 +412,16 @@ func (s *State) FeedUnrecorded(k editcmd.Key) Result {
 // feed は、キーを 1 個解釈する。マクロの再生もここを通るので、記録はしない。
 func (s *State) feed(k editcmd.Key) {
 	s.keysFed++
+	recorded := s.feedRecorded
+	s.feedRecorded = false
 	if s.mouseBar != nil && !k.IsMouse() {
 		// スクロールバーのつまみのドラッグの途中でマウスでないキーを受けたら、ドラッグを終える（FR-210。mouse.go の mouseBarMove）。
 		s.mouseBar = nil
 	}
 	if h := s.KeyHook; h != nil && (s.mode == ModeInsert || (s.mode == ModeNormal && !s.parser.Pending())) {
+		s.hookRecorded = recorded
 		done, held, err := h(k, s.mode == ModeInsert)
+		s.hookRecorded = false
 		if done {
 			if err != nil {
 				s.fail(err)

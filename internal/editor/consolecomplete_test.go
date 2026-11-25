@@ -173,7 +173,8 @@ func TestConsoleCompleteRange(t *testing.T) {
 	if mi := h.cmenu(); mi.items != "" || mi.cursor != len("x.al") {
 		t.Fatalf("カーソルを動かした後: %+v", mi)
 	}
-	h.keys("<Tab>")
+	// 端末の Ctrl-Space は <C-@> として届く（PR #428 のレビューの必須 1）。
+	h.keys("<C-@>")
 	h.waitSeen("complete seq=")
 	h.waitMenu("alpha,alps")
 	h.keys("<Tab><Tab><C-y>")
@@ -292,24 +293,91 @@ func TestConsoleCompleteEsc(t *testing.T) {
 	}
 }
 
-// マクロの再生では問い合わせず、補完のキーは何も入れずに捨てる（答えの届く時点で結果が変わらないため）。
+// マクロとドットリピートは、補完で入れた候補を入れた文字列として記録し、再生では問い合わせずにその文字列を入れる。
+// 一覧で選ぶキーと閉じるキーは記録しない（PR #428 のレビューの裁定要 1 と推奨 1）。
 //
 // req: FR-297
 func TestConsoleCompleteReplay(t *testing.T) {
 	h := startComplete(t)
 	h.keys("<Esc>qqA")
-	h.keys("be")
-	h.waitMenu("beta")
-	h.keys("<C-e><Tab><Esc>q")
+	h.keys("al")
+	h.waitMenu("alpha,alps")
+	h.keys("<C-n><Tab><C-p><CR><Esc>q")
 	h.settle()
+	if mi := h.cmenu(); mi.input != "alpha" {
+		t.Fatalf("記録した後: %+v", mi)
+	}
 	before := h.completeSeq()
+	h.keys(".")
+	h.settle()
+	if mi := h.cmenu(); mi.input != "alphaalpha" || mi.mode != command.ModeNormal {
+		t.Fatalf(". の後: %+v", mi)
+	}
 	h.keys("@q")
 	h.settle()
-	if mi := h.cmenu(); mi.input != "bebe" || mi.mode != command.ModeNormal {
+	if mi := h.cmenu(); mi.input != "alphaalphaalpha" || mi.mode != command.ModeNormal {
 		t.Fatalf("再生の後: %+v", mi)
 	}
 	if seq := h.completeSeq(); seq != before {
 		t.Errorf("再生で問い合わせた: %d → %d", before, seq)
+	}
+	if h.seen("kind=1 item=") {
+		t.Error("再生で送った")
+	}
+}
+
+// 候補を選んだまま 1 文字打ち足し、同じ候補が残っていれば、答えの前でも後でも選んだままで、<CR> はその候補を入れる
+// （blink.cmp と同じ。PR #428 のレビューの必須 2）。
+//
+// req: FR-297
+func TestConsoleCompleteKeepSelection(t *testing.T) {
+	for _, wait := range []bool{false, true} {
+		t.Run(fmt.Sprintf("答えを待つ=%v", wait), func(t *testing.T) {
+			h := startComplete(t)
+			h.keys("slow al")
+			h.waitMenu("alpha,alps")
+			h.keys("<C-n>p")
+			if mi := h.cmenu(); mi.items != "alpha,alps" || mi.selected != 0 {
+				t.Fatalf("打ち足した直後: %+v", mi)
+			}
+			if wait {
+				seq := h.completeSeq()
+				h.waitShown(fmt.Sprintf("complete seq=%d text=slow alp cursor=8", seq))
+				h.eventually("答え", func() bool { return h.e.float.con.comp.pending == 0 })
+				if mi := h.cmenu(); mi.items != "alpha,alps" || mi.selected != 0 {
+					t.Fatalf("答えの後: %+v", mi)
+				}
+			}
+			h.keys("<CR>")
+			if mi := h.cmenu(); mi.input != "slow alpha" {
+				t.Fatalf("<CR> の後: %+v", mi)
+			}
+			if h.seen("kind=1 item=") {
+				t.Error("送った")
+			}
+		})
+	}
+}
+
+// 答えを待つ間の <C-e> は、問い合わせを取り消し、後から一覧を出さない（PR #428 のレビューの推奨 2）。
+// 一覧が無いときの <Tab> と <C-n> は補完で扱わず（blink.cmp の fallback）、<Tab> はタブ文字として入る（推奨 3）。
+//
+// req: FR-297
+func TestConsoleCompleteNoMenuKeys(t *testing.T) {
+	h := startComplete(t)
+	h.keys("slow al<C-e>")
+	time.Sleep(2 * slowDelay)
+	if mi := h.cmenu(); mi.items != "" || mi.input != "slow al" {
+		t.Fatalf("<C-e> の後: %+v", mi)
+	}
+	seq := h.completeSeq()
+	h.keys("<C-n><Tab>")
+	h.settle()
+	if mi := h.cmenu(); mi.input != "slow al\t" {
+		t.Errorf("一覧の無い <C-n><Tab>: %+v", mi)
+	}
+	if h.completeSeq() != seq {
+		t.Error("一覧の無い <C-n><Tab> で問い合わせた")
 	}
 }
 

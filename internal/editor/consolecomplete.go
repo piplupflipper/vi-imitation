@@ -7,7 +7,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/piplupflipper/vi-imitation/ext"
-	"github.com/piplupflipper/vi-imitation/internal/buffer"
 	"github.com/piplupflipper/vi-imitation/internal/command"
 	"github.com/piplupflipper/vi-imitation/internal/editcmd"
 	"github.com/piplupflipper/vi-imitation/internal/exthost"
@@ -18,7 +17,7 @@ import (
 // 書き足すテキストと入力の行の組（ext.ViewConsole）の入力の行の補完（FR-297。基本設計 1.4 の「#427 の入力の行の補完」）。
 //
 // 部品を開くときに ext.ViewComponent.Complete を真にした組（consoleState.complete）では、インサートモードで入力の行の中身が
-// 利用者のキーで変わるたびと、補完のキー（一覧を出していないときの <Tab>、<C-n>、<C-p>、<C-Space>）で、持ち主の拡張機能へ
+// 利用者のキーで変わるたびと、補完のキー（一覧を出していないときの <C-@>。端末の Ctrl-Space）で、持ち主の拡張機能へ
 // console/complete を問い合わせる（requestCompletion）。問い合わせは exthost.Host.Send で送り、答えを待たずにキーの処理を続ける
 // （ファインダーの一覧と同じく、FR-17 の期限で待たない）。答えは exthost.QueryResult のイベントで届き（consoleCompleted）、
 // 最後に送った問い合わせの答えで、送ったときと入力の行の中身とカーソルが同じなら、補完の候補の一覧（ui.CompletionMenu）に出す。
@@ -29,15 +28,18 @@ import (
 //
 //   - 一覧は、打つたびに自動で出す。カーソルの前が空白か、入力の行の先頭なら出さない（閉じる）
 //   - 候補を前もって選ばない。選ぶまで入力の行の中身を変えない
-//   - <C-n>、<Tab>、<Down> で次の、<C-p>、<S-Tab>、<Up> で前の候補を選ぶ（端の先は選んでいない状態へ戻る）
+//   - <C-n>、<Tab>、<Down> で次の、<C-p>、<S-Tab>、<Up> で前の候補を選ぶ（端の先は選んでいない状態へ戻る）。一覧が無ければ扱わない
 //   - <CR> と <C-y> は、選んだ候補を入れる。選んでいなければ一覧を閉じ、<CR> は今までどおり入力の行の中身を送る
-//   - <C-e> は一覧を閉じる。<Esc> は一覧を閉じてノーマルモードへ戻る
+//   - <C-e> は一覧を閉じ、答えを待っている問い合わせを取り消す。<Esc> は一覧を閉じてノーマルモードへ戻る
+//   - <C-@>（端末の Ctrl-Space）は、一覧が無ければ問い合わせる
 //
 // 答えが届くまでに打ち足した文字は、前の答えの候補を、置き換える範囲の始まりからカーソルまでの文字で絞り込んで出し続け
-// （打つたびに一覧が消えて出直さないため）、次の答えで置き換える。
+// （打つたびに一覧が消えて出直さないため）、次の答えで置き換える。選んでいた候補は、絞り込んだ後も次の答えの後も、同じ候補
+// （表示の文字列と入れる文字列が同じもの）があれば選んだままにする（blink.cmp と同じ。答えの届く時機で <CR> の結果が変わらないため。
+// PR #428 のレビューの必須 2）。
 //
-// マクロとドットリピートの再生では、問い合わせず、一覧を出さない（答えが届く時点が記録したときと違い、結果が決まらないため）。
-// このため、記録したときに一覧で候補を選んだキーは、再生では一覧の無いときのキー（<Down> は履歴、<CR> は送信）になる。
+// マクロとドットリピートには、補完のキーを記録せず、候補を入れたことを入れた文字列（<BS>、<Del>、文字のキーの列）として記録する
+// （command.State.SubstituteKey）。再生では問い合わせず、一覧も出さず、記録した文字列を入れる。
 
 // consoleCompletion は、書き足すテキストと入力の行の組の補完の状態である（consoleState.comp）。
 type consoleCompletion struct {
@@ -71,47 +73,63 @@ var (
 	completePrevKeys   = editcmd.MustParseKeys("<C-p><S-Tab><Up>")
 	completeAcceptKeys = editcmd.MustParseKeys("<C-y><CR>")
 	completeCloseKey   = editcmd.MustParseKeys("<C-e>")[0]
-	// completeStartKeys は、一覧を出していないときに問い合わせを始めるキーである。
-	completeStartKeys = editcmd.MustParseKeys("<C-n><C-p><Tab><S-Tab><C-Space>")
+	// completeStartKeys は、一覧を出していないときに問い合わせを始めるキーである（blink.cmp の preset の <C-space> の show）。
+	// 端末と tmux は Ctrl-Space を 0x00 で送り、本体はそれを <C-@> と読む（internal/term の decode。PR #428 のレビューの必須 1）。
+	// kitty のキーボードのプロトコルを使う端末から届く形の <C-Space> も受ける。
+	completeStartKeys = editcmd.MustParseKeys("<C-@><C-Space>")
 )
 
 // completeKey は、補完を引き受けた組 f の入力の行のインサートモードのキー k を、補完の操作として扱えれば扱い、true を返す（FR-297）。
 // 一覧を出していれば、候補を選ぶキー、入れるキー、閉じるキーを扱う。選んでいないときの <CR> は、一覧を閉じて false を返す
-// （呼び出し側が中身を送る）。一覧を出していなければ、補完のキーで問い合わせる。再生中は問い合わせず、補完のキーを捨てる。
+// （呼び出し側が中身を送る）。一覧を出していなければ、<C-@>（<C-Space>）で問い合わせ、答えを待っている間の <C-e> で取り消す。
+// 一覧を出していないときの <Tab>、<S-Tab>、<C-n>、<C-p> は扱わない（blink.cmp の fallback と同じく、本体のインサートモードのキーになる）。
+//
+// 扱ったキーは、マクロの記録から外す（command.State.SubstituteKey）。候補を入れたキーは、入れた文字列のキーの列に置き換える
+// （acceptCompletion）。マクロの再生とドットリピートは、一覧の有無と答えの届く時機に依らず、記録した文字列を入れる
+// （PR #428 のレビューの裁定要 1 へのオーケストレータの決め）。再生の中では扱わない（記録に補完のキーが残っていないため）。
 //
 // req: FR-297
 func (e *Editor) completeKey(f *floatState, k editcmd.Key) bool {
 	con := f.con
 	c := &con.comp
-	if f.bs.state.Replaying() {
-		return slices.Contains(completeStartKeys, k)
+	st := f.bs.state
+	if st.Replaying() {
+		return false
 	}
 	if e.consoleMenuShown(f) {
 		switch {
 		case slices.Contains(completeNextKeys, k):
 			c.selected = c.choice().step(1)
-			return true
 		case slices.Contains(completePrevKeys, k):
 			c.selected = c.choice().step(-1)
-			return true
 		case slices.Contains(completeAcceptKeys, k):
 			if c.selected >= 0 {
 				e.acceptCompletion(f)
 				return true
 			}
 			e.cancelCompletion(con)
-			return k != consoleEnter
+			if k == consoleEnter {
+				return false
+			}
 		case k == completeCloseKey:
 			e.cancelCompletion(con)
-			return true
+		default:
+			return false
 		}
-		return false
-	}
-	if slices.Contains(completeStartKeys, k) {
-		e.requestCompletion(f)
+		st.SubstituteKey(nil)
 		return true
 	}
-	return false
+	switch {
+	case slices.Contains(completeStartKeys, k):
+		e.requestCompletion(f)
+	case k == completeCloseKey && c.pending != 0:
+		// 答えを待っている間の <C-e> は、問い合わせを取り消し、後から一覧を出さない（PR #428 のレビューの推奨 2）。
+		e.cancelCompletion(con)
+	default:
+		return false
+	}
+	st.SubstituteKey(nil)
+	return true
 }
 
 // choice は、出している候補と選んでいる候補を、コマンドラインの補完と同じ選び方（completionChoice）の形にして返す。
@@ -204,10 +222,14 @@ func (e *Editor) consoleCompleted(t completeTag, r *exthost.QueryResult) {
 		}
 		items = append(items, it)
 	}
+	// 選んでいた候補は、新しい答えにも同じ候補があれば選んだままにする（refreshCompletion。PR #428 のレビューの必須 2）。
+	keep := c.selectedItem()
+	if len(c.shown) == 0 || c.text != text || c.at != at {
+		keep = nil // 出していた一覧が今の中身のものでなければ（閉じていた）、選んでいた候補も無い
+	}
 	c.items, c.base, c.baseAt = items, text, at
-	c.shown, c.selected = nil, -1
 	c.menuID++
-	refreshCompletion(con, text, at)
+	refreshCompletion(con, text, at, keep)
 }
 
 // findConsole は、組の状態 con を中身に持つ部品（ポップアップかペイン。切り替えの部品の見えていない子を含む）を返す。無ければ nil である。
@@ -239,8 +261,10 @@ func (f *floatState) contentOf(con *consoleState) *floatContent {
 // refreshCompletion は、組の補完の一覧を、入力の行の今の中身 text とカーソル at に合わせて絞り込む。
 // 答えを求めたときと同じなら、すべての候補を出す。答えを求めた後にカーソルの位置へ文字を打ち足しただけなら、置き換える範囲の始まりから
 // カーソルまでの文字で始まる候補（大文字と小文字を区別しない）だけを出す。ほかの変わり方なら、一覧を閉じる。
-// 出す候補が替わったら、選んでいない状態に戻す。
-func refreshCompletion(con *consoleState, text string, at int) {
+// 選んでいた候補 keep（nil なら選んでいない）と同じ候補（表示の文字列と入れる文字列が同じもの）が出す候補にあれば、それを選び、
+// 無ければ選んでいない状態に戻す（blink.cmp の completion/list.lua の、利用者が選んだ候補が新しい一覧にもあれば選び直す形。
+// PR #428 のレビューの必須 2）。
+func refreshCompletion(con *consoleState, text string, at int, keep *ext.ConsoleCompletionItem) {
 	c := &con.comp
 	var shown []int
 	switch {
@@ -256,10 +280,22 @@ func refreshCompletion(con *consoleState, text string, at int) {
 			}
 		}
 	}
-	if !slices.Equal(shown, c.shown) {
-		c.selected = -1
+	c.selected = -1
+	if keep != nil {
+		c.selected = slices.IndexFunc(shown, func(i int) bool {
+			return c.items[i].Label == keep.Label && c.items[i].Insert() == keep.Insert()
+		})
 	}
 	c.shown, c.text, c.at = shown, text, at
+}
+
+// selectedItem は、選んでいる候補の写しを返す。選んでいなければ nil である。
+func (c *consoleCompletion) selectedItem() *ext.ConsoleCompletionItem {
+	if c.selected < 0 || c.selected >= len(c.shown) {
+		return nil
+	}
+	it := c.items[c.shown[c.selected]]
+	return &it
 }
 
 // typedAfter は、入力の行の中身 text とカーソル at が、中身 base のカーソル baseAt の位置へ文字を打ち足しただけのものかを返す。
@@ -302,13 +338,24 @@ func (e *Editor) acceptCompletion(f *floatState) {
 	if end >= c.baseAt {
 		end += at - c.baseAt
 	}
+	end = min(max(end, at), len(text))
 	ins := consoleInputText(it.Insert())
-	next := text[:start] + ins + text[min(end, len(text)):]
 	e.cancelCompletion(con)
-	e.reload(f.bs, buffer.New(next))
-	cursor := start + len(ins)
-	f.bs.state.SetCursor(buffer.Position{Byte: cursor})
-	c.last, c.lastAt = next, cursor
+	// 置き換えを、カーソルの前を消す <BS>、カーソルの後ろを消す <Del>、入れる文字の列のキーとして State に解釈させ、受けたキー
+	// （<CR> か <C-y>）の記録をそのキーの列に置き換える（command.State.SubstituteKey）。マクロの再生とドットリピートは、答えを待たずに
+	// 入れた文字列をそのまま入れる（PR #428 のレビューの裁定要 1 へのオーケストレータの決め。blink.cmp の dot_repeat に近い）。
+	var keys []editcmd.Key
+	for range utf8.RuneCountInString(text[start:at]) {
+		keys = append(keys, consoleBS)
+	}
+	for range utf8.RuneCountInString(text[at:end]) {
+		keys = append(keys, consoleDel)
+	}
+	for _, r := range ins {
+		keys = append(keys, editcmd.Rune(r))
+	}
+	f.bs.state.SubstituteKey(keys)
+	c.last, c.lastAt = f.bs.buf.Line(0), f.bs.state.Cursor().Byte
 }
 
 // completeAfterKey は、補完を引き受けた組 f で、キーの処理の後に、入力の行の中身かカーソルが変わっていれば補完を決め直す（FR-297）。
@@ -341,7 +388,7 @@ func (e *Editor) completeAfterKey(f *floatState) {
 		e.cancelCompletion(con)
 		return
 	}
-	refreshCompletion(con, text, at)
+	refreshCompletion(con, text, at, c.selectedItem())
 	e.requestCompletion(f)
 }
 

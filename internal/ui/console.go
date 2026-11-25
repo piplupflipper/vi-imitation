@@ -212,4 +212,13 @@ func (r *Renderer) drawConsoleMenu(g *Grid, theme Theme, m *CompletionMenu, view
 		rt++
 	}
 	r.drawCompletionRows(g, theme, m, p, l, rt, Attr{})
+	// 選んでいる候補は、色だけでなく、項目の左の空白の列の印 consoleMenuMark でも示す（色を出せない端末でも見分けるため。
+	// PR #428 のレビューの推奨 4）。項目が窓の左の端から始まり、左の空白の列が無ければ印を置かない。
+	first := max(min(r.pum.first, len(m.Items)-p.height), 0)
+	if i := m.Selected - first; m.Selected >= 0 && i >= 0 && i < p.height && l < p.col {
+		g.set(p.top+i, l, Cell{Text: consoleMenuMark, Width: 1, Attr: theme.attr(StylePopupSelected)})
+	}
 }
+
+// consoleMenuMark は、書き足すテキストと入力の行の組の補完の一覧で、選んでいる候補の左に置く印である（仮）。
+const consoleMenuMark = ">"
