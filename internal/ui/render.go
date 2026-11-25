@@ -125,8 +125,11 @@ type Renderer struct {
 	// 窓が替わるか無くなったら作り直す。
 	float   *Renderer
 	floatID uint64
-	// floatList は、ファインダーのポップアップ（Float.List）の一覧を描く子の Renderer である（drawFinder）。float と同じく窓ごとに作り直す。
+	// floatList は、ファインダーのポップアップ（Float.List）の一覧（drawFinder）と、書き足すテキストと入力の行の組（Float.Console）の
+	// 出力（drawConsole）を描く子の Renderer である。float と同じく窓ごとに作り直す。
 	floatList *Renderer
+	// console は、直前に描いた窓が書き足すテキストと入力の行の組（drawConsole）で、floatList がその出力を描いたことを表す。
+	console bool
 	// floatPreview は、ポップアップのプレビュー（Float.Preview。FR-149）の中身を描く子の Renderer で、previewID はその中身の Preview.ID である
 	// （drawPreview）。中身が替わるか、プレビューを描かなくなったら作り直す。
 	floatPreview *Renderer
@@ -369,6 +372,12 @@ func (r *Renderer) render(f *Frame) Screen {
 			pv := fl.Preview.View
 			r.posFrom = r.floatPreview
 			r.drawStatus(g, theme, pv.Text, f, r.floatPreview.placeCursor(pv.Text, pv), rows)
+			r.posFrom = nil
+		case listCursor != nil && fl != nil && fl.Focused && fl.Console != nil && fl.Console.OutputFocused && fl.Console.Output != nil && r.floatList != nil:
+			// 書き足すテキストと入力の行の組で、フォーカスを出力へ移していれば、ルーラーと範囲の位置を出力のバッファのものにする（FR-274）。
+			ov := fl.Console.Output
+			r.posFrom = r.floatList
+			r.drawStatus(g, theme, ov.Text, f, r.floatList.placeCursor(ov.Text, ov), rows)
 			r.posFrom = nil
 		case listCursor != nil && fl != nil && fl.Focused && r.float != nil:
 			// フォーカスのあるポップアップでは、ルーラーと範囲の位置をキーを受けるポップアップのバッファのものにする（PR #242 のレビュー）。

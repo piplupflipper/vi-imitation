@@ -130,7 +130,7 @@ func displayName(bs *bufferState) string {
 // doAction は、Ex コマンドが求めるエディタの動作を 1 つ行う（:w、:q、:e）。
 // ファイルの引数（:w、:e、:tab.new、:diffsplit の File）の先頭の "~" と環境変数は、ex が展開している（ex.State.FileEnv。FR-200）。
 func (e *Editor) doAction(bs *bufferState, a ex.Action) error {
-	if f := e.float; f != nil && f.focused && (bs == f.bs || (bs == f.preview.bs && f.preview.focus)) {
+	if f := e.float; f != nil && f.focused && (bs == f.bs || (bs == f.preview.bs && f.preview.focus) || (f.out != nil && bs == f.out)) {
 		// フォーカスのあるポップアップの中で打った、タブに関わるコマンド（popup.go）。
 		switch a.Kind {
 		case ex.ActionQuit:

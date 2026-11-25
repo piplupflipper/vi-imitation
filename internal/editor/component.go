@@ -458,6 +458,7 @@ func (e *Editor) paneOpenRequest(ev *exthost.PaneOpenRequest) {
 	if p.Placement == ext.PaneCenter || e.cfg.OpenPane == nil || pane == "" {
 		f.center, f.focused = true, true
 		e.openFloat(f)
+		e.startConsoleInsert(f)
 		_ = ev.Reply(ext.PaneOpenResult{View: ext.ViewID(f.id)})
 		return
 	}
@@ -469,6 +470,7 @@ func (e *Editor) paneOpenRequest(ev *exthost.PaneOpenRequest) {
 	f.shownPath = f.shownTab.path
 	f.bs.state.Viewport = floatViewport{f: f, r: e.renderer}
 	e.panes = append(e.panes, f)
+	e.startConsoleInsert(f)
 	_ = ev.Reply(ext.PaneOpenResult{View: ext.ViewID(f.id)})
 
 	open, dir, c := e.cfg.OpenPane, e.workDir(), e.view
@@ -598,6 +600,10 @@ func (e *Editor) paneComponentFrame(p *floatState) *ui.Frame {
 	bs := p.bs
 	if pv := p.preview.bs; p.preview.focus && pv != nil && slices.Contains(e.bufs, pv) {
 		bs = pv
+	}
+	if p.kind == floatConsole && p.outFocus && slices.Contains(e.bufs, p.out) {
+		// 書き足すテキストと入力の行の組で、フォーカスを出力へ移している（FR-274）。
+		bs = p.out
 	}
 	st := bs.state
 	focused := p.focused

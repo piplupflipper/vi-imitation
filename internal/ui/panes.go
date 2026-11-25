@@ -88,6 +88,16 @@ func (r *Renderer) TextWidth() int { return r.textWidth() }
 // 窓の中のバッファのページ単位のスクロール（command.State.Viewport）を、窓の表示領域につなぐのに使う（internal/editor）。
 func (r *Renderer) FloatRenderer() *Renderer { return r.float }
 
+// ConsoleOutputRenderer は、直前の Render で書き足すテキストと入力の行の組（Float.Console）の出力を描いた子の Renderer を返す。
+// 描いていなければ nil である。出力のバッファのページ単位のスクロールと、書き足しで古い行を捨てたときの見ている行のずらしを、
+// 出力の表示領域につなぐのに使う（internal/editor。FR-274）。
+func (r *Renderer) ConsoleOutputRenderer() *Renderer {
+	if r.float == nil || !r.console {
+		return nil
+	}
+	return r.floatList
+}
+
 // PreviewRenderer は、直前の Render でポップアップのプレビュー（Float.Preview）の中身を描いた子の Renderer を返す。描いていなければ nil である。
 // プレビューにフォーカスを入れたときのページ単位のスクロールを、プレビューの表示領域につなぐのに使う（internal/editor）。
 func (r *Renderer) PreviewRenderer() *Renderer { return r.floatPreview }

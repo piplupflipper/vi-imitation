@@ -22,6 +22,7 @@ func init() {
 		"InheritedSocket":     reflect.ValueOf(server.InheritedSocket),
 		"IsReadOnly":          reflect.ValueOf(server.IsReadOnly),
 		"New":                 reflect.ValueOf(server.New),
+		"NewConsoleLog":       reflect.ValueOf(server.NewConsoleLog),
 		"NewTextLog":          reflect.ValueOf(server.NewTextLog),
 		"ViewClosed":          reflect.ValueOf(server.ViewClosed),
 		"ViewExpanded":        reflect.ValueOf(server.ViewExpanded),

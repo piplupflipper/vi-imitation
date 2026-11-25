@@ -12,7 +12,7 @@ import (
 func init() {
 	Symbols["github.com/piplupflipper/vi-imitation/ext/ext"] = map[string]reflect.Value{
 		// function, constant and variable definitions
-		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.21.0\"", token.STRING, 0)),
+		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.22.0\"", token.STRING, 0)),
 		"ActivationCommand":          reflect.ValueOf(ext.ActivationCommand),
 		"ActivationFileType":         reflect.ValueOf(ext.ActivationFileType),
 		"ActivationMotion":           reflect.ValueOf(ext.ActivationMotion),
@@ -21,7 +21,9 @@ func init() {
 		"ActivationSocket":           reflect.ValueOf(ext.ActivationSocket),
 		"ActivationStartup":          reflect.ValueOf(ext.ActivationStartup),
 		"ActivationTextObject":       reflect.ValueOf(ext.ActivationTextObject),
+		"AppendConsoleHistory":       reflect.ValueOf(ext.AppendConsoleHistory),
 		"AppendViewText":             reflect.ValueOf(ext.AppendViewText),
+		"ConsoleHistoryMax":          reflect.ValueOf(constant.MakeFromLiteral("1000", token.INT, 0)),
 		"EnvExtensionDir":            reflect.ValueOf(constant.MakeFromLiteral("\"VI_IMITATION_EXTENSION_DIR\"", token.STRING, 0)),
 		"EnvMCPSocket":               reflect.ValueOf(constant.MakeFromLiteral("\"VI_IMITATION_MCP_SOCKET\"", token.STRING, 0)),
 		"EnvSocketFDs":               reflect.ValueOf(constant.MakeFromLiteral("\"VI_IMITATION_SOCKET_FDS\"", token.STRING, 0)),
@@ -154,6 +156,7 @@ func init() {
 		"VersionLess":                reflect.ValueOf(ext.VersionLess),
 		"ViewAppendJoinMaxBytes":     reflect.ValueOf(constant.MakeFromLiteral("4194304", token.INT, 0)),
 		"ViewAppendSize":             reflect.ValueOf(ext.ViewAppendSize),
+		"ViewConsole":                reflect.ValueOf(ext.ViewConsole),
 		"ViewFinder":                 reflect.ValueOf(ext.ViewFinder),
 		"ViewInput":                  reflect.ValueOf(ext.ViewInput),
 		"ViewList":                   reflect.ValueOf(ext.ViewList),
