@@ -1,0 +1,6 @@
+## 枠を置けなければ最後の行
+size 40x3 cursor 2,5 bar
+   |x                                       |
+   | NORMAL  [No Name]             1,1  All |
+fx |SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS|
+   |式: y                                   |

@@ -601,6 +601,15 @@ func requestEvent(ctx context.Context, id string, req *rpc.Request, reply rpc.Re
 			return nil, err
 		}
 		return &ChoiceAskRequest{Extension: id, Params: p, replyOnce: ro}, nil
+	case ext.MethodInputAsk:
+		var p ext.InputAskParams
+		if err := decodeRequest(req, &p); err != nil {
+			return nil, err
+		}
+		if err := p.Validate(); err != nil {
+			return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: req.Method + ": " + err.Error()}
+		}
+		return &InputAskRequest{Extension: id, Params: p, replyOnce: ro}, nil
 	case ext.MethodPopupOpen:
 		var p ext.PopupOpenParams
 		if err := decodeRequest(req, &p); err != nil {

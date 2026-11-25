@@ -340,6 +340,9 @@ type Editor struct {
 	// extFromPane は、拡張機能の ID のうち、最後の操作がペインの部品の client のキーだったものから、そのキーを処理した時刻への表である
 	// （noteViewClient、focusAfterPane）。
 	extFromPane map[string]paneMark
+	// extPane は、拡張機能の ID のうち、最後の問い合わせか利用者の操作の知らせがペインの部品の client のキーから始まったものから、
+	// そのペインへの表である。その拡張機能の問い（choice/ask、input/ask）を、頼んだペインに出すのに使う（questionPane。#409）。
+	extPane map[string]*floatState
 	// paneFocus は、ペインで選んでからフォーカスを戻すまでの上限である（focusAfterPane）。0 なら paneFocusWindow を使う。
 	// テストが長くして、負荷で応答が遅れても上限の内に届いたものとして扱わせる（#313）。
 	paneFocus time.Duration
@@ -353,6 +356,9 @@ type Editor struct {
 	endErr error
 	// finished は、Run が戻ると閉じる。Attach が、イベントループの終わりを知るために使う。
 	finished chan struct{}
+	// questionGone は、拡張機能の問いの Done が閉じたことを、イベントループへ知らせる（watchQuestion。容量は 1）。
+	// 拡張機能が問いを取り下げた時点で、問いを画面から消して知らせるために使う（PR #411 の再レビューの推奨 2）。
+	questionGone chan struct{}
 	// diff は、見比べ（diff.go。基本設計 6.8）の状態である。
 	diff *diffState
 	// intro は、起動の案内（intro.go。FR-205〜FR-207）の状態である。
@@ -451,7 +457,8 @@ type Editor struct {
 	// clipPushes は、ホストのクリップボードへ最後に送ったか、送るかを判定したときの command.Registers.Pushes の値である（syncClipboard）。
 	clipPushes uint64
 
-	choices []*exthost.ChoiceAskRequest
+	// choices は、拡張機能の問い（choice/ask と input/ask。FR-275）の 1 本の列である。先頭の 1 つだけを出し、残りは届いた順に待たせる。
+	choices []*extQuestion
 	// choiceDone は、続けて届いた問い（choices が空になるまでの一続き）のうち、答えたか取り下げられた問いの数である。
 	// 表示中の問いが何件目か（choiceDone+1）を出すのに使い、choices が空になったら 0 に戻す（#151）。
 	choiceDone int
@@ -459,6 +466,11 @@ type Editor struct {
 	choiceNote string
 	// choiceDropped は、表示中の問いに対して、答えにならずに捨てたキーと貼り付けの数である。答えるたびに 0 に戻す（#151）。
 	choiceDropped int
+	// withdrawn は、拡張機能が表示中の問いを取り下げた後に、問いに向けて打ち続けたキーを捨てている間の状態である。nil なら捨てていない
+	// （discardAfterWithdrawn。PR #411 のレビューの必須 1）。
+	withdrawn *withdrawnQuestion
+	// withdrawWindow は、テストが替える、取り下げの後のキーを捨てる間である。0 なら withdrawnDiscardWindow を使う。
+	withdrawWindow time.Duration
 	// confirm は、表示中の Ex の確認の問いと、問いを出したバッファである。
 	confirm   *ex.Confirm
 	confirmBS *bufferState
@@ -629,7 +641,9 @@ func New(term Terminal, cfg Config) (*Editor, error) {
 		keyFireCh:     make(chan keyFire),
 		extClient:     map[string]*clientView{},
 		extFromPane:   map[string]paneMark{},
+		extPane:       map[string]*floatState{},
 		finished:      make(chan struct{}),
+		questionGone:  make(chan struct{}, 1),
 		diff:          newDiffState(),
 		outputs:       map[outputKey][]string{},
 		nextID:        1,
@@ -931,6 +945,9 @@ func (e *Editor) Run(ctx context.Context) error {
 			e.handleKeys()
 		case <-e.resizeCh:
 			e.applySize()
+		case <-e.questionGone:
+			// 取り下げた問いを列から外して知らせる（activeChoice の noteWithdrawn）。この後の描画で問いを画面から消す。
+			e.activeChoice()
 		case <-e.intrCh:
 			// <C-c> のキーそのものは列から届くので、ここでは外部のコマンドと再生中の拡張機能の待ちの中断だけをする。
 			e.interruptShell()

@@ -73,6 +73,19 @@ func (s *Server) AskChoice(ctx context.Context, p ext.ChoiceAskParams) (ext.Choi
 	return call[ext.ChoiceAskResult](ctx, s, ext.MethodChoiceAsk, p)
 }
 
+// AskInput は、本体へ input/ask を送り、利用者に 1 行の文字列を聞く（FR-275。拡張機能 API の 0.21.0 から）。
+// 確定した中身（空の文字列を含む）と取り消しは、result の Value と Cancelled で分かる。
+// AskChoice と同じく、本体は利用者の応答を待つので、応答までの時間に上限は無い。打ち切るときは ctx を取り消す。
+// 古い本体は method not found の誤りを返すので、使う拡張機能は initialize の apiVersion を見てから送る。
+// Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
+// 改行を含む Title と Default（ext.InputAskParams.Validate に通らない params）は、送らずに誤りを返す。
+func (s *Server) AskInput(ctx context.Context, p ext.InputAskParams) (ext.InputAskResult, error) {
+	if err := p.Validate(); err != nil {
+		return ext.InputAskResult{}, err
+	}
+	return call[ext.InputAskResult](ctx, s, ext.MethodInputAsk, p)
+}
+
 // SetDiagnostics は、本体へ diagnostic/set を送る。応答は待たない。どこから呼んでもよい。
 func (s *Server) SetDiagnostics(p ext.DiagnosticSetParams) error {
 	return s.notify(ext.MethodDiagnosticSet, p)

@@ -72,6 +72,25 @@ func (r *Renderer) cmdlineTail(full string, width int) string {
 //
 // req: FR-215, FR-216
 func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix rune) (Cursor, bool) {
+	var menu *CompletionMenu
+	if m := f.Completion; m != nil && m.Start >= 0 && m.Start <= len(f.CommandLine) {
+		menu = m
+	}
+	full := string(prefix) + f.CommandLine
+	tail := func(width int) (string, int) {
+		s := r.cmdlineTail(full, width)
+		return s, StringWidth(s, tabStopOr(r.tabStop))
+	}
+	return r.drawLinePopup(g, theme, StringWidth(full, tabStopOr(r.tabStop)), tail, cmdlinePopupTitle(prefix), prefix == '/' || prefix == '?', menu)
+}
+
+// drawLinePopup は、1 行の入力（前置きを含めて fullWidth 列）を、画面の上の中央のポップアップの枠の中に描き、カーソルを返す。
+// fit は、入力の欄の列数を受け取り、欄に描く文字列と、その先頭から数えたカーソルの列を返す（コマンドラインなら末尾の側を残す）。
+// 枠の題は記号 titleSymbol、枠線と題の色は、search なら StyleCommandLinePopupBorderSearch、そうでなければ
+// StyleCommandLinePopupBorder にする。menu が nil でなければ、入力の枠のすぐ下に候補の一覧を描く（FR-217）。
+// コマンドラインと検索の入力（drawCommandLinePopup）と、拡張機能が 1 行の入力を聞く問い（drawInput。FR-275）が使う。
+// 枠を置けなければ、何も描かずに ok を false で返す。
+func (r *Renderer) drawLinePopup(g *Grid, theme Theme, fullWidth int, fit func(width int) (string, int), titleSymbol string, search bool, menu *CompletionMenu) (Cursor, bool) {
 	chars, ok := r.border()
 	if !ok {
 		chars = cmdlinePopupBorder
@@ -82,16 +101,15 @@ func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix r
 	if top < 0 || maxCW < 2 {
 		return Cursor{}, false
 	}
-	full := string(prefix) + f.CommandLine
 	tabStop := tabStopOr(r.tabStop)
-	cw := min(max(cmdlinePopupMinWidth, StringWidth(full, tabStop)+1), maxCW)
+	cw := min(max(cmdlinePopupMinWidth, fullWidth+1), maxCW)
 	iw := cw + 2 // 左右の余白を含めた枠の中の列数
 	outerW := iw + 2
 	left := (r.Width - outerW) / 2
 	x0 := left + 1
 	body := theme.attr(StyleCommandLinePopup)
 	ba := theme.attr(StyleCommandLinePopupBorder)
-	if prefix == '/' || prefix == '?' {
+	if search {
 		ba = theme.attr(StyleCommandLinePopupBorderSearch)
 	}
 	row := top + 1
@@ -100,20 +118,20 @@ func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix r
 		g.set(row, x0+c, blank(body))
 	}
 	r.drawBorderAttr(g, ba, chars, row, x0, 1, iw)
-	if title := r.symbol(cmdlinePopupTitle(prefix)); title != "" {
+	if title := r.symbol(titleSymbol); title != "" {
 		t := " " + title + " "
 		x := x0 + max((iw-StringWidth(t, tabStop))/2, 0)
 		r.drawText(g, top, x, x0+iw, t, ba)
 	}
-	s := r.cmdlineTail(full, cw)
-	end := r.drawTextFrom(g, row, x0+1, x0+1+cw, s, body)
+	s, at := fit(cw)
+	r.drawTextFrom(g, row, x0+1, x0+1+cw, s, body)
 	r.hits.cover(top, left, outerH, outerW)
-	if m := f.Completion; m != nil && m.Start >= 0 && m.Start <= len(f.CommandLine) {
-		r.drawPaletteMenu(g, theme, m, top+outerH, left, outerW, chars)
+	if menu != nil {
+		r.drawPaletteMenu(g, theme, menu, top+outerH, left, outerW, chars)
 	} else {
 		r.pum.valid = false
 	}
-	return Cursor{Row: row, Col: min(end, x0+cw), Shape: CursorBar, Visible: true}, true
+	return Cursor{Row: row, Col: min(x0+1+at, x0+cw), Shape: CursorBar, Visible: true}, true
 }
 
 // drawPaletteMenu は、補完の候補の一覧 m を、top 行目から、left 列から幅 outerW 列（入力の枠と同じ幅）の枠の中に描く（FR-217）。

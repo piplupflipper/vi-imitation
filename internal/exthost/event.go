@@ -13,7 +13,7 @@ import (
 // 値は次の型のポインターのいずれかである。
 //
 //   - 拡張機能からのリクエスト: [EditRequest]、[EditorStateRequest]、[EditorOpenRequest]、[BufferSaveRequest]、
-//     [DiagnosticListRequest]、[ChoiceAskRequest]、[PopupOpenRequest]、[BufferCreateRequest]、[BufferUpdateRequest]、
+//     [DiagnosticListRequest]、[ChoiceAskRequest]、[InputAskRequest]、[PopupOpenRequest]、[BufferCreateRequest]、[BufferUpdateRequest]、
 //     [BufferDisposeRequest]、[DiffStartRequest]、[PaneOpenRequest]、[EditorListRequest]、[EditorExecuteRequest]、
 //     [OptionSetRequest]、[OptionGetRequest]
 //   - 拡張機能からの通知: [DecorationSet]、[MessageShow]、[DiagnosticSet]、[SignSet]、[PopupShow]、[OutputAppend]、
@@ -36,7 +36,7 @@ import (
 // Host は、異常と判断した拡張機能について、接続を閉じてから [StateChange] を積む。
 // このため、StateChange を受け取った時点で、その拡張機能から取っておいたリクエストの Done はすべて閉じている。
 // これで、異常と判断した拡張機能の編集を後から適用しない（まだ渡していないイベントは Host が捨てる）。
-// 表示中の choice/ask も、Done が閉じたら取り下げる。
+// 表示中の choice/ask と input/ask も、Done が閉じたら取り下げる。
 type Event interface {
 	isEvent()
 }
@@ -161,6 +161,22 @@ type ChoiceAskRequest struct {
 
 // Reply は、拡張機能へ choice/ask の結果を返す。
 func (r *ChoiceAskRequest) Reply(result ext.ChoiceAskResult) error {
+	return r.reply(result, nil)
+}
+
+// InputAskRequest は、拡張機能からの input/ask のリクエストである（基本設計 1.4 の「1 行の入力を聞くリクエスト」。FR-275）。
+// Params は ext.InputAskParams.Validate を通ったものである（通らなければ Host が invalid params で断り、イベントにしない）。
+// [ChoiceAskRequest] と同じく、利用者の応答を待つので、キー入力ごとの問い合わせの期限を適用しない。
+// イベントループは choice/ask と同じ 1 本の列に並べて一度に 1 つの問いだけを表示し、問いを出した拡張機能が再起動した
+// （Done が閉じた）場合は、その問いを取り下げる。
+type InputAskRequest struct {
+	Extension string
+	Params    ext.InputAskParams
+	replyOnce
+}
+
+// Reply は、拡張機能へ input/ask の結果を返す。
+func (r *InputAskRequest) Reply(result ext.InputAskResult) error {
 	return r.reply(result, nil)
 }
 
@@ -495,6 +511,7 @@ func (*EditorOpenRequest) isEvent()     {}
 func (*BufferSaveRequest) isEvent()     {}
 func (*DiagnosticListRequest) isEvent() {}
 func (*ChoiceAskRequest) isEvent()      {}
+func (*InputAskRequest) isEvent()       {}
 func (*DecorationSet) isEvent()         {}
 func (*MessageShow) isEvent()           {}
 func (*DiagnosticSet) isEvent()         {}

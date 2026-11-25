@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/editcmd"
 	"github.com/piplupflipper/vi-imitation/internal/ui"
 )
@@ -498,7 +497,7 @@ func (e *Editor) cancelQuestions() {
 	}
 	for _, ch := range e.choices {
 		if !closed(ch) {
-			_ = ch.Reply(ext.ChoiceAskResult{Cancelled: true}) // 拡張機能が先に取り下げていれば届かない
+			ch.cancel() // 拡張機能が先に取り下げていれば届かない
 		}
 	}
 	e.choices = nil

@@ -33,6 +33,8 @@ var noMessage = ui.Message{}
 
 func infoMessage(text string) ui.Message { return ui.Message{Text: text, Level: ui.MessageInfo} }
 
+func warnMessage(text string) ui.Message { return ui.Message{Text: text, Level: ui.MessageWarning} }
+
 // syncChanges は、changes のうち、まだ exthost へ知らせていないものを知らせる（FR-16）。
 func (e *Editor) syncChanges(bs *bufferState, changes []buffer.Change) {
 	for _, ch := range changes {

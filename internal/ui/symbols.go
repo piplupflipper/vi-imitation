@@ -68,6 +68,9 @@ const (
 	SymbolCommandLineTitleCommand        = "commandLine.title.command"
 	SymbolCommandLineTitleSearchForward  = "commandLine.title.searchForward"
 	SymbolCommandLineTitleSearchBackward = "commandLine.title.searchBackward"
+	// SymbolCommandLineTitleInput は、拡張機能が 1 行の入力を聞く問い（Frame.Input。input/ask。FR-275）を画面の上のポップアップに
+	// 出すときの、入力の枠の題である。空なら題を出さない。
+	SymbolCommandLineTitleInput = "commandLine.title.input"
 )
 
 // borderChars は、SymbolPopupBorder の文字の数である。
@@ -108,6 +111,7 @@ var defaultSymbols = Symbols{
 	SymbolCommandLineTitleCommand:        "Cmdline",
 	SymbolCommandLineTitleSearchForward:  "Search forward",
 	SymbolCommandLineTitleSearchBackward: "Search backward",
+	SymbolCommandLineTitleInput:          "Input",
 }
 
 // DefaultSymbols は、既定の記号の対応を返す。返す対応は呼び出しごとに作り直す。
@@ -129,7 +133,8 @@ func SymbolNames() []string {
 //   - スクロールバーの印（"scrollbar." で始まる名前。FR-187）: 空か、表示幅が 1 の文字 1 つ（右端の 1 列のセルに描くため）。
 //     名前は、既定の表に無くても IsScrollbarMarkName の形なら受け付ける（後に拡張機能が足す種類の記号を書けるようにするため）
 //   - それ以外（SymbolReadOnly、SymbolModified、SymbolShowBreak、SymbolProgressRunning、SymbolProgressDone、SymbolProgressFailed、
-//     SymbolCommandLineTitleCommand、SymbolCommandLineTitleSearchForward、SymbolCommandLineTitleSearchBackward）: 任意の文字列。
+//     SymbolCommandLineTitleCommand、SymbolCommandLineTitleSearchForward、SymbolCommandLineTitleSearchBackward、
+//     SymbolCommandLineTitleInput）: 任意の文字列。
 //     空ならその部品（続きの行の記号、進み具合の印、コマンドラインの枠の題）を出さない
 //
 // どれも、タブと制御文字を含めない（描くと ^I の形になり、幅が変わるため）。

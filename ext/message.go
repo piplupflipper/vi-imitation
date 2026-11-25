@@ -91,6 +91,11 @@ const (
 	// params は ChoiceAskParams、result は ChoiceAskResult。
 	// 利用者の応答を待つので、本体はキー入力ごとの問い合わせの期限（基本設計 5.4）を適用しない。
 	MethodChoiceAsk = "choice/ask"
+	// MethodInputAsk は、拡張機能から本体へのリクエストである（API 0.21.0 で足した。FR-275）。
+	// params は InputAskParams、result は InputAskResult。
+	// choice/ask と同じく利用者の応答を待つので、本体はキー入力ごとの問い合わせの期限（基本設計 5.4）を適用しない。
+	// 古い本体は method not found で応答する。
+	MethodInputAsk = "input/ask"
 )
 
 // InitializeParams は、initialize の params である。
@@ -766,5 +771,40 @@ type ChoiceAskResult struct {
 	// Selected は、選んだ選択肢の ID である。取り消した場合は空。
 	Selected string `json:"selected,omitempty"`
 	// Cancelled は、利用者が選ばずに取り消したかどうかである。
+	Cancelled bool `json:"cancelled,omitempty"`
+}
+
+// InputAskParams は、input/ask の params である（基本設計 1.4 の「1 行の入力を聞くリクエスト」。FR-275。API 0.21.0 で足した）。
+// 本体は、問いを出した client のコマンドラインの行（設定 commandLine.popup が真なら画面の上のポップアップ）に、Title を前置きにして
+// Default を入力の初めの中身として出し、利用者に 1 行を編集させる。
+// choice/ask と同じ 1 本の列に並べ、一度に 1 つの問いだけを出し、表示中に届いた問いは順に待たせる。
+// 問いを出した拡張機能が再起動した場合、その拡張機能の問いを取り下げる。
+// 答えのキーはマクロに記録しないので、再生中（sync が true）の操作の中では送らない（choice/ask と同じ取り決め）。
+type InputAskParams struct {
+	// Title は、問いの文である。入力の前置きとして出す（"式: " のように、区切りの空白も含めて渡す）。改行を含めない。
+	Title string `json:"title"`
+	// Default は、入力の初めの中身（既定値）である。省ける。改行を含めない。
+	Default string `json:"default,omitempty"`
+}
+
+// Validate は、params が本体の受け付ける形かを確かめる。Title と Default は改行を含めない（1 行に出すため）。
+// 本体は、通らない input/ask を JSON-RPC の誤り（invalid params）で断る。
+func (p *InputAskParams) Validate() error {
+	if strings.ContainsAny(p.Title, "\r\n") {
+		return errors.New("title は改行を含められない")
+	}
+	if strings.ContainsAny(p.Default, "\r\n") {
+		return errors.New("default は改行を含められない")
+	}
+	return nil
+}
+
+// InputAskResult は、input/ask の result である。
+// 確定（<CR>）と取り消し（<Esc> か <C-c>）を Cancelled で分ける。空の文字列を確定したときは、Value が空で Cancelled が false である。
+// choice/ask と同じく、取り消しを JSON-RPC の誤りにしない。
+type InputAskResult struct {
+	// Value は、確定した中身である。空の文字列もある。取り消したら空である。
+	Value string `json:"value"`
+	// Cancelled は、利用者が確定せずに取り消したかどうかである。
 	Cancelled bool `json:"cancelled,omitempty"`
 }

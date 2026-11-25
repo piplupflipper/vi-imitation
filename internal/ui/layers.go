@@ -15,9 +15,10 @@ package ui
 //	5    浮かべる窓（Frame.List、Frame.Float とそのプレビュー）             drawList、drawFloat
 //	6    ステータス行                                                   drawStatus
 //	7    出力の欄                                                       drawOutput
-//	8    コマンドラインの行（メッセージ、上へ広げた複数の行のメッセージ、選択肢の問い） drawCommandLine
+//	8    コマンドラインの行（メッセージ、上へ広げた複数の行のメッセージ、選択肢の問い、1 行の入力の問い） drawCommandLine
 //	8.1  補完の候補の一覧（Frame.Completion。FR-197。コマンドラインの行の真上）   drawCommandLine の中の drawCompletion
 //	8.2  画面の上のポップアップのコマンドラインの枠（Frame.CommandLinePopup。FR-215、FR-216） drawCommandLine の中の drawCommandLinePopup
+//	     （1 行の入力の問い（Frame.Input。FR-275）も、同じ枠に描く）                  drawCommandLine の中の drawInput
 //	8.3  その下の補完の候補の一覧の枠（FR-217）                                 drawCommandLinePopup の中の drawPaletteMenu
 //	9    タブの行（画面の一番上の 1 行。ほかの部品を 1 行下へずらす）        renderWithTabLine
 //

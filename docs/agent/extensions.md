@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.20.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.21.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -341,6 +341,7 @@ params と result の型の項目は、`vi-imitation --docs extension-types <型
 - `editor/list`: リクエスト。params は `EditorListParams`、result は `EditorListResult`。
 - `editor/open`: リクエスト。params は `EditorOpenParams`、result は `EditorOpenResult`。
 - `editor/state`: リクエスト。params は `EditorStateParams`、result は `EditorStateResult`。
+- `input/ask`: リクエスト。params は `InputAskParams`、result は `InputAskResult`。FR-275）。choice/ask と同じく利用者の応答を待つので、本体はキー入力ごとの問い合わせの期限を適用しない。古い本体は method not found で応答する。
 - `message/show`: 通知。params は `MessageShowParams`。
 - `option/get`: リクエスト。params は `OptionGetParams`、result は `OptionGetResult`。本体の設定の項目の今の値（利用者が :set で変えた値、拡張機能が入れた値、初めの値の段を重ねた、本体が使う値）を読む。古い本体（0.14.0 まで）は method not found で応答する。
 - `option/set`: リクエスト。params は `OptionSetParams`、result は `OptionSetResult`。本体の設定の項目の値を、拡張機能から変える。項目の名前は、設定ファイルと :option.set と同じ正規の名前（"indent.width" など）で書く。値は項目の型の JSON の値（真偽は true か false、整数は 10 進の整数、文字列は JSON の文字列）で書き、null はその項目の値を取り下げる。本体は、表に無い名前、範囲の合わない項目（下の Buffer）、ファイルから判定して決める項目（filetype）、型の違う値、範囲の外の値を、:option.set と同じ検査で確かめ、1 つでも通らなければどの値も入れずに、code が CodeInvalidParams の誤りで応答する。# バッファごとの項目Buffer を書くと、そのバッファの範囲がバッファごとの項目を変える。値はバッファの初めの値の段の最後の段（.editorconfig の後）に入り、利用者が :set と :option.set で変えた値には勝たない。拡張機能ごとに値を分けて持ち、同じ項目に複数の拡張機能が値を入れたら、宣言ファイルを先に読んだ拡張機能の値が勝つ（本体の操作の提供者の選び方と同じ順）。後から届いた順にしないのは、拡張機能の起動の速さで値が変わらないようにするためである。値は Options に書いた項目だけを変え（書かなかった項目は前に入れた値のまま）、null で取り下げる。ファイルの種類が変わっても、本体は値を捨てない（buffer/open を新しいファイルの種類で送り直すので、拡張機能が送り直す）。送り直した値に、その種類を OptionSetParams.FileType で付けると、本体のファイルの種類ごとの段と同じく :set の値を隠す。# エディタ全体の項目Buffer を省く（0）と、範囲がエディタ全体の項目を変える。値は設定ファイルの値に勝ち、利用者が :set と :option.set で変えた値には勝たない。複数の拡張機能の勝ち負けは、バッファごとの項目と同じである。# 拡張機能が止まったとき拡張機能が異常で終わった、無効になった、:ext sync で止めたときは、本体はその拡張機能が入れた値をすべて取り下げる（他の表示のデータと同じ）。起動し直した拡張機能は、buffer/open を受けて値を送り直す。古い本体（0.14.0 まで）は method not found で応答する。

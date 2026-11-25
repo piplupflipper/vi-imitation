@@ -120,11 +120,9 @@ func (e *Editor) handleEvent(ev exthost.Event) {
 	case *exthost.DiagnosticListRequest:
 		_ = ev.Reply(e.diagnosticList(ev.Params))
 	case *exthost.ChoiceAskRequest:
-		if e.asker == nil && !e.asking() && e.activeChoice() == nil {
-			// 問いは、その拡張機能へ問い合わせを始めた client に出す（基本設計 1.2）。
-			e.asker = e.extView(ev.Extension)
-		}
-		e.choices = append(e.choices, ev)
+		e.enqueueQuestion(ev.Extension, &extQuestion{choice: ev})
+	case *exthost.InputAskRequest:
+		e.enqueueQuestion(ev.Extension, &extQuestion{input: ev, text: ev.Params.Default})
 	default:
 		e.log.Warn("未知のイベント", "type", fmt.Sprintf("%T", ev))
 	}
@@ -494,12 +492,20 @@ func (e *Editor) diagnosticList(p ext.DiagnosticListParams) ext.DiagnosticListRe
 	return res
 }
 
-// activeChoice は、表示中の choice/ask を返す。取り下げられた問い（Done が閉じた）は、待たせている問いからも捨て、
-// 答えた問いと同じく choiceDone に数える。
-func (e *Editor) activeChoice() *exthost.ChoiceAskRequest {
+// activeChoice は、表示中の拡張機能の問い（choice/ask か input/ask）を返す。取り下げられた問い（Done が閉じた）は、
+// 待たせている問いからも捨て、答えた問いと同じく choiceDone に数える。
+// 表示中の問い（列の先頭）を取り下げたなら、そのことを知らせ、問いに向けて打ち続けるキーを捨て始める（noteWithdrawn）。
+func (e *Editor) activeChoice() *extQuestion {
 	n := len(e.choices)
-	e.choices = slices.DeleteFunc(e.choices, func(c *exthost.ChoiceAskRequest) bool { return closed(c) })
+	var head *extQuestion
+	if n > 0 && closed(e.choices[0]) {
+		head = e.choices[0]
+	}
+	e.choices = slices.DeleteFunc(e.choices, func(c *extQuestion) bool { return closed(c) })
 	e.choiceDone += n - len(e.choices)
+	if head != nil {
+		e.noteWithdrawn(head)
+	}
 	if len(e.choices) == 0 {
 		return nil
 	}
@@ -516,28 +522,43 @@ func (e *Editor) endChoices() {
 	e.choiceDone, e.choiceNote, e.choiceDropped = 0, "", 0
 }
 
-// choiceKey は、表示中の問いへのキーを処理する。1〜9 で選び、<Esc> で取り消す。
-// 答えを受け付けたことはメッセージの行に 1 行で出し、次の問いを出すときはその上の知らせの行にも出す（#151）。
-// 他のキーは、Vim 9.1 の confirm() の問いと同じく答えにせずに捨てるが、Vim と違って捨てた数を問いの上に出す（dropChoiceInput）。
+// choiceKey は、表示中の問いへのキーを処理する。選択肢の問いは 1〜9 で選び、<Esc> で取り消す。
+// 1 行の入力の問いは inputKey が扱う。
+// 答えを受け付けたことはメッセージの行に 1 行で出し、次の問いを出すときはその上の知らせの行にも出す（#151。answered）。
+// 選択肢の問いの他のキーは、Vim 9.1 の confirm() の問いと同じく答えにせずに捨てるが、Vim と違って捨てた数を問いの上に出す
+// （dropChoiceInput）。
 func (e *Editor) choiceKey(k editcmd.Key) {
-	c := e.choices[0]
-	which := "問い"
-	if e.choiceDone > 0 || len(e.choices) > 1 {
-		which = fmt.Sprintf("問い %d ", e.choiceDone+1)
+	q := e.choices[0]
+	if q.input != nil {
+		e.inputKey(k)
+		return
 	}
-	var ack string
+	c := q.choice
+	which := e.questionName()
 	switch {
 	case k == editcmd.Esc:
 		_ = c.Reply(ext.ChoiceAskResult{Cancelled: true})
-		ack = which + "を取り消しました"
+		e.answered(which + "を取り消しました")
 	case k.Plain() && k.Rune >= '1' && k.Rune <= '9' && int(k.Rune-'1') < len(c.Params.Choices):
 		ch := c.Params.Choices[k.Rune-'1']
 		_ = c.Reply(ext.ChoiceAskResult{Selected: ch.ID})
-		ack = fmt.Sprintf("%sに「%s」と答えました", which, strings.Join(strings.Fields(ch.Label), " "))
+		e.answered(fmt.Sprintf("%sに「%s」と答えました", which, strings.Join(strings.Fields(ch.Label), " ")))
 	default:
 		e.dropChoiceInput()
-		return
 	}
+}
+
+// questionName は、表示中の問いを答えの知らせで指す名前（"問い" か、一続きの問いなら "問い 2 "）を返す（#151）。
+func (e *Editor) questionName() string {
+	if e.choiceDone > 0 || len(e.choices) > 1 {
+		return fmt.Sprintf("問い %d ", e.choiceDone+1)
+	}
+	return "問い"
+}
+
+// answered は、表示中の問いに答えた（取り消した）後に、問いを列から外し、答えの知らせ ack をメッセージの行と、
+// 次の問いの上の知らせの行に出す（#151）。
+func (e *Editor) answered(ack string) {
 	e.choices = e.choices[1:]
 	e.choiceDone++
 	e.choiceDropped = 0
@@ -558,7 +579,7 @@ const maxChoiceKeys = 9
 // 一続きの問いの 2 件目以降か、後に待たせている問いがあれば何件目かを出し、前の問いへの答え、待たせている問いの数、
 // 捨てた入力の数を知らせの行に添える（#151）。
 func (e *Editor) uiChoice() *ui.Choice {
-	c := e.choices[0]
+	c := e.choices[0].choice
 	chs := c.Params.Choices
 	n := min(len(chs), maxChoiceKeys)
 	labels := make([]string, n)
@@ -566,9 +587,26 @@ func (e *Editor) uiChoice() *ui.Choice {
 		labels[i] = ch.Label
 	}
 	uc := &ui.Choice{Title: c.Params.Title, Labels: labels, Omitted: len(chs) - n}
-	if e.choiceDone > 0 || len(e.choices) > 1 {
-		uc.Index = e.choiceDone + 1
+	uc.Index = e.questionIndex()
+	notes := e.questionNotes()
+	if e.choiceDropped > 0 {
+		notes = append(notes, fmt.Sprintf("番号と <Esc> 以外の入力は捨てます（捨てた数: %d）", e.choiceDropped))
 	}
+	uc.Note = strings.Join(notes, "\n")
+	return uc
+}
+
+// questionIndex は、表示中の問いが一続きの問いの何件目か（1 から）を返す。一続きの問いの 2 件目以降でなく、
+// 後に待たせている問いも無ければ 0（何件目かを出さない）である（#151）。
+func (e *Editor) questionIndex() int {
+	if e.choiceDone > 0 || len(e.choices) > 1 {
+		return e.choiceDone + 1
+	}
+	return 0
+}
+
+// questionNotes は、表示中の問いの上に出す知らせ（前の問いへの答えと、待たせている問いの数）の行を返す（#151）。
+func (e *Editor) questionNotes() []string {
 	var notes []string
 	if e.choiceNote != "" {
 		notes = append(notes, e.choiceNote)
@@ -576,9 +614,5 @@ func (e *Editor) uiChoice() *ui.Choice {
 	if w := len(e.choices) - 1; w > 0 {
 		notes = append(notes, fmt.Sprintf("この後に %d 件の問いが待っています", w))
 	}
-	if e.choiceDropped > 0 {
-		notes = append(notes, fmt.Sprintf("番号と <Esc> 以外の入力は捨てます（捨てた数: %d）", e.choiceDropped))
-	}
-	uc.Note = strings.Join(notes, "\n")
-	return uc
+	return notes
 }

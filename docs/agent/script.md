@@ -58,7 +58,7 @@ func main() {
 - `ErrChildUnsupported`: 切り替えの部品の子（空でない child）へ Rebind したことを表す。
   子だけを置き換える view/updateは、切り替えの部品を足すときに足す。
 - `ErrEditInHandler`: Server が呼んだハンドラーかフックの中から、その ctx で、本体の応答を待つ関数を呼んだことを表す。
-  対象は Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice、WaitBuffer である。
+  対象は Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice、AskInput、WaitBuffer である。
   待つと詰まるので、これらはリクエストを送らずにこの誤りを返す。
 - `ErrInvalidPosition`: 位置がバッファの外にあるか、UTF-8 の文字の途中を指すことを表す。
 - `ErrInvalidRange`: 範囲の終わりが始まりより前にあることを表す。
@@ -244,6 +244,12 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
 - `func (s *Server) AskChoice(ctx context.Context, p ext.ChoiceAskParams) (ext.ChoiceAskResult, error)`: 本体へ choice/ask を送り、利用者に選択肢から 1 つ選ばせる。
   本体は利用者の応答を待つので、応答までの時間に上限は無い。打ち切るときは ctx を取り消す。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
+- `func (s *Server) AskInput(ctx context.Context, p ext.InputAskParams) (ext.InputAskResult, error)`: 本体へ input/ask を送り、利用者に 1 行の文字列を聞く（拡張機能 API の 0.21.0 から）。
+  確定した中身（空の文字列を含む）と取り消しは、result の Value と Cancelled で分かる。
+  AskChoice と同じく、本体は利用者の応答を待つので、応答までの時間に上限は無い。打ち切るときは ctx を取り消す。
+  古い本体は method not found の誤りを返すので、使う拡張機能は initialize の apiVersion を見てから送る。
+  Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
+  改行を含む Title と Default（ext.InputAskParams.Validate に通らない params）は、送らずに誤りを返す。
 - `func (s *Server) BufferWillSave(h BufferWillSaveHandler)`: 保存の直前の buffer/willSave に答えるハンドラーを登録する。
   本体が buffer/willSave を送るのは、宣言ファイルの saveHook が true の拡張機能だけである。
   2 回登録するか（BufferWillSaveAsync との重複を含む）、Serve の後に呼ぶと panic する。

@@ -12,7 +12,7 @@ import (
 func init() {
 	Symbols["github.com/piplupflipper/vi-imitation/ext/ext"] = map[string]reflect.Value{
 		// function, constant and variable definitions
-		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.20.0\"", token.STRING, 0)),
+		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.21.0\"", token.STRING, 0)),
 		"ActivationCommand":          reflect.ValueOf(ext.ActivationCommand),
 		"ActivationFileType":         reflect.ValueOf(ext.ActivationFileType),
 		"ActivationMotion":           reflect.ValueOf(ext.ActivationMotion),
@@ -67,6 +67,7 @@ func init() {
 		"MethodEditorOpen":           reflect.ValueOf(constant.MakeFromLiteral("\"editor/open\"", token.STRING, 0)),
 		"MethodEditorState":          reflect.ValueOf(constant.MakeFromLiteral("\"editor/state\"", token.STRING, 0)),
 		"MethodInitialize":           reflect.ValueOf(constant.MakeFromLiteral("\"initialize\"", token.STRING, 0)),
+		"MethodInputAsk":             reflect.ValueOf(constant.MakeFromLiteral("\"input/ask\"", token.STRING, 0)),
 		"MethodInputChange":          reflect.ValueOf(constant.MakeFromLiteral("\"input/change\"", token.STRING, 0)),
 		"MethodMessageShow":          reflect.ValueOf(constant.MakeFromLiteral("\"message/show\"", token.STRING, 0)),
 		"MethodMotionResolve":        reflect.ValueOf(constant.MakeFromLiteral("\"motion/resolve\"", token.STRING, 0)),
@@ -221,6 +222,8 @@ func init() {
 		"EditorStateResult":       reflect.ValueOf((*ext.EditorStateResult)(nil)),
 		"InitializeParams":        reflect.ValueOf((*ext.InitializeParams)(nil)),
 		"InitializeResult":        reflect.ValueOf((*ext.InitializeResult)(nil)),
+		"InputAskParams":          reflect.ValueOf((*ext.InputAskParams)(nil)),
+		"InputAskResult":          reflect.ValueOf((*ext.InputAskResult)(nil)),
 		"InputChangeParams":       reflect.ValueOf((*ext.InputChangeParams)(nil)),
 		"ListCommand":             reflect.ValueOf((*ext.ListCommand)(nil)),
 		"ListHelpWord":            reflect.ValueOf((*ext.ListHelpWord)(nil)),

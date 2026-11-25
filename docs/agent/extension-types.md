@@ -981,6 +981,27 @@ editor/state で返す、開いているバッファ 1 つの情報である。
   複数のバッファへの編集を、全部か何もしないかで適用する拡張機能（LSP の名前の変更）が、前もって確かめるのに使う。
 - `changedOnDisk`（`bool`、省ける）: 読み込んだ後にファイルが外で変わった（buffer/save が断られる）かどうかである。
 
+#### `InputAskParams`
+
+input/ask の params である（API 0.21.0 で足した）。
+本体は、問いを出した client のコマンドラインの行（設定 commandLine.popup が真なら画面の上のポップアップ）に、Title を前置きにして
+Default を入力の初めの中身として出し、利用者に 1 行を編集させる。
+choice/ask と同じ 1 本の列に並べ、一度に 1 つの問いだけを出し、表示中に届いた問いは順に待たせる。
+問いを出した拡張機能が再起動した場合、その拡張機能の問いを取り下げる。
+答えのキーはマクロに記録しないので、再生中（sync が true）の操作の中では送らない（choice/ask と同じ取り決め）。
+
+- `title`（`string`）: 問いの文である。入力の前置きとして出す（"式: " のように、区切りの空白も含めて渡す）。改行を含めない。
+- `default`（`string`、省ける）: 入力の初めの中身（既定値）である。省ける。改行を含めない。
+
+#### `InputAskResult`
+
+input/ask の result である。
+確定（<CR>）と取り消し（<Esc> か <C-c>）を Cancelled で分ける。空の文字列を確定したときは、Value が空で Cancelled が false である。
+choice/ask と同じく、取り消しを JSON-RPC の誤りにしない。
+
+- `value`（`string`）: 確定した中身である。空の文字列もある。取り消したら空である。
+- `cancelled`（`bool`、省ける）: 利用者が確定せずに取り消したかどうかである。
+
 #### `MessageShowParams`
 
 message/show の params である。
