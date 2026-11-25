@@ -94,11 +94,27 @@ type TextLog struct {
 	replace bool
 	// detached は、Open が open を呼んでいる間に Detach を呼んだことを表す。Open は、open が戻っても結びつけない。
 	detached bool
+	// console は、写しを書き足すテキストと入力の行の組（ext.ViewConsole）の出力として扱うことを表す（NewConsoleLog）。
+	// prompt は、その部品の入力の行の前置きである。
+	console bool
+	prompt  string
 }
 
 // NewTextLog は、s の上の空の写しを作る。行数の上限は本体と同じ値（ext.ViewTextMaxLines）である。
 func NewTextLog(s *Server) *TextLog {
 	return &TextLog{s: s, lines: []string{""}, spans: [][]ext.ViewSpan{nil}}
+}
+
+// NewConsoleLog は、書き足すテキストと入力の行の組（ext.ViewConsole。FR-274）の出力の写しを作る。
+// NewTextLog と同じく使い、Open が open に渡す部品と、Open と Rebind が送る view/update の部品を、出力を写しの中身にし、
+// 入力の行の前置きを prompt にした console の部品にする（view/update が前置きを空にしないため）。
+// 入力の行の最初の中身（ext.ViewComponent.Input）と入力の履歴（History）は、Open の open の中で、受け取った部品に入れてから開く。
+// 履歴は、view/select で受けた中身を ext.AppendConsoleHistory で積んでおいたものを渡すと、閉じる前と同じになる。
+// prompt が改行を含むと、開く部品が ext.ViewComponent.Validate を通らない。
+func NewConsoleLog(s *Server, prompt string) *TextLog {
+	t := NewTextLog(s)
+	t.console, t.prompt = true, prompt
+	return t
 }
 
 // Append は、text を写しに足す。style は 7.1 の色の名前で、空でなければ text の全体にその色を付ける。
@@ -171,9 +187,12 @@ func (t *TextLog) sendLocked(p ext.ViewAppendParams) error {
 	return t.s.notify(ext.MethodViewAppend, p)
 }
 
-// component は、写しの中身をテキストの部品にする。t.mu を持って呼ぶ。
+// component は、写しの中身をテキストの部品（NewConsoleLog の写しなら、出力を中身にした console の部品）にする。t.mu を持って呼ぶ。
 func (t *TextLog) component() ext.ViewComponent {
 	c := ext.ViewComponent{Kind: ext.ViewText, Text: ext.JoinViewText(t.lines, t.eol), Tail: true}
+	if t.console {
+		c.Kind, c.Prompt = ext.ViewConsole, t.prompt
+	}
 	for i, ss := range t.spans {
 		for _, s := range ss {
 			c.Highlights = append(c.Highlights, ext.Decoration{
