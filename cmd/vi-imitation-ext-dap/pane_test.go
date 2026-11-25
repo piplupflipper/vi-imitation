@@ -232,6 +232,9 @@ func TestPaneScopes(t *testing.T) {
 	if b := find(c.Items, "Locals\x1fbig"); b.Children[2999].Label != "[2999]: int = 2999" {
 		t.Errorf("big[2999] = %q", b.Children[2999].Label)
 	}
+	// [[ で、カーソルを親の項目へ移す（最後に作った木を cursor 付きで送り直す）。
+	h.key(p.id, secScopes, keyScopesParent, "Locals\x1fbig\x1f[5]")
+	h.waitUpdate(secScopes, func(c ext.ViewComponent) bool { return c.Cursor == "Locals\x1fbig" }, nil)
 	// ステップ実行で動いている間は実行中にし、止まり直すと新しい値を出す。開いた変数は開いたまま読み直す。
 	h.mustExec(cmdNext, 0)
 	h.waitLabel(secScopes, "実行中")
