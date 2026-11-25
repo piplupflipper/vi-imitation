@@ -63,6 +63,14 @@ func openSwitcher(t *testing.T, h *harness, kind string) uint64 {
 	return view
 }
 
+// seen は、substr を含むメッセージがメッセージの履歴にあるかを、イベントループの goroutine で読んで返す。
+func (h *harness) seen(substr string) (ok bool) {
+	h.e.do(func() {
+		ok = slices.ContainsFunc(h.e.msgHistory, func(m ui.Message) bool { return strings.Contains(m.Text, substr) })
+	})
+	return ok
+}
+
 func startSwitcher(t *testing.T) *harness {
 	t.Helper()
 	term := newFakeTerm()
@@ -184,7 +192,7 @@ func TestSwitcherChildState(t *testing.T) {
 	}
 	h.keys("d<Esc>")
 	h.settle()
-	if slices.ContainsFunc(h.e.msgHistory, func(m ui.Message) bool { return strings.Contains(m.Text, "fake.del child=tree") }) {
+	if h.seen("fake.del child=tree") {
 		t.Error("木の子で d が view/key を送った")
 	}
 	h.keys("L")
@@ -201,7 +209,7 @@ func TestSwitcherChildState(t *testing.T) {
 	if si, _ := h.switcher(); si.sel != "tree" {
 		t.Fatalf("<S-Tab> の後: %+v", si)
 	}
-	if slices.ContainsFunc(h.e.msgHistory, func(m ui.Message) bool { return strings.Contains(m.Text, "key=fake.next") }) {
+	if h.seen("key=fake.next") {
 		t.Error("子を切り替える action のキーが view/key を送った")
 	}
 
@@ -306,7 +314,7 @@ func TestSwitcherOneChildAndClose(t *testing.T) {
 	if si, _ := h.switcher(); si.sel != "tree" {
 		t.Fatalf("子が 1 つ: %+v", si)
 	}
-	if slices.ContainsFunc(h.e.msgHistory, func(m ui.Message) bool { return strings.Contains(m.Text, "kind=6") }) {
+	if h.seen("kind=6") {
 		t.Error("子が 1 つの部品で view/childSelect を送った")
 	}
 	h.keys("<Esc>")
