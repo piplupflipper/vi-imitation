@@ -175,5 +175,36 @@ func (r *Renderer) drawConsole(g *Grid, theme Theme, fl *Float) (Cursor, bool) {
 	cur := inner.Cursor
 	cur.Row += inRow
 	cur.Col += x0 + 1 + promptW
+	if con.Menu != nil {
+		r.drawConsoleMenu(g, theme, con.Menu, fl.View, cur.Col, inRow, top, x0, x0+boxW)
+	}
 	return cur, true
+}
+
+// drawConsoleMenu は、書き足すテキストと入力の行の組の入力の行の補完の候補の一覧 m（Console.Menu。FR-297）を、入力の行（inRow 行目）の
+// 真上に描く。項目は、入力の行の m.Start の文字の列から並べる（カーソルの列 curCol から、m.Start からカーソルまでの表示幅を引いた列）。
+// 一覧は、窓の中（top 行目から inRow 行目の手前までの行と、left 列から right 列の手前までの列）に収め、出力、見出しの行、
+// 切り替えの部品の見出しの行の上に重ねる。描き方（色、選んでいる項目、スクロールバー、種類の欄）はコマンドラインの一覧と同じである。
+func (r *Renderer) drawConsoleMenu(g *Grid, theme Theme, m *CompletionMenu, view *Frame, curCol, inRow, top, left, right int) {
+	col := curCol
+	if view != nil && view.Text != nil && view.Text.LineCount() > 0 {
+		line, at := view.Text.Line(0), view.Cursor.Byte
+		if start := m.Start; start >= 0 && start <= at && at <= len(line) {
+			col -= StringWidth(line[start:at], tabStopOr(view.TabStop))
+		}
+	}
+	p, ok := r.placeCompletionIn(m, inRow, col, top, left, right)
+	if !ok {
+		r.pum.valid = false
+		return
+	}
+	l := p.col
+	if p.col > left {
+		l = p.col - 1 // 項目の左の空白
+	}
+	rt := p.col + p.width
+	if p.scrollbar {
+		rt++
+	}
+	r.drawCompletionRows(g, theme, m, p, l, rt, theme.attr(StylePopup))
 }

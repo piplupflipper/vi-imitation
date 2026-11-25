@@ -49,6 +49,10 @@ type consoleState struct {
 	// histEdits は、たどっている間に直した中身を、履歴の位置ごとに覚えたものである。len(history) の位置は打ちかけの中身である。
 	// 送るまで保ち、送ったら捨てる（シェルの履歴と同じ。PR #415 のレビューの推奨 3）。履歴そのものは書き換えない。
 	histEdits map[int]string
+	// complete は、入力の行の補完を持ち主の拡張機能が引き受けること（ext.ViewComponent.Complete。FR-297）を表す。開いたときに決める。
+	// comp は、その補完の状態である（consolecomplete.go）。
+	complete bool
+	comp     consoleCompletion
 }
 
 // consoleInputName と consoleOutputName は、書き足すテキストと入力の行の組の入力の行と出力のバッファの名前（ステータス行に出る）である（仮）。
@@ -69,8 +73,10 @@ func (e *Editor) newConsoleFloat(c ext.ViewComponent, extID string) *floatState 
 	if d := len(h) - ext.ConsoleHistoryMax; d > 0 {
 		h = h[d:]
 	}
-	con := &consoleState{prompt: c.Prompt, history: slices.Clone(h)}
+	con := &consoleState{prompt: c.Prompt, history: slices.Clone(h), complete: c.Complete}
 	con.histPos = len(con.history)
+	con.comp.selected = -1
+	con.comp.last, con.comp.lastAt = c.Input, len(c.Input)
 	f.con = con
 	f.bs = e.newPopupBuffer(consoleInputName, c.Input, "", false)
 	f.bs.state.SetCursor(buffer.Position{Byte: len(c.Input)})
@@ -147,9 +153,13 @@ var (
 //     input/ask の問いの入力（inputask.go の inputKey）と同じく、組の入力の行には既定で持たせる
 //
 // インサートモードの <Esc> は扱わない（State がノーマルモードへ戻す。閉じない）。
+// 補完を引き受けた組（consoleState.complete）のインサートモードでは、先に補完のキーを扱う（completeKey。FR-297）。
 //
 // req: FR-274
 func (e *Editor) consoleKey(f *floatState, k editcmd.Key, insert bool) (bool, []editcmd.Key) {
+	if insert && f.con.complete && e.completeKey(f, k) {
+		return true, nil
+	}
 	switch {
 	case k == consoleEnter:
 		e.submitConsole(f)
@@ -345,11 +355,13 @@ func consoleFileAction(f *floatState, a ex.Action) error {
 
 // setConsoleInput は、書き足すテキストと入力の行の組 f の入力の行の中身を text にし、カーソルを末尾に置く。
 // 中身を替えるのは、ファインダーの入力の行と同じく読み直しの入り口（reload）で行う。
+// 補完の一覧は閉じ、替えた中身では問い合わせない（noteConsoleInput。FR-297）。
 func (e *Editor) setConsoleInput(f *floatState, text string) {
 	if f.bs.buf.Line(0) != text || f.bs.buf.LineCount() != 1 {
 		e.reload(f.bs, buffer.New(text))
 	}
 	f.bs.state.SetCursor(buffer.Position{Byte: len(text)})
+	e.noteConsoleInput(f.con, text)
 }
 
 // toggleConsoleFocus は、<C-w>w で、書き足すテキストと入力の行の組 f の出力と入力の行の間でフォーカスを移す（FR-274、FR-71）。
@@ -388,7 +400,7 @@ func (e *Editor) uiConsole(f *floatState) *ui.Console {
 			view.Selection = ui.Selection{Active: true, Start: start, End: end, Linewise: linewise}
 		}
 	}
-	return &ui.Console{Output: view, Prompt: con.prompt, OutputFocused: con.outFocus}
+	return &ui.Console{Output: view, Prompt: con.prompt, OutputFocused: con.outFocus, Menu: e.uiConsoleMenu(f)}
 }
 
 // consoleOutViewport は、書き足すテキストと入力の行の組の出力のバッファのページ単位のスクロール（command.State.Viewport）と、

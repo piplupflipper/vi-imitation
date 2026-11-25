@@ -226,6 +226,10 @@ func (e *Editor) selectChild(f *floatState, i int, user bool) {
 		e.switchFocus(e.focusBuffer(f.floatContent))
 	}
 	if old != nil {
+		if old.con != nil {
+			// 離れる組の子の補完の一覧を閉じる（FR-297。インサートモードを終えるので、戻っても出し直さない）。
+			e.cancelCompletion(old.con)
+		}
 		for _, bs := range old.buffers() {
 			if m := bs.state.Mode(); m == command.ModeInsert || m == command.ModeVisual || m == command.ModeVisualLine {
 				bs.state.SuspendMode()
@@ -394,6 +398,9 @@ func (e *Editor) switcherUpdate(f *floatState, c ext.ViewComponent) {
 func (e *Editor) closeContent(f *floatState, ct *floatContent) {
 	if ct == nil || ct == f.floatContent {
 		return
+	}
+	if ct.con != nil {
+		e.cancelCompletion(ct.con) // 答えを待っている補完の問い合わせを取り消す（FR-297）
 	}
 	f.withContent(ct, func() { e.closePreview(f) })
 	for _, bs := range ct.buffers() {

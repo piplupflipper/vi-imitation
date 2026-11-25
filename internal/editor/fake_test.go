@@ -125,6 +125,10 @@ func runFakeExt(mode string) int {
 			tx := ext.Transaction{Edits: []ext.Edit{{Range: lineRange(b, l), Text: strings.ToUpper(b.Line(l))}}}
 			return ext.CommandExecuteResult{OK: true, Transaction: &tx}, nil
 		})
+		// 書き足すテキストと入力の行の組の補完（fakePopup の complete と cswitcher。FR-297）は fakeComplete が答える。
+		s.ConsoleCompleteAsync(func(ctx context.Context, p *ext.ConsoleCompleteParams, reply func(ext.ConsoleCompleteResult, error)) {
+			fakeComplete(ctx, s, p, reply)
+		})
 		// fake.popup は、引数（list、tree、input、text）の部品のポップアップを popup/open で開く（#236）。
 		// 利用者の操作の知らせは message/show で出し、select の項目が close なら view/close で、update なら view/update で応える。
 		s.Command("fake.popup", func(_ context.Context, _ *server.Buffer, p *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
@@ -799,6 +803,14 @@ func fakePopup(kind string) ext.PopupOpenParams {
 			children = children[:1]
 		}
 		return ext.PopupOpenParams{Placement: ext.PopupCenter, Component: ext.ViewComponent{Kind: ext.ViewSwitcher, Title: "dap", Children: children}}
+	case "complete":
+		// 補完を引き受ける書き足すテキストと入力の行の組（FR-297）。候補は fakeComplete が返す。
+		return ext.PopupOpenParams{Component: ext.ViewComponent{Kind: ext.ViewConsole, Title: "complete", Prompt: "> ", Complete: true}}
+	case "cswitcher":
+		// 組の子 repl が補完を引き受ける切り替えの部品（FR-297、FR-301）。
+		p := fakePopup("switcher")
+		p.Component.Children[3].Component.Complete = true
+		return p
 	case "console":
 		// 書き足すテキストと入力の行の組（FR-274）。placement を書かなくても、本体は中央に出す。
 		// 入力の行で say <文字列> を送ると、偽の拡張機能はその文字列の行を出力へ書き足し、flood <行数> を送ると、その行数を書き足す。

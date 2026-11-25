@@ -29,6 +29,10 @@ type CompletionMenu struct {
 	Match string
 	// MaxHeight は、出す行の数の上限である（設定の completionMenu.height。Vim の 'pumheight'）。0 なら画面に収まるだけ出す。
 	MaxHeight int
+	// Kinds は、項目ごとの種類の文字列（Neovim の pum の kind の欄）である。nil か、どれも空なら欄を置かない。
+	// 置くときは、項目の文字列の欄の右に 1 列を空けて並べる（書き足すテキストと入力の行の組の補完。FR-297）。
+	// 欄に収まらなければ、種類の欄を省いて項目の文字列だけを出す。
+	Kinds []string
 }
 
 // completionMinWidth は、一覧の項目の欄の最小の列数である（Vim と Neovim の 'pumwidth' の既定の 15）。
@@ -63,6 +67,8 @@ type completionPlace struct {
 	top, height int // 最初の行と行の数
 	col, width  int // 項目の欄の最初の列と列数（左の空白と右のスクロールバーを除く）
 	scrollbar   bool
+	// kindAt は、種類の欄（CompletionMenu.Kinds）の最初の列の、col からの差である。0 なら種類の欄を置かない。
+	kindAt int
 }
 
 // placeCompletion は、一覧の場所を決める。row は一覧の真下の行（コマンドラインの行）、col は項目を並べ始める列である。
@@ -72,14 +78,20 @@ type completionPlace struct {
 //
 // req: FR-197
 func (r *Renderer) placeCompletion(m *CompletionMenu, row, col int) (completionPlace, bool) {
+	return r.placeCompletionIn(m, row, col, 0, 0, r.Width)
+}
+
+// placeCompletionIn は、placeCompletion と同じ決め方で、一覧を minRow 行目から row 行目の手前までの行と、left 列から right 列の手前までの
+// 列に収める。書き足すテキストと入力の行の組の補完（FR-297）が、一覧を部品の窓の中に収めるのに使う。
+func (r *Renderer) placeCompletionIn(m *CompletionMenu, row, col, minRow, left, right int) (completionPlace, bool) {
 	size := len(m.Items)
 	var p completionPlace
-	if size == 0 || row <= 0 {
+	if size == 0 || row <= minRow || right <= left {
 		return p, false
 	}
 	p.top, p.height = row-size, size
-	if row < size {
-		p.top, p.height = 0, row
+	if row-minRow < size {
+		p.top, p.height = minRow, row-minRow
 	}
 	if m.MaxHeight > 0 && p.height > m.MaxHeight {
 		p.top += p.height - m.MaxHeight
@@ -98,26 +110,40 @@ func (r *Renderer) placeCompletion(m *CompletionMenu, row, col int) (completionP
 	for _, it := range m.Items {
 		base = max(base, StringWidth(it, tabStop))
 	}
+	kindW := 0
+	for _, k := range m.Kinds {
+		kindW = max(kindW, StringWidth(k, tabStop))
+	}
+	if kindW > 0 {
+		// 項目の文字列の欄の後に 1 列を空けて種類の欄を置く（Neovim の pum の abbr と kind の欄）。
+		p.kindAt = base + 1
+		base += 1 + kindW
+	}
 	width := base
 	if width < completionMinWidth {
 		width = completionMinWidth
 	} else {
 		width++ // 項目の後ろに 1 列を空ける（set_pum_width_aligned_with_cursor の end_padding）
 	}
+	col = max(col, left)
 	p.col, p.width = col, width
-	avail := r.Width - col - sb
+	avail := right - col - sb
 	switch {
 	case avail >= width:
 	case avail > completionMinWidth:
 		p.width = avail
-	case avail+col > completionMinWidth:
+	case avail+col-left > completionMinWidth:
 		p.width = completionMinWidth + 1
-		p.col = r.Width - p.width - sb
+		p.col = right - p.width - sb
 	default:
-		p.col, p.width = 0, r.Width-sb
+		p.col, p.width = left, right-left-sb
 	}
 	if p.width <= 0 {
 		return p, false
+	}
+	if p.kindAt > 0 && p.kindAt+kindW > p.width {
+		// 種類の欄が入らなければ省き、項目の文字列だけを出す。
+		p.kindAt = 0
 	}
 	return p, true
 }
@@ -221,7 +247,15 @@ func (r *Renderer) drawCompletionRows(g *Grid, theme Theme, m *CompletionMenu, p
 		for x := left; x < right; x++ {
 			g.set(y, x, blank(a))
 		}
-		r.drawCompletionItem(g, y, p, m.Items[idx], m.Match, a, a.Over(match))
+		ip := p
+		if p.kindAt > 0 {
+			// 項目の文字列は種類の欄の手前の空白までに収め、種類は欄の位置から描く。
+			ip.width = p.kindAt - 1
+			if idx < len(m.Kinds) {
+				r.drawText(g, y, p.col+p.kindAt, p.col+p.width, m.Kinds[idx], a)
+			}
+		}
+		r.drawCompletionItem(g, y, ip, m.Items[idx], m.Match, a, a.Over(match))
 		if p.scrollbar {
 			sa := theme.attr(StylePopupScrollbar)
 			if i >= thumbPos && i < thumbPos+thumbHeight {

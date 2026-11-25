@@ -57,6 +57,8 @@ func (e *Editor) handleEvent(ev exthost.Event) {
 			e.withView(c, func() { e.applyDeferred(p, ev) })
 		} else if c := e.replayFor(ev.Tag); c != nil {
 			e.replayAnswered(c, ev)
+		} else if t, ok := ev.Tag.(completeTag); ok {
+			e.consoleCompleted(t, ev) // 書き足すテキストと入力の行の組の補完（consolecomplete.go。FR-297）
 		}
 		// それ以外は、期限を超えたか取り消した問い合わせの結果なので捨てる（FR-17）。
 	case *exthost.StateChange:
