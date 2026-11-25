@@ -177,6 +177,23 @@ func (p *pane) bufferClosed(id ext.BufferID, enabled bool) {
 	})
 }
 
+// settleHold は、止まっているセッションのうち、止まった位置を出し始めてから settleDelay が経っていないものの残りの時間を返す（無ければ 0）。
+// 行末の変数の値は、区画と違い、続けて打っているかに依らず、止まってから settleDelay だけ待って読む。区画の規則（続けて打っているときだけ
+// 待つ）では、続けて打ち始めた最初のステップ実行の停止で読み始め、0.1 秒の間で打った次の next がその後ろに並んで、ペインを閉じていても
+// 1〜2 回遅れた（#426 の測り）。読むのは scopes と数個の variables で、vscode-js-debug でも約 0.12 秒で読み終えるので、待っても 0.4 秒の間の
+// 次の next とは重ならない。
+func (d *debugger) settleHold() time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var hold time.Duration
+	for _, s := range d.sessions {
+		if s.halted && !s.shownAt.IsZero() {
+			hold = max(hold, settleDelay-time.Since(s.shownAt))
+		}
+	}
+	return hold
+}
+
 // vtSettings は、設定の virtualText を返す。
 func (d *debugger) vtSettings() vtSettings {
 	d.mu.Lock()
@@ -202,7 +219,7 @@ func (p *pane) refreshVirtualText() {
 	if p.d.stoppingAny() {
 		return
 	}
-	if hold := p.d.runningHold(); hold > 0 {
+	if hold := max(p.d.runningHold(), p.d.settleHold()); hold > 0 {
 		p.holdOnce(hold)
 		return
 	}
