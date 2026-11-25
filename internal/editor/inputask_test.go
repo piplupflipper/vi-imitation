@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -446,4 +447,185 @@ func TestInputAskPopupAndComponent(t *testing.T) {
 	comp.waitScreen("名前: 中")
 	comp.keys("<CR>")
 	h.eventually("部品の client で打った答え", func() bool { return strings.Contains(h.outputOf("input"), `value="中"`) })
+}
+
+// passAskGap は、問いに答えた後にキーを取っておく間（askGap）を、時間が過ぎたときと同じく終える。
+// 負荷で拡張機能の往復が遅れても切れないように間を長くしたテストが、その後のキーを処理させるのに使う。
+func (h *harness) passAskGap() {
+	h.t.Helper()
+	h.e.do(func() {
+		if g := h.e.askGap; g != nil {
+			h.e.endAskGap(g)
+		}
+	})
+}
+
+// keysQueued は、Vim の表記のキーの列を、イベントループを止めている間にすべて列へ積ませてから処理させる。
+// 2 行の貼り付けや tmux send-keys のように、先のキーを処理する時点で後のキーがもう列にある場面を、負荷に依らず作るために使う。
+func (h *harness) keysQueued(s string) {
+	h.t.Helper()
+	h.e.do(func() {
+		h.keys(s)
+		deadline := time.Now().Add(10 * time.Second)
+		for h.e.forwarded.Load() != h.sent {
+			if time.Now().After(deadline) {
+				h.t.Errorf("キーを列に積み終えない")
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
+}
+
+// waitBuffer は、ファイル名が name のバッファのテキストが want になるまで待つ（bufferText は eventually の中で呼べない）。
+func (h *harness) waitBuffer(what, name, want string) {
+	h.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for h.bufferText(name) != want {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("%s: %s = %q, want %q", what, name, h.bufferText(name), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// 拡張機能が問いを続けて聞くとき、1 つ目の答えと一緒に列に届いていたキー（2 行の貼り付けと先打ち）は、
+// バッファの編集にせずに取っておき、2 つ目の問いの入力にする（#420。PR #418 のレビューの推奨 1 の再現 1）。
+// 2 つ目が選択肢の問いでも同じく、取っておいたキーを答えにする。
+//
+// req: FR-308
+func TestInputAskTypeahead(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	// 負荷で拡張機能の往復が遅れても取っておく間が切れないように、間を長くしておく。
+	h.e.do(func() { h.e.askGapWindow = time.Minute })
+	h.keys(":fake.inputseq<CR>")
+	h.waitInput("1 つ目の問い", "", "モジュール:")
+	// 1 つ目の答えと 2 つ目の答えを、1 回で続けて送る（tmux send-keys 'pkg.worker' Enter 'a b' Enter と同じ）。
+	h.keysQueued("pkg.worker<CR>a b<CR>")
+	want := "module value=\"pkg.worker\" cancelled=false err=<nil>\n" + "args value=\"a b\" cancelled=false err=<nil>\n"
+	h.eventually("2 つの答え", func() bool { return h.outputOf("seq") == want })
+	h.settle()
+	if got := h.text(); got != "abc" {
+		t.Errorf("問いの間に打ったキーで編集した: %q", got)
+	}
+	if h.mode() != command.ModeNormal {
+		t.Errorf("mode = %v", h.mode())
+	}
+
+	h.keys(":fake.inputseq choice<CR>")
+	h.waitInput("選択肢が続く 1 つ目の問い", "", "モジュール:")
+	h.keysQueued("m<CR>2")
+	want += "module value=\"m\" cancelled=false err=<nil>\n" + "choice selected=b cancelled=false err=<nil>\n"
+	h.eventually("選択肢の答え", func() bool { return h.outputOf("seq") == want })
+	h.settle()
+	if got := h.text(); got != "abc" {
+		t.Errorf("選択肢の問いの前に打った 2 で編集した: %q", got)
+	}
+}
+
+// 問いが 1 つだけで、答えと一緒に列に届いていたキーは、取っておく間（askGapWindow）が過ぎるまで処理せず、
+// 過ぎた後にふつうのキーとして処理する。答えの時点で列にキーが無ければ（手で打つキー）、取っておかずにすぐ処理する
+// （PR #422 のレビューの裁定要 1）。取り消し（<Esc>）の後も取っておかない。
+//
+// req: FR-308
+func TestInputAskTypeaheadSingle(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\ndef\nghi\njkl\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	h.e.do(func() { h.e.askGapWindow = time.Minute })
+	h.keys(`\i`)
+	h.waitInput("1 つだけの問い", "", "名前:")
+	h.keysQueued("v<CR>dd")
+	h.eventually("答え", func() bool { return strings.Contains(h.outputOf("input"), `value="v" cancelled=false`) })
+	h.eventually("取っておく間", func() bool { return h.e.askGap != nil && h.e.keys.has(h.e.askGap.c) })
+	if got := h.text(); got != "abc\ndef\nghi\njkl" {
+		t.Errorf("取っておく間に dd を処理した: %q", got)
+	}
+	h.passAskGap()
+	h.settle()
+	if got := h.text(); got != "def\nghi\njkl" {
+		t.Errorf("間が過ぎた後の dd = %q, want def\\nghi\\njkl", got)
+	}
+
+	// 答えを処理し終えてから打った dd は、取っておかない（間が 1 分なので、取っておけば settle が終わらない）。
+	h.keys(`\i`)
+	h.waitInput("手で打つ問い", "", "名前:")
+	h.keys("w<CR>")
+	h.eventually("手で打った答え", func() bool { return strings.Contains(h.outputOf("input"), `value="w" cancelled=false`) })
+	h.settle()
+	h.e.do(func() {
+		if h.e.askGap != nil {
+			t.Errorf("列が空なのに取っておく間を始めた")
+		}
+	})
+	h.keys("dd")
+	h.settle()
+	if got := h.text(); got != "ghi\njkl" {
+		t.Errorf("答えの後に打った dd = %q, want ghi\\njkl", got)
+	}
+
+	h.keys(`\i`)
+	h.waitInput("取り消す問い", "", "名前:")
+	h.keysQueued("<Esc>dd")
+	h.settle()
+	if got := h.text(); got != "jkl" {
+		t.Errorf("取り消しと一緒に送った dd = %q, want jkl", got)
+	}
+}
+
+// 取っておくのは、問いに答えた client のキーだけで、ほかの client のキーは取っておく間も止めない（PR #422 のレビューの推奨 1）。
+//
+// req: FR-308
+func TestInputAskTypeaheadOtherClient(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\ndef\n", "b.txt": "bb\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	h.e.do(func() {
+		h.e.clients[0].info.ID = 1
+		h.e.askGapWindow = time.Minute
+	})
+	b := h.attach(ClientInfo{ID: 2, Files: []string{filepath.Join(dir, "b.txt")}})
+	h.keys(`\i`)
+	h.waitInput("A の問い", "", "名前:")
+	h.keysQueued("v<CR>dd")
+	h.eventually("A の取っておく間", func() bool { return h.e.askGap != nil })
+	b.keys("x")
+	h.waitBuffer("取っておく間の B の x", "b.txt", "b")
+	if got := h.bufferText("a.txt"); got != "abc\ndef" {
+		t.Errorf("取っておく間に A の dd を処理した: %q", got)
+	}
+	h.passAskGap()
+	h.waitBuffer("間の後の A の dd", "a.txt", "def")
+}
+
+// 拡張機能の一覧の項目を選んだ直後に列に届いていたキーも、拡張機能が続けて聞く問いの入力にする（PR #422 のレビューの推奨 2。
+// DAP の構成の一覧の後の inputs）。選んだ拡張機能がファイルを開いたら（ファイラ）、取っておいたキーを、間を待たずに
+// 開いたファイルへのふつうのキーとして処理する。
+//
+// req: FR-308
+func TestInputAskTypeaheadAfterSelect(t *testing.T) {
+	opened := fakeOpenedPath(os.Getpid())
+	if err := os.WriteFile(opened, []byte("x\ny\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(opened) })
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\ndef\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	h.e.do(func() { h.e.askGapWindow = time.Minute })
+	h.keys(":fake.popup asklist<CR>")
+	h.eventually("問いを続ける一覧", func() bool { return h.e.float != nil && h.e.float.ext == "fake" })
+	h.keysQueued("<CR>a b<CR>")
+	h.eventually("一覧の後の問いの答え", func() bool { return h.outputOf("seq") == "args value=\"a b\" cancelled=false err=<nil>\n" })
+	h.settle()
+	if got := h.bufferText("a.txt"); got != "abc\ndef" {
+		t.Errorf("一覧で選んだ後のキーで編集した: %q", got)
+	}
+
+	h.keys("<Esc>:fake.popup files<CR>")
+	h.eventually("ファイルの一覧", func() bool { return h.e.float != nil && h.e.float.title == "files" })
+	h.keysQueued("gg<CR>dd")
+	// 間は 1 分なので、editor/open で間を終えなければ、ここは待ちきれない。
+	h.waitBuffer("開いたファイルへの dd", filepath.Base(opened), "y")
+	if got := h.bufferText("a.txt"); got != "abc\ndef" {
+		t.Errorf("ファイルの一覧で選んだ後の dd を元のファイルへ: %q", got)
+	}
 }

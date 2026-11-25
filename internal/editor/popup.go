@@ -862,6 +862,10 @@ func (e *Editor) selectFloat(f *floatState) {
 	}
 	e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: r.id, Selection: e.selectionFor(f), Child: f.child})
 	e.closeSelected(f)
+	if f.ext != "" {
+		// 選んだ後に拡張機能が問いを続ける（DAP の構成の一覧の後の inputs）ときに、先打ちのキーを次の問いへ回す（inputask.go。#420）。
+		e.startAskGap(f.ext)
+	}
 }
 
 // closeSelected は、項目を選んだ（view/select を送った）後に、pane/open の CloseOnSelect で中央のポップアップに出した f を閉じる（FR-147）。

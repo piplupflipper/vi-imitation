@@ -40,6 +40,8 @@ type extQuestion struct {
 	// typed は、利用者がこの入力の問いにキーか貼り付けを 1 つでも打ったかである。取り下げの後のキーを捨てるかを決めるのに使う
 	// （noteWithdrawn）。
 	typed bool
+	// ext は、問いを出した拡張機能である（startAskGap）。
+	ext string
 }
 
 // Done は、問いのリクエストが取り消されたか、拡張機能の接続が閉じたか、応答した後に閉じるチャネルを返す（request）。
@@ -84,8 +86,11 @@ func (e *Editor) enqueueQuestion(extID string, q *extQuestion) {
 	}
 	q.cursor = len(q.text)
 	q.pane = e.extPane[extID]
+	q.ext = extID
 	e.withdrawn = nil
 	e.choices = append(e.choices, q)
+	// 前の問いに答えた後に取っておいたキーは、この問いの入力にする（startAskGap。#420）。
+	e.stopAskGap()
 	go e.watchQuestion(q)
 }
 
@@ -207,6 +212,98 @@ func (e *Editor) discardAfterWithdrawn(k editcmd.Key) bool {
 	return true
 }
 
+// askGap は、拡張機能の問いに答えた直後か、拡張機能の一覧と木の項目を選んだ直後の、次の問いを待つ間である（startAskGap）。
+type askGap struct {
+	// c は、答えた（選んだ）client である。この client のキーだけを取っておき、外れたら取っておくのをやめる（keyAllowed）。
+	c *clientView
+	// ext は、答えた問いを出した（選んだ項目の部品を開いた）拡張機能である。この拡張機能がファイルかペインを開いたら
+	// （editor/open、pane/open）、次は問いでないので、間を終えて取っておいたキーを処理する（extOpened）。
+	ext string
+	// timer は、取っておく間が過ぎたことを askGapEnd へ送るタイマーである。間の途中で次の問いが届いたら止める。
+	timer *time.Timer
+}
+
+// askGapDefault は、拡張機能の問いに答えた後に、次の問いを待ってキーを取っておく間である（仮。#420）。
+// 拡張機能が答えを受け取ってから次の問いを出すまでの往復（PR #422 のレビューで、画面に出るまでを含めて 4 ms 未満）に
+// 十分な余裕を持たせた。取っておくのは答えの時点で列にキーが残っていたとき（先打ちと貼り付け）だけなので、
+// 手で打つキーはこの間に遅れない。
+const askGapDefault = 300 * time.Millisecond
+
+// startAskGap は、拡張機能 extID の問いに答えた（取り消しでない）か、extID の一覧と木の項目を選んだ（view/select を送った）
+// キーの処理の中で呼ぶ。待たせている問いが無く、操作中の client のまだ処理していないキーか貼り付けが列に残っていれば（先打ち、
+// 括弧付きでない複数行の貼り付け、tmux send-keys）、次の問いが届くか askGapDefault が過ぎるまで、その client のキーと貼り付けを
+// 処理せずに列に取っておく（keyAllowed）。
+// 拡張機能は前の問いの答え（選んだ項目）を受け取ってから次の問いを送る（DAP の拡張機能の構成の一覧と inputs、
+// opencode の権限の問い）ので、その往復の間に処理したキーは、次の問いへのつもりで打ったキーでも、ノーマルモードのコマンドとして
+// バッファを書き換える（PR #418 のレビューの推奨 1、PR #422 のレビューの推奨 2）。
+// 次の問いが届いたら、取っておいたキーをその問いの入力にする（enqueueQuestion）。extID がファイルかペインを開いたら（extOpened）、
+// 間が過ぎたら（endAskGap）、取っておいたキーをふつうのキーとして順に処理する。問いが 1 つだけだったときと、ファイラで選んだ
+// ときに、選んだ直後に始めた編集を捨てないためである。
+// 列が空なら（手で 1 つずつ打つキー）、取っておかない。手で打つキーの間隔は往復より長く、次の問いが先に届くので、
+// 遅らせる理由が無いためである（PR #422 のレビューの裁定要 1 への決め）。
+// ほかの client のキーは取っておかない（同じく推奨 1）。
+//
+// req: FR-308
+func (e *Editor) startAskGap(extID string) {
+	if len(e.choices) > 0 {
+		return // 次の問いを待たせているので、そのまま出す
+	}
+	e.stopAskGap()
+	c := e.op
+	if c == nil || !e.keys.has(c) {
+		return
+	}
+	window := askGapDefault
+	if e.askGapWindow > 0 {
+		window = e.askGapWindow
+	}
+	g := &askGap{c: c, ext: extID}
+	stop := e.stop
+	g.timer = time.AfterFunc(window, func() {
+		select {
+		case e.askGapEnd <- g:
+		case <-stop:
+		}
+	})
+	e.askGap = g
+}
+
+// endAskGap は、取っておく間 g が過ぎたときに（askGapEnd）、取っておくのをやめ、取っておいたキーの処理を始める。
+// 既に次の問いが届いて終えた間なら、何もしない。
+//
+// req: FR-308
+func (e *Editor) endAskGap(g *askGap) {
+	if e.askGap != g {
+		return
+	}
+	e.stopAskGap()
+}
+
+// extOpened は、拡張機能 extID がファイルかペインを開くリクエスト（editor/open、pane/open）を送ってきたときに呼ぶ。
+// 取っておいている間がその拡張機能のものなら、次は問いでないので間を終え、取っておいたキーをふつうのキーとして処理する。
+// ファイラで選んだ直後に打ったキーを、開いたファイルへ間を待たずに渡すためである。
+//
+// req: FR-308
+func (e *Editor) extOpened(extID string) {
+	if g := e.askGap; g != nil && g.ext == extID {
+		e.stopAskGap()
+	}
+}
+
+// stopAskGap は、取っておく間を終え、列に残したキーがあればイベントループに処理させる。間でなければ何もしない。
+// 取っておいている間の keyAllowed は偽を返すので、popFor は列のキーを取り出さず、知らせ直しもしない。ここで知らせ直す。
+func (e *Editor) stopAskGap() {
+	g := e.askGap
+	if g == nil {
+		return
+	}
+	g.timer.Stop()
+	e.askGap = nil
+	if !e.keys.empty() {
+		signal(e.keys.ready)
+	}
+}
+
 // inputKey は、表示中の 1 行の入力の問いへのキーを処理する（FR-275）。
 //
 // 文字はカーソルの位置に入れ、<Tab> はタブ文字として入れる（補完はしない）。ここまでと <BS> は : のコマンドラインと同じである。
@@ -233,6 +330,7 @@ func (e *Editor) inputKey(k editcmd.Key) {
 		} else {
 			e.answered(fmt.Sprintf("%sに「%s」と答えました", e.questionName(), q.text))
 		}
+		e.startAskGap(q.ext)
 	case k == editcmd.Special(editcmd.CodeBackspace):
 		q.deleteTo(prevCharStart(q.text, q.cursor))
 	case k == editcmd.Special(editcmd.CodeDelete):

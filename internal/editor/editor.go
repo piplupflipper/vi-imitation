@@ -471,6 +471,13 @@ type Editor struct {
 	withdrawn *withdrawnQuestion
 	// withdrawWindow は、テストが替える、取り下げの後のキーを捨てる間である。0 なら withdrawnDiscardWindow を使う。
 	withdrawWindow time.Duration
+	// askGap は、拡張機能の問いに答えた後、次の問いが届くのを待って、利用者のキーを列に取っておいている間の状態である。
+	// nil なら取っておいていない（keyAllowed。#420）。
+	askGap *askGap
+	// askGapWindow は、テストが替える、問いに答えた後にキーを取っておく間である。0 なら askGapDefault を使う。
+	askGapWindow time.Duration
+	// askGapEnd は、取っておく間が過ぎたことを、イベントループへ知らせる（endAskGap。容量は 1）。
+	askGapEnd chan *askGap
 	// confirm は、表示中の Ex の確認の問いと、問いを出したバッファである。
 	confirm   *ex.Confirm
 	confirmBS *bufferState
@@ -644,6 +651,7 @@ func New(term Terminal, cfg Config) (*Editor, error) {
 		extPane:       map[string]*floatState{},
 		finished:      make(chan struct{}),
 		questionGone:  make(chan struct{}, 1),
+		askGapEnd:     make(chan *askGap, 1),
 		diff:          newDiffState(),
 		outputs:       map[outputKey][]string{},
 		nextID:        1,
@@ -948,6 +956,9 @@ func (e *Editor) Run(ctx context.Context) error {
 		case <-e.questionGone:
 			// 取り下げた問いを列から外して知らせる（activeChoice の noteWithdrawn）。この後の描画で問いを画面から消す。
 			e.activeChoice()
+		case g := <-e.askGapEnd:
+			// 問いに答えた後に次の問いが届かなかったので、取っておいたキーをふつうのキーとして処理する（inputask.go の startAskGap）。
+			e.endAskGap(g)
 		case <-e.intrCh:
 			// <C-c> のキーそのものは列から届くので、ここでは外部のコマンドと再生中の拡張機能の待ちの中断だけをする。
 			e.interruptShell()

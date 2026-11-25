@@ -96,6 +96,7 @@ func (e *Editor) handleEvent(ev exthost.Event) {
 	case *exthost.DiffStartRequest:
 		e.diffStartRequest(ev)
 	case *exthost.PaneOpenRequest:
+		e.extOpened(ev.Extension) // 選んだ後に取っておいたキーは、開いたペインか元の画面へ（inputask.go の startAskGap）
 		e.withView(e.extView(ev.Extension), func() { e.paneOpenRequest(ev) })
 	case *exthost.EditorListRequest:
 		e.withView(e.extView(ev.Extension), func() { _ = ev.Reply(e.editorList(ev.Params.List)) })
@@ -114,6 +115,7 @@ func (e *Editor) handleEvent(ev exthost.Event) {
 	case *exthost.EditorStateRequest:
 		_ = ev.Reply(e.editorState())
 	case *exthost.EditorOpenRequest:
+		e.extOpened(ev.Extension) // 選んだ後に取っておいたキーは、開いたファイルへ（inputask.go の startAskGap）
 		e.withView(e.extView(ev.Extension), func() { e.editorOpenRequest(ev) })
 	case *exthost.BufferSaveRequest:
 		e.bufferSaveRequest(ev)
@@ -543,6 +545,7 @@ func (e *Editor) choiceKey(k editcmd.Key) {
 		ch := c.Params.Choices[k.Rune-'1']
 		_ = c.Reply(ext.ChoiceAskResult{Selected: ch.ID})
 		e.answered(fmt.Sprintf("%sに「%s」と答えました", which, strings.Join(strings.Fields(ch.Label), " ")))
+		e.startAskGap(q.ext)
 	default:
 		e.dropChoiceInput()
 	}
