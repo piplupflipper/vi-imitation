@@ -216,6 +216,12 @@ type outputEvent struct {
 	Output   string `json:"output"`
 }
 
+// threadEvent は、thread の event の body（仕様の ThreadEvent）である。Reason は started か exited（ほかの値もありうる）である。
+type threadEvent struct {
+	Reason   string `json:"reason"`
+	ThreadID int    `json:"threadId"`
+}
+
 // exitedEvent は、exited の event の body である。
 type exitedEvent struct {
 	ExitCode int `json:"exitCode"`

@@ -461,6 +461,10 @@ func (p *pane) refresh() {
 		if !p.isDirty(sec) {
 			continue
 		}
+		if (sec == secThreads || sec == secScopes) && p.d.stoppingAny() {
+			// 止まった位置を出し終えるまで待つ。印は残し、出し終えたときの印で作り直す。
+			continue
+		}
 		c := p.build(sec, visible)
 		if p.isDirty(sec) {
 			// 作っている間に止まった状態が変わった。古い中身を送らず、次の作り直しを待つ。
@@ -500,6 +504,13 @@ func (p *pane) onEvent(e server.ViewEvent) {
 		case secScopes:
 			p.scopes.expanded[e.Item] = e.Expanded
 			p.markDirty(secScopes)
+			// 動いている間は変数を読まない（前の木を出している）ので、開いた項目は閉じ戻る。黙って戻さず、止まったら開くことを知らせる
+			// （PR #423 の再レビューの推奨 4）。開いた状態は覚えておき、止まったときに読む。
+			if ss, cur, _ := p.d.snapshot(); e.Expanded {
+				if x, ok := current(ss, cur); ok && !x.halted {
+					p.d.showInfo("動いている間は変数を読めない。止まったら開く")
+				}
+			}
 		}
 	case server.ViewKey:
 		p.onKey(e)

@@ -41,6 +41,7 @@ type sessionSnap struct {
 	stoppedThread         int
 	hasStoppedThread      bool
 	gen                   uint64
+	stopping              bool
 	supportsSetVariable   bool
 	supportsSetExpression bool
 }
@@ -54,11 +55,20 @@ func (d *debugger) snapshot() (ss []sessionSnap, cur *session, started bool) {
 			s: s, halted: s.halted, configured: s.configured, thread: s.thread, hasThread: s.hasThread,
 			frame: s.frame, hasFrame: s.hasFrame, stoppedThread: s.stoppedThread, hasStoppedThread: s.hasStoppedThread,
 			gen:                   s.gen.Load(),
+			stopping:              s.stopGen != 0 && s.stopGen == s.gen.Load(),
 			supportsSetVariable:   s.supports(func(c *capabilities) bool { return c.SupportsSetVariable }),
 			supportsSetExpression: s.supports(func(c *capabilities) bool { return c.SupportsSetExpression }),
 		})
 	}
 	return ss, d.cur, len(d.outLogs) > 0
+}
+
+// stoppingAny は、止まった位置を出し終える前のセッションがあるかを返す。その間、ペインはスレッドとスコープの区画を読まない
+// （止まった位置の stackTrace より先に、ペインの request をアダプターへ送らないため。PR #423 のレビューの必須 1）。
+// 出し終えたら（showStopped、stoppedWithoutSource）、作り直しの印が付く。
+func (d *debugger) stoppingAny() bool {
+	ss, _, _ := d.snapshot()
+	return slices.ContainsFunc(ss, func(x sessionSnap) bool { return x.stopping })
 }
 
 // sessionByID は、番号 id の動いているセッションを返す。無ければ nil。
@@ -181,6 +191,29 @@ func (p *pane) threadsOf(x sessionSnap) (*threadCache, error) {
 	return tc, nil
 }
 
+// threadEvent は、セッション s の thread の event（スレッドが始まった、終わった）を、読んだスレッドの一覧に足し引きし、
+// スレッドの区画を作り直す（PR #423 の再レビューの必須 1）。動いている間は threads を読み直さないので、event で一覧を保つ。
+// 始まったスレッドの名前は event に無いので、次に止まって読み直すまで、名前を空にしておく（区画には ID を出す）。
+// まだ一覧を読んでいなければ何もしない（開始の後の 1 回の threads が、そのスレッドも返す）。どこから呼んでもよい。
+func (p *pane) threadEvent(s *session, e threadEvent) {
+	p.post(func() {
+		tc := p.threads.cache[s]
+		if tc == nil {
+			return
+		}
+		i := slices.IndexFunc(tc.threads, func(t thread) bool { return t.ID == e.ThreadID })
+		switch {
+		case e.Reason == "started" && i < 0:
+			tc.threads = append(slices.Clone(tc.threads), thread{ID: e.ThreadID})
+		case e.Reason == "exited" && i >= 0:
+			tc.threads = slices.Delete(slices.Clone(tc.threads), i, i+1)
+		default:
+			return
+		}
+		p.markDirty(secThreads)
+	})
+}
+
 // buildThreads は、スレッドの区画の木を作る（FR-290）。セッション（2 つ以上あるとき）、スレッド、フレームの木で、
 // 止まったスレッド（stopped の threadId）に「止まっている」を、選んでいるスレッド（続行とステップ実行の送り先）が別なら「送り先」を添え、
 // それらと選んでいるフレームのスレッドを開いてフレームを出し、選んでいるフレームに色を付ける。
@@ -276,6 +309,9 @@ func (p *pane) threadItems(x sessionSnap, cur *session, tc *threadCache) []ext.V
 		stopped := x.halted && x.hasStoppedThread && t.ID == x.stoppedThread
 		target := x.halted && x.hasThread && t.ID == x.thread && !stopped
 		label := oneLine(t.Name)
+		if label == "" {
+			label = "スレッド " + strconv.Itoa(t.ID)
+		}
 		var hs []ext.ViewSpan
 		switch {
 		case stopped:
@@ -312,7 +348,10 @@ func (p *pane) frameItems(x sessionSnap, cur *session, tid int, tc *threadCache)
 	}
 	var items []ext.ViewItem
 	for i, f := range frames {
-		if f.PresentationHint == "subtle" && !p.threads.subtle {
+		// subtle のフレームは t で出すまで隠す。ただし選んでいるフレーム（スコープの区画が出しているフレーム。一時停止で
+		// runtime.gopark に止まったときの先頭のフレームなど）は隠さない（PR #423 の再レビューの推奨 2）。
+		selected := x.hasFrame && x.frame == f.ID
+		if f.PresentationHint == "subtle" && !p.threads.subtle && !selected {
 			continue
 		}
 		label := oneLine(f.Name)
@@ -331,7 +370,7 @@ func (p *pane) frameItems(x sessionSnap, cur *session, tid int, tc *threadCache)
 		}
 		id := frameItemID(x.s, tid, i)
 		p.threads.frames[id] = frameRef{s: x.s, tid: tid, frame: f}
-		if x.s == cur && x.hasFrame && x.frame == f.ID {
+		if x.s == cur && selected {
 			hs = []ext.ViewSpan{{Start: 0, End: len(label), Style: "search"}}
 		}
 		item := ext.ViewItem{ID: id, Label: label, Highlights: hs}
@@ -406,7 +445,10 @@ func (p *pane) selectFrameItem(item string) {
 		return
 	}
 	if prev != ref.s {
-		p.d.showInfo("今のセッションを " + ref.s.label() + " にした")
+		// スコープの区画（と次の issue のウォッチ式と REPL）は今のセッションのフレームで評価するので、別のセッションのフレームを
+		// 選んだら、今のセッション（続行とステップ実行の送り先）もそのセッションにする。送り先のスレッドは、そのセッションの選んでいる
+		// スレッドのままにする（PR #423 の再レビューの裁定要 1 へのオーケストレータの決め。案 A）。
+		p.d.showInfo("続行とステップ実行の送り先を、セッション " + ref.s.label() + " にした")
 	}
 	path, ok := frameFile(ref.frame)
 	if !ok {
@@ -711,16 +753,18 @@ func (p *pane) indexedPage(x sessionSnap, parent string, ref, start, total int, 
 		return items, nil
 	}
 	id := parent + "\x1f!more" + strconv.Itoa(start+n)
-	label := fmt.Sprintf("more: 残り %d 個", total-start-n)
-	open := p.scopes.open(id, false)
-	more := ext.ViewItem{ID: id, Label: label, HasChildren: true, Expanded: &open, Highlights: []ext.ViewSpan{{Start: 0, End: len(label), Style: "comment"}}}
-	if open {
-		children, err := p.indexedPage(x, id, ref, start+n, total, map[string]int{})
+	if p.scopes.open(id, false) {
+		// 開いた more の項目は、続きの pageSize 個（と次の more）に置き換え、同じ深さに並べる（開き続けても字下げが深くならない。
+		// PR #423 の再レビューの推奨 5）。続きの項目の ID は、同じ変数の子として作る。
+		rest, err := p.indexedPage(x, parent, ref, start+n, total, seen)
 		if err != nil {
 			return nil, err
 		}
-		more.Children = children
+		return append(items, rest...), nil
 	}
+	label := fmt.Sprintf("more: 残り %d 個", total-start-n)
+	f := false
+	more := ext.ViewItem{ID: id, Label: label, HasChildren: true, Expanded: &f, Highlights: []ext.ViewSpan{{Start: 0, End: len(label), Style: "comment"}}}
 	return append(items, more), nil
 }
 

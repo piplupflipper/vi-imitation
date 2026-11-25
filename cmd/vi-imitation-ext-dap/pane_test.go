@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 )
@@ -211,7 +212,7 @@ func TestParseUISettings(t *testing.T) {
 //
 // req: FR-289, FR-302, FR-305
 func TestPaneScopes(t *testing.T) {
-	h := paneHost(t, nil, map[string]any{"stopDelayMs": 300}, map[string]any{"defaultSection": "scopes"})
+	h := paneHost(t, nil, map[string]any{"stopDelayMs": 600}, map[string]any{"defaultSection": "scopes"})
 	h.toggleUI()
 	p := h.waitPane()
 	h.mustExec(cmdStart, 0)
@@ -237,25 +238,32 @@ func TestPaneScopes(t *testing.T) {
 		t.Errorf("big = %q", labels(b.Children[98:]))
 	}
 	h.notifyView(ext.MethodViewExpand, ext.ViewExpandParams{View: p.id, Item: "Locals\x1fbig\x1f!more100", Expanded: true, Child: secScopes})
+	// more を開くと、続きの 100 個と次の more を、同じ深さに並べる（more の項目を置き換える。字下げが深くならない）。
 	c = h.waitUpdate(secScopes, func(c ext.ViewComponent) bool {
-		m := find(c.Items, "Locals\x1fbig\x1f!more100")
-		return m != nil && len(m.Children) == 101
+		b := find(c.Items, "Locals\x1fbig")
+		return b != nil && len(b.Children) == 201
 	}, nil)
-	if m := find(c.Items, "Locals\x1fbig\x1f!more100"); m.Children[0].Label != "[100]: int = 100" {
-		t.Errorf("more = %q", m.Children[0].Label)
+	if b := find(c.Items, "Locals\x1fbig"); b.Children[100].ID != "Locals\x1fbig\x1f[100]" || b.Children[200].Label != "more: 残り 2800 個" ||
+		find(c.Items, "Locals\x1fbig\x1f!more100") != nil {
+		t.Errorf("big after opening more = %q", labels(b.Children[99:]))
 	}
-	// [[ で、カーソルを親の項目へ移す（最後に作った木を cursor 付きで送り直す）。more の下の項目は、more を飛ばしてその変数へ移す。
-	h.key(p.id, secScopes, keyScopesParent, "Locals\x1fbig\x1f!more100\x1f[150]")
+	// [[ で、カーソルを親の項目へ移す（最後に作った木を cursor 付きで送り直す）。
+	h.key(p.id, secScopes, keyScopesParent, "Locals\x1fbig\x1f[150]")
 	h.waitUpdate(secScopes, func(c ext.ViewComponent) bool { return c.Cursor == "Locals\x1fbig" }, nil)
 	// ステップ実行で動いている間は前の木を残して先頭に印を足し（同じ項目の ID なので、本体はカーソルを保つ）、止まり直すと新しい値を出す。
 	// 開いた変数は開いたまま読み直す。
 	h.mustExec(cmdNext, 0)
 	c = h.waitLabel(secScopes, runningLabel)
-	if c.Items[0].ID != runningID || find(c.Items, "Locals\x1fx") == nil || find(c.Items, "Locals\x1fbig\x1f!more100") == nil {
+	if c.Items[0].ID != runningID || find(c.Items, "Locals\x1fx") == nil || find(c.Items, "Locals\x1fbig\x1f[150]") == nil {
 		t.Errorf("scopes while running = %q", labels(c.Items))
 	}
-	c = h.waitLabel(secScopes, "x: int = 2")
-	if b := find(c.Items, "Locals\x1fbig"); b == nil || len(b.Children) != 101 || find(c.Items, runningID) != nil {
+	// 動いている間に変数を開くと、読めないことを知らせる（止まったら開く）。
+	h.notifyView(ext.MethodViewExpand, ext.ViewExpandParams{View: p.id, Item: "Locals\x1fnested", Expanded: true, Child: secScopes})
+	h.waitMessage("動いている間は変数を読めない。止まったら開く")
+	c = h.waitUpdate(secScopes, func(c ext.ViewComponent) bool {
+		return strings.Contains(labels(c.Items), "x: int = 2") && find(c.Items, "Locals\x1fnested\x1fnext") != nil
+	}, nil)
+	if b := find(c.Items, "Locals\x1fbig"); b == nil || len(b.Children) != 201 || find(c.Items, runningID) != nil {
 		t.Error("the expanded variable was not read again after the stop")
 	}
 	h.stopAndWait()
@@ -586,6 +594,48 @@ func TestPaneThreadSelect(t *testing.T) {
 	h.stopAndWait()
 }
 
+// TestPaneRunning は、止まらずに動き続けるセッションでも、開始が成り立ったら、スレッドの区画に、動いていることとスレッドを出し、
+// その後は threads を読み直さずに、thread の event でスレッドを足し引きすることを確かめる（PR #423 の再レビューの必須 1）。
+//
+// req: FR-290
+func TestPaneRunning(t *testing.T) {
+	h := paneHost(t, nil, map[string]any{"idle": true, "threadEvents": true}, map[string]any{"defaultSection": "threads"})
+	h.toggleUI()
+	h.waitPane()
+	h.mustExec(cmdStart, 0)
+	c := h.waitLabel(secThreads, "スレッド 7")
+	if l := labels(c.Items); !strings.HasPrefix(l, runningLabel+"\nmain\n") {
+		t.Errorf("threads while running = %q", l)
+	}
+	c = h.waitUpdate(secThreads, func(c ext.ViewComponent) bool { return !strings.Contains(labels(c.Items), "スレッド 7") }, nil)
+	if l := labels(c.Items); l != runningLabel+"\nmain\n" {
+		t.Errorf("threads after the thread exited = %q", l)
+	}
+	if all := h.outputsUntil("hello from debuggee"); strings.Count(all, "\nthreads\n") > 1 {
+		t.Errorf("threads was read more than once while running: %q", all)
+	}
+	h.stopAndWait()
+}
+
+// TestPaneSubtleSelected は、選んでいるフレーム（止まった先頭のフレーム）が subtle でも、スレッドの区画で隠さないことを確かめる
+// （PR #423 の再レビューの推奨 2。スコープの区画が出しているフレームが、スレッドの区画に見えないことが無いように）。
+//
+// req: FR-290
+func TestPaneSubtleSelected(t *testing.T) {
+	h := paneHost(t, nil, map[string]any{"topSubtle": true}, map[string]any{"defaultSection": "threads"})
+	h.toggleUI()
+	h.waitPane()
+	h.mustExec(cmdStart, 0)
+	c := h.waitLabel(secThreads, "main.caller")
+	if f := find(c.Items, "t1/1/#0"); f == nil || !strings.HasPrefix(f.Label, "main.main") || f.Highlights[0].Style != "search" {
+		t.Errorf("the selected subtle frame = %+v; threads = %q", f, labels(c.Items))
+	}
+	if strings.Contains(labels(c.Items), "runtime.main") {
+		t.Errorf("an unselected subtle frame is shown: %q", labels(c.Items))
+	}
+	h.stopAndWait()
+}
+
 // TestPaneStopOrder は、ペインを開いていても、止まったときに、止まった位置を出すための stackTrace（levels 1）が、
 // ペインの読み込み（threads、区画の stackTrace、scopes、variables）より先にアダプターへ届き、止まった位置へのカーソルの移動を
 // 待たせないことを確かめる（PR #423 のレビューの必須 1）。続けている間（ステップ実行の応答から止まるまで）には、ペインは request を送らない。
@@ -636,10 +686,32 @@ func TestStripEscapeSeqs(t *testing.T) {
 		{"x\x1b", "x", "\x1b"},
 		{"\x1b=y", "y", ""},
 		{"日本語\x1b[2K", "日本語", ""},
+		// tput sgr0 の文字集合の指定（nF の 3 バイトの並び）と SGR の戻し
+		{"a\x1b(B\x1b[mb", "ab", ""},
+		{"\x1b)0\x1b$Bx", "x", ""},
+		{"x\x1b(", "x", "\x1b("},
+		// ESC の後が多バイト文字なら、ESC だけを捨てて、文字を壊さない
+		{"a\x1b日本", "a日本", ""},
+		// 終わりのバイトの無い CSI は、多バイト文字の前で打ち切り、本文を食べない
+		{"\x1b[日本語のテキストX末尾", "日本語のテキストX末尾", ""},
+		{"\x1b[31\nnext", "\nnext", ""},
+		// 終わらない OSC は、行をまたいで待たない
+		{"x\x1b]0;title\nnext", "x\nnext", ""},
+		{"x\x1b]0;title", "x", "\x1b]0;title"},
+		// DCS などの制御文字列は ST まで
+		{"\x1bP1$r0m\x1b\\z", "z", ""},
+		{"\x1b_apc\x07z", "z", ""},
+		// Fp（ESC 7 の位置の保存）と Fe（ESC M）
+		{"\x1b7a\x1bMb", "ab", ""},
+		// ESC の後の制御文字は、ESC だけを捨てる
+		{"a\x1b\nb", "a\nb", ""},
 	} {
 		out, rest := stripEscapeSeqs(tc.in)
 		if out != tc.out || rest != tc.rest {
 			t.Errorf("stripEscapeSeqs(%q) = %q, %q; want %q, %q", tc.in, out, rest, tc.out, tc.rest)
+		}
+		if !utf8.ValidString(out) {
+			t.Errorf("stripEscapeSeqs(%q) = %q is not valid UTF-8", tc.in, out)
 		}
 	}
 }

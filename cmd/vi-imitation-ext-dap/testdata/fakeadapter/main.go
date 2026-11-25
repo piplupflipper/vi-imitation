@@ -99,6 +99,10 @@ type fakeOptions struct {
 	TwoThreads bool `json:"twoThreads"`
 	// CallerPath は、stackTrace の 3 つ目のフレーム（main.caller）のソースのパスである。空なら止まった位置のファイル。
 	CallerPath string `json:"callerPath"`
+	// ThreadEvents は、configurationDone の 500 ミリ秒後にスレッド 7 が始まった thread の event を、1 秒後に終わった event を送る。
+	ThreadEvents bool `json:"threadEvents"`
+	// TopSubtle は、stackTrace の先頭のフレームの presentationHint を subtle にする（一時停止で runtime.gopark に止まった dlv の代役）。
+	TopSubtle bool `json:"topSubtle"`
 	// ANSI は、configurationDone の後に、端末の色の並びを含む行を、並びの途中で塊を分けて出す。
 	ANSI bool `json:"ansi"`
 }
@@ -477,6 +481,14 @@ func (a *adapter) handle(m *message) {
 			a.output("stdout", "\nprogress 1\rprogress 2\n")
 			a.output("important", "important note\n")
 		}
+		if a.opts.ThreadEvents {
+			time.AfterFunc(500*time.Millisecond, func() {
+				a.event("thread", map[string]any{"reason": "started", "threadId": 7})
+			})
+			time.AfterFunc(1000*time.Millisecond, func() {
+				a.event("thread", map[string]any{"reason": "exited", "threadId": 7})
+			})
+		}
 		if a.opts.ANSI {
 			a.output("stdout", "\x1b[31mred\x1b[0m \x1b]0;title\x07plain \x1b[1")
 			a.output("stdout", ";32mgreen\x1b[0m end\n")
@@ -562,6 +574,9 @@ func (a *adapter) handle(m *message) {
 		}
 		if a.opts.NoSource {
 			delete(frame, "source")
+		}
+		if a.opts.TopSubtle {
+			frame["presentationHint"] = "subtle"
 		}
 		// 先頭のフレームの後に、subtle のフレームと、呼んだ側のフレームを並べる（スレッドの区画のテスト）。levels が 1 なら先頭だけ。
 		// 呼んだ側のフレームのパスは、CallerPath があればそれ（手元にあるファイルのフレームのテスト）、なければ止まった位置のファイルである。

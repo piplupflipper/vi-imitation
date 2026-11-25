@@ -612,6 +612,7 @@ func (d *debugger) markStopped(s *session, tid *int) (gen uint64, focus bool) {
 	// 止まった位置を出すための stackTrace より先にアダプターへ届き、カーソルの移動が遅れる（PR #423 のレビューの必須 1）。
 	// 印は、止まった位置を出し終えた後（showStopped と stoppedWithoutSource）で付ける。
 	gen = s.gen.Add(1)
+	s.stopGen = gen
 	cur := d.cur
 	focus = cur == nil || cur == s || !slices.Contains(d.sessions, cur) || !cur.halted
 	if focus && d.stopWaiter != nil && !d.inScopeLocked(s) {
@@ -1435,6 +1436,7 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focu
 	}
 	s.exec = &execPoint{path: path, line: line}
 	s.frame, s.hasFrame = frame, true
+	s.stopGen = 0
 	// ペインの区画は、止まった位置への移動（editor/open か再生の応答）を済ませた後に作り直す（markStopped の doc）。
 	defer d.pane.markDirty(secThreads, secScopes)
 	d.publishLocked(path)
@@ -1554,6 +1556,7 @@ func (d *debugger) stoppedWithoutSource(s *session, gen uint64, reason string) {
 		d.mu.Unlock()
 		return
 	}
+	s.stopGen = 0
 	defer d.pane.markDirty(secThreads, secScopes)
 	w := d.takeStopWaiterForLocked(s)
 	multi := len(d.sessions) > 1

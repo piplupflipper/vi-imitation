@@ -140,6 +140,9 @@ type session struct {
 	// hasFrame が false なら未知。
 	frame    int
 	hasFrame bool
+	// stopGen は、止まった位置を出し終える前（markStopped の後、showStopped か stoppedWithoutSource の前）の世代である。
+	// 0 なら出し終えた。世代が進めば（続けた、選び直した）意味を失う。ペインは、この間は区画を読まない（stopping）。
+	stopGen uint64
 	// redirected は、今のセッションが動いていたので、続行かステップ実行をこのセッションへ替えて送ったことを表す（targetLocked）。
 	// 次の停止の知らせに添えて消す。続けて出る停止の知らせで、替えたことの知らせが上書きされて読めないため（PR #414 の再レビューの推奨 B）。
 	redirected bool
@@ -340,6 +343,12 @@ func (s *session) run() {
 	}()
 	err := s.start()
 	s.replyStart(err)
+	if err == nil {
+		// 開始が成り立った（launch か attach の応答を受けた）。止まらずに動き続けるセッション（ブレークポイントを置かずに始めた、
+		// 動いているサーバーへ attach した）でも、繋がったことと、そのスレッドを区画に出す（PR #423 の再レビューの必須 1）。
+		// スレッドの一覧は、ここで 1 回読み、その後は thread の event で足し引きする（動いている間に request を送らない）。
+		s.d.pane.markDirty(secThreads, secScopes)
+	}
 	switch {
 	case err != nil && s.stopping.Load():
 		// 始める途中で終えた（debug.terminate、親のセッションの終わり）。ログにだけ書く。
@@ -855,6 +864,13 @@ func (s *session) handleEvent(e dapEvent) {
 		if body.Reason == "changed" && body.Breakpoint.ID != 0 {
 			s.d.breakpointChanged(s, body.Breakpoint)
 		}
+	case "thread":
+		var body threadEvent
+		if err := json.Unmarshal(e.body, &body); err != nil {
+			s.d.logf("thread event: %v", err)
+			return
+		}
+		s.d.pane.threadEvent(s, body)
 	case "exited":
 		var body exitedEvent
 		if err := json.Unmarshal(e.body, &body); err == nil {
@@ -950,7 +966,7 @@ func (s *session) appendStream(text string) { s.appendOutput(text, "") }
 // stripEscapes は、出力から端末の制御の並び（ESC で始まるもの。pytest や開発用のサーバーが書く SGR の色 \x1b[31m など）を取り除く
 // （PR #423 のレビューの推奨 2）。色に直さないのは、view/append の highlights は本体の色の表の名前（7.1）しか持てず、
 // 表に端末の 16 色に当たる名前が無いためである。並びが塊の境目で途切れたら、残りを覚えて、同じ category の次の塊と一緒に取り除く。
-// 取り除くのは CSI（ESC [ … 0x40〜0x7e の 1 文字）、OSC（ESC ] … BEL か ESC \）、そのほかの ESC と次の 1 文字である。
+// 取り除く並びの形は escapeEnd にある。
 func (s *session) stripEscapes(category, text string) string {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
@@ -996,31 +1012,67 @@ func stripEscapeSeqs(text string) (out, rest string) {
 	return b.String(), ""
 }
 
-// escapeEnd は、text[i] の ESC で始まる並びの次の位置を返す。並びが text の中で終わっていなければ -1 を返す。
+// escapeEnd は、text[i] の ESC で始まる並びの次の位置（text[i:end] を捨てる）を返す。並びが text の中で終わっていなければ -1 を返す。
+// 並びの形は ECMA-48（5th edition）の 5 章（エスケープシーケンス、制御シーケンス、制御文字列）に沿う（PR #423 の再レビューの推奨 3）。
+//
+//   - CSI（ESC [）: 引数のバイト 0x30〜0x3f と中間のバイト 0x20〜0x2f の後の、終わりのバイト 0x40〜0x7e まで。
+//     途中にほかのバイト（制御文字、多バイト文字）が来たら、並びが壊れているとみなし、そのバイトの前までを捨てて本文に戻す
+//   - 制御文字列（OSC の ESC ]、DCS の ESC P、SOS の ESC X、PM の ESC ^、APC の ESC _）: ST（ESC \）か BEL まで。
+//     改行か別の ESC が来たら、壊れているとみなし、その前までを捨てる（行をまたいで本文を待たない）
+//   - nF（ESC の後に中間のバイト 0x20〜0x2f が続き、終わりのバイト 0x30〜0x7e。文字集合を指す ESC ( B など）
+//   - Fp、Fe、Fs（ESC と 0x30〜0x7e の 1 バイト）
+//   - ESC の後が制御文字か多バイト文字なら、ESC だけを捨てる（文字の途中で切らず、不正な UTF-8 を作らない）
 func escapeEnd(text string, i int) int {
-	if i+1 >= len(text) {
+	n := len(text)
+	if i+1 >= n {
 		return -1
 	}
-	switch text[i+1] {
-	case '[':
-		for j := i + 2; j < len(text); j++ {
-			if c := text[j]; c >= 0x40 && c <= 0x7e {
+	c := text[i+1]
+	switch {
+	case c == '[':
+		for j := i + 2; j < n; j++ {
+			switch b := text[j]; {
+			case b >= 0x40 && b <= 0x7e:
 				return j + 1
+			case b < 0x20 || b > 0x3f:
+				return j
 			}
 		}
 		return -1
-	case ']':
-		for j := i + 2; j < len(text); j++ {
-			if text[j] == 0x07 {
+	case c == ']' || c == 'P' || c == 'X' || c == '^' || c == '_':
+		for j := i + 2; j < n; j++ {
+			switch text[j] {
+			case 0x07:
 				return j + 1
-			}
-			if text[j] == 0x1b && j+1 < len(text) && text[j+1] == '\\' {
-				return j + 2
+			case '\n', '\r':
+				return j
+			case 0x1b:
+				if j+1 >= n {
+					return -1
+				}
+				if text[j+1] == '\\' {
+					return j + 2
+				}
+				return j
 			}
 		}
 		return -1
+	case c >= 0x20 && c <= 0x2f:
+		j := i + 2
+		for j < n && text[j] >= 0x20 && text[j] <= 0x2f {
+			j++
+		}
+		if j >= n {
+			return -1
+		}
+		if b := text[j]; b >= 0x30 && b <= 0x7e {
+			return j + 1
+		}
+		return j
+	case c >= 0x30 && c <= 0x7e:
+		return i + 2
 	}
-	return i + 2
+	return i + 1
 }
 
 // normalizeCR は、出力の改行の \r を扱う（PR #405 の未確認事項の決め）。\r\n は \n にし、\n の前でない \r（進み具合の表示が行を
