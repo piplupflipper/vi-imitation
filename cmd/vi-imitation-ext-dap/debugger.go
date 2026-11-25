@@ -126,7 +126,8 @@ type debugger struct {
 	// sessions は、動いているセッション（最上位のセッションと子のセッション）を、始めた順に並べたものである（FR-285）。
 	// 最上位のセッションは一度に 1 つで、デバッグ中かどうかは sessions が空でないかで決める。
 	sessions []*session
-	// cur は、今のセッション（最後に止まったセッション。selectSession で選び直せる）である。sessions が空なら nil。
+	// cur は、今のセッション（止まったときに今のセッションが無いか動いていたセッション。markStopped と targetLocked。
+	// selectSession で選び直せる）である。sessions が空なら nil。
 	cur *session
 	// nextID は、次に振るセッションの番号である。
 	nextID int
@@ -552,8 +553,8 @@ func (d *debugger) choose(s *session, set func()) bool {
 	return true
 }
 
-// markStopped は、s が止まった（stopped の event）ことを記録する。s を今のセッションにし、止まったスレッド tid（nil は未知）を選び、
-// フレームの選択を外し、世代を進めて、その世代を返す（FR-285、FR-287）。
+// markStopped は、s が止まった（stopped の event）ことを記録する。止まったスレッド tid（nil は未知）を選び、
+// フレームの選択を外し、世代を進めて、その世代を返す（FR-285、FR-287）。下の条件のときだけ s を今のセッションにする。
 //
 // s を今のセッションにするのは、今のセッションが無いか、s か、止まっていないときだけである（nvim-dap（コミット
 // cfa2d58f4537aca6ca83e2de1a0d9f1491121264）の lua/dap.lua の listeners.after.event_stopped['dap.sessions'] と同じ）。
@@ -600,6 +601,7 @@ func (d *debugger) targetLocked() (s *session, changed bool) {
 	for _, x := range d.sessions {
 		if x.halted {
 			d.cur = x
+			x.redirected = true
 			return x, true
 		}
 	}
@@ -1388,17 +1390,15 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focu
 	w := d.takeStopWaiterForLocked(s)
 	buf, opened := d.buffers[path]
 	multi := len(d.sessions) > 1
+	redirected := s.redirected
+	s.redirected = false
 	isCur := d.cur == s
 	sel := d.selectionLocked()
 	d.mu.Unlock()
 	if isCur {
 		d.notifySelect(sel)
 	}
-	if multi {
-		d.showInfo(fmt.Sprintf("停止した（%s、%s）: %s:%d", reason, s.label(), path, line+1))
-	} else {
-		d.showInfo(fmt.Sprintf("停止した（%s）: %s:%d", reason, path, line+1))
-	}
+	d.showInfo(fmt.Sprintf("%s: %s:%d", d.stoppedText(s, reason, multi, redirected), path, line+1))
 	if !focus && w == nil {
 		// 今のセッションでないセッションが止まった（markStopped）。印とメッセージだけにし、カーソルは移さない。
 		return
@@ -1437,6 +1437,20 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focu
 	id, version := b.ID(), b.Version()
 	if _, err := d.srv.OpenEditor(ctx, ext.EditorOpenParams{Buffer: &id, Position: &pos, Version: &version, Focus: true}); err != nil {
 		d.logf("editor/open buffer %d: %v", id, err)
+	}
+}
+
+// stoppedText は、止まったことの知らせの文（位置を除く）を作る。セッションが 2 つ以上あればセッションの名前を添え、
+// 続行かステップ実行をこのセッションへ替えて送った後（redirected）なら、そのことも添える
+// （替えたことの知らせが、すぐ後のこの知らせで上書きされて読めないため。PR #414 の再レビューの推奨 B）。
+func (d *debugger) stoppedText(s *session, reason string, multi, redirected bool) string {
+	switch {
+	case redirected:
+		return fmt.Sprintf("停止した（%s、%s。今のセッションが動いていたので、このセッションへ送った）", reason, s.label())
+	case multi:
+		return fmt.Sprintf("停止した（%s、%s）", reason, s.label())
+	default:
+		return fmt.Sprintf("停止した（%s）", reason)
 	}
 }
 
@@ -1490,8 +1504,11 @@ func (d *debugger) stoppedWithoutSource(s *session, gen uint64, reason string) {
 		return
 	}
 	w := d.takeStopWaiterForLocked(s)
+	multi := len(d.sessions) > 1
+	redirected := s.redirected
+	s.redirected = false
 	d.mu.Unlock()
-	d.showInfo("停止した（" + reason + "）")
+	d.showInfo(d.stoppedText(s, reason, multi, redirected))
 	if w == nil {
 		return
 	}
@@ -1551,6 +1568,7 @@ func (d *debugger) sessionEnded(s *session, abnormal, quiet bool) {
 		}
 	}
 	s.configured = false
+	lateFailure := s.lateFailure
 	prevExec := s.exec
 	s.exec = nil
 	for _, res := range d.bpRes {
@@ -1601,14 +1619,24 @@ func (d *debugger) sessionEnded(s *session, abnormal, quiet bool) {
 		d.notifySelect(sel)
 	}
 	w.resolve(ext.ProviderInvokeResult{OK: !quiet && !abnormal})
+	// 後から届いた失敗（dlv の restart のビルドの失敗）は、終わりの知らせに添える。アダプターは失敗の応答の後に terminated を送るので、
+	// 失敗の知らせだけを出すと、すぐ後の終わりの知らせで上書きされて読めない（PR #414 の再レビューの推奨 B）。
+	suffix := ""
+	if lateFailure != "" {
+		suffix = "（" + lateFailure + "）"
+	}
 	switch {
 	case s.parent != nil && abnormal:
-		d.showError(fmt.Sprintf("子のセッション %s のデバッグアダプターが異常終了した", s.label()))
+		d.showError(fmt.Sprintf("子のセッション %s のデバッグアダプターが異常終了した%s", s.label(), suffix))
+	case s.parent != nil && suffix != "":
+		d.showError(fmt.Sprintf("子のセッション %s が終わった%s", s.label(), suffix))
 	case s.parent != nil:
 		d.logf("session %d: child session %q ended", s.id, s.label())
 	case quiet:
 	case abnormal:
-		d.showError("デバッグアダプターが異常終了した")
+		d.showError("デバッグアダプターが異常終了した" + suffix)
+	case suffix != "":
+		d.showError("デバッグを終了した" + suffix)
 	default:
 		d.showInfo("デバッグを終了した")
 	}

@@ -2902,7 +2902,7 @@ debugpy は、デバッグ対象が `subprocess` で Python の子のプロセ�
 - 子のセッションだけが終わっても（子のプロセスが終わった）、親のセッションは続く
 - `<leader>dr` は、アダプターが `restart` に対応していれば（dlv と vscode-js-debug）、終えずに `restart` を送る。対応していなければ（debugpy）、終えてから前回の構成で始め直す
 - アダプターが条件付きのブレークポイントに対応していなければ、条件付きのブレークポイントは置かず（確かめられなかった印で出る）、そのことを知らせる
-- `<leader>dr` で Delve がビルドに失敗したときは、「restart に失敗した: …」で理由が出る
+- `<leader>dr` で Delve がビルドに失敗したときは、「デバッグを終了した（restart に失敗した: …）」で理由が出る。コンパイルの誤りの中身は、`dap` の欄（`:output dap`）に出る
 
 vscode-js-debug の `dapDebugServer.js` への `attach` は、`port`（`--inspect` で待つ node）で繋ぐ。
 `processId` を書いた `attach` は、プロセスを選んでも、既定のポート（9229）へ繋ごうとして失敗する。

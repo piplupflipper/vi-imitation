@@ -131,6 +131,12 @@ type session struct {
 	// frame は、選んでいるフレームの ID である（止まったスレッドの先頭のフレーム）。hasFrame が false なら未知。
 	frame    int
 	hasFrame bool
+	// redirected は、今のセッションが動いていたので、続行かステップ実行をこのセッションへ替えて送ったことを表す（targetLocked）。
+	// 次の停止の知らせに添えて消す。続けて出る停止の知らせで、替えたことの知らせが上書きされて読めないため（PR #414 の再レビューの推奨 B）。
+	redirected bool
+	// lateFailure は、待ち終えた request へ後から届いた失敗の文である（dlv の restart のビルドの失敗）。
+	// アダプターはその後に terminated を送るので、終わりの知らせに添える（同じ推奨 B）。
+	lateFailure string
 }
 
 // linesStartAt1 は、initialize で送る linesStartAt1 と columnsStartAt1 である。
@@ -577,13 +583,21 @@ func (s *session) resume(ctx context.Context, command string) error {
 	if err != nil {
 		return err
 	}
-	s.gen.Add(1)
+	// 止まっていないことを、送る前に記録する。応答の後に記録すると、応答より先に届いた次の stopped の event（markStopped）の後で
+	// 止まっていないことにしてしまい、続行の向き先（targetLocked）を誤る。失敗したら、その間に止まっていなければ戻す。
+	s.d.mu.Lock()
+	wasHalted := s.halted
+	s.halted = false
+	gen := s.gen.Add(1)
+	s.d.mu.Unlock()
 	if err := c.call(ctx, command, threadArguments{ThreadID: tid}, nil); err != nil {
+		s.d.mu.Lock()
+		if s.gen.Load() == gen {
+			s.halted = wasHalted
+		}
+		s.d.mu.Unlock()
 		return err
 	}
-	s.d.mu.Lock()
-	s.halted = false
-	s.d.mu.Unlock()
 	return nil
 }
 
@@ -868,7 +882,11 @@ func (s *session) handleEvent(e dapEvent) {
 			var text string
 			_ = json.Unmarshal(e.body, &text)
 			s.d.logf("session %d: late failure response to %s: %s", s.id, command, text)
-			s.d.showError(fmt.Sprintf("%s に失敗した: %s", command, text))
+			msg := fmt.Sprintf("%s に失敗した: %s", command, text)
+			s.d.mu.Lock()
+			s.lateFailure = msg
+			s.d.mu.Unlock()
+			s.d.showError(msg)
 			return
 		}
 		if command, ok := strings.CutPrefix(e.name, reverseRequestEvent); ok {

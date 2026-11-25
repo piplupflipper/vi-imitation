@@ -504,8 +504,30 @@ func TestLateVerification(t *testing.T) {
 	})
 }
 
+// TestRestartLateFailure は、restart に成功の応答を返した後に、同じ request へ失敗の応答が届いたら（dlv のビルドの失敗）、
+// 理由を知らせ、続けて届く terminated の後の終わりの知らせにも理由を添えることを確かめる（PR #414 のレビューの推奨 3 と再レビューの推奨 B）。
+//
+// req: FR-286
+func TestRestartLateFailure(t *testing.T) {
+	h := newHost(t, fakeSettings(t, []string{"-restart", "-restart-fail"}, nil))
+	h.open(1, srcPath, srcText)
+	h.mustExec(cmdToggleBreakpoint, 2)
+	h.mustExec(cmdStart, 0)
+	h.waitSigns(bp2, exec2)
+	h.mustExec(ext.OpDebugRestart, 0)
+	m := h.waitMessage("restart に失敗した")
+	if m.Level != ext.MessageError || !strings.Contains(m.Text, "build error in main.go") {
+		t.Errorf("message = %+v", m)
+	}
+	m = h.waitMessage("デバッグを終了した")
+	if m.Level != ext.MessageError || !strings.Contains(m.Text, "build error in main.go") {
+		t.Errorf("end message = %+v, want the reason of the failed restart", m)
+	}
+	h.waitEnded()
+}
+
 // TestCapabilities は、アダプターが対応していない操作を、送らずに知らせるか、代わりの手順にすることを確かめる。
-// 条件付きのブレークポイントは、条件を外して送って知らせる。restart に対応していれば、終えずに restart を送る。
+// 条件付きのブレークポイントは、置かずに（送らずに）知らせ、条件の無いものだけを置く。restart に対応していれば、終えずに restart を送る。
 //
 // req: FR-286
 func TestCapabilities(t *testing.T) {
@@ -529,20 +551,6 @@ func TestCapabilities(t *testing.T) {
 			t.Errorf("message = %+v", m)
 		}
 		h.waitSigns(bp2, ext.Sign{Line: 5, Kind: ext.SignBreakpointUnverified}, exec2)
-	})
-	t.Run("restart failure", func(t *testing.T) {
-		h := newHost(t, fakeSettings(t, []string{"-restart", "-restart-fail"}, nil))
-		h.open(1, srcPath, srcText)
-		h.mustExec(cmdToggleBreakpoint, 2)
-		h.mustExec(cmdStart, 0)
-		h.waitSigns(bp2, exec2)
-		h.mustExec(ext.OpDebugRestart, 0)
-		// 成功の応答の後に届いた失敗の応答の理由を出す（dlv のビルドの失敗。PR #414 のレビューの推奨 3）。
-		m := h.waitMessage("restart に失敗した")
-		if m.Level != ext.MessageError || !strings.Contains(m.Text, "build error in main.go") {
-			t.Errorf("message = %+v", m)
-		}
-		h.waitEnded()
 	})
 	t.Run("restart", func(t *testing.T) {
 		h := newHost(t, fakeSettings(t, []string{"-restart"}, map[string]any{"child": true}))
