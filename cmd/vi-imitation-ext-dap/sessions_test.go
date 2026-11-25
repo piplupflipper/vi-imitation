@@ -322,12 +322,26 @@ func TestContinueStoppedSession(t *testing.T) {
 //
 // req: FR-19, FR-285
 func TestReplayOtherSessionStops(t *testing.T) {
-	h := connectFromChild(t, map[string]any{"stopDelayMs": 1000}, map[string]any{"firstStopDelayMs": 400})
+	t.Run("plain", func(t *testing.T) { replayOtherSessionStops(t, nil) })
+	// 最初の停止の stackTrace を遅らせ、editor/open が halted と今のセッションの決まった後しばらくして届く形でも、取り違えない。
+	t.Run("lateFirstOpen", func(t *testing.T) { replayOtherSessionStops(t, map[string]any{"stackTraceDelayMs": 300}) })
+}
+
+func replayOtherSessionStops(t *testing.T, extra map[string]any) {
+	parent := map[string]any{"stopDelayMs": 1000}
+	for k, v := range extra {
+		parent[k] = v
+	}
+	h := connectFromChild(t, parent, map[string]any{"firstStopDelayMs": 400})
 	h.mustExec(cmdStart, 0)
 	ss := h.waitSessions(2)
 	root, child := ss[0], ss[1]
 	h.waitHalted(root)
 	h.waitCurrent(root)
+	// 最初の停止の editor/open（パスで開くものと、位置へ移すもの）が届くまで待ってから読み捨てる。halted と今のセッションは
+	// stopped の event を受けた時点（markStopped）で決まり、editor/open は stackTrace の応答の後に送るので、待たずに読み捨てると、
+	// 遅れて届いた最初の停止の editor/open を、再生中の子の停止のものと取り違えた（PR #425 の CI で揺れた。main にもある）。
+	h.waitOpen()
 	h.drainOpens()
 	res := h.replay(cmdNext, 0)
 	if !res.OK || res.Open == nil || res.Open.Position == nil || res.Open.Position.Line != 3 {
