@@ -336,6 +336,14 @@ func TestStaleStackTrace(t *testing.T) {
 		if sel := h.d.currentSelection(); sel.hasFrame {
 			t.Errorf("selection = %+v, want no frame from the stale stackTrace", sel)
 		}
+		// フレームを選ぶと、選択に出て、世代が進む。
+		gen := s.gen.Load()
+		if !h.d.selectFrame(s, 1, 1000) {
+			t.Fatal("selectFrame = false")
+		}
+		if sel := h.d.currentSelection(); !sel.hasFrame || sel.frame != 1000 || sel.thread != 1 || s.gen.Load() == gen {
+			t.Errorf("selection after selectFrame = %+v (gen %d -> %d)", sel, gen, s.gen.Load())
+		}
 	})
 }
 
