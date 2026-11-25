@@ -212,7 +212,7 @@ func (f *floatState) childRenderers(r *ui.Renderer, ct *floatContent) (text, lis
 // 入力の行のインサートモードにする（FR-301）。前の子のプレビューは閉じる（見えていない子のプレビューは開かない）。
 // user なら、利用者の操作で替えたので、持ち主の拡張機能へ view/childSelect を送る。同じ子なら何もしない。
 //
-// req: FR-269, FR-301
+// req: FR-269, FR-270, FR-301
 func (e *Editor) selectChild(f *floatState, i int, user bool) {
 	sw := f.sw
 	if sw == nil || i < 0 || i >= len(sw.children) || i == sw.sel {
@@ -249,7 +249,7 @@ func (e *Editor) moveChild(f *floatState, how string, n int) {
 	}
 	k, sel := len(f.sw.children), f.sw.sel
 	n = max(n, 1)
-	to := sel
+	var to int
 	switch how {
 	case "next":
 		to = (sel + n) % k
@@ -269,7 +269,7 @@ func (e *Editor) moveChild(f *floatState, how string, n int) {
 // bs がその部品の選んでいる子のバッファ（書き足すテキストと入力の行の組では、出力と入力の行のどちらも）でなければ nil である。
 func (e *Editor) switcherOf(bs *bufferState) *floatState {
 	f := e.float
-	if f == nil || !f.focused || f.sw == nil || !slices.Contains(f.floatContent.buffers(), bs) {
+	if f == nil || !f.focused || f.sw == nil || !slices.Contains(f.buffers(), bs) {
 		return nil
 	}
 	return f

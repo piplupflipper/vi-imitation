@@ -139,6 +139,7 @@ func (k ViewKind) ChildKind() bool {
 	switch k {
 	case ViewText, ViewList, ViewTree, ViewConsole:
 		return true
+	case ViewInput, ViewFinder, ViewSwitcher:
 	}
 	return false
 }

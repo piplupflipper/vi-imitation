@@ -95,6 +95,8 @@ func StripCodeFences(s string) string {
 // 窓の色は StylePopup で、テキストの色はその上に重ねる。CursorLine なら、カーソルの行を StylePopupSelected で描く。
 // フォーカスの無い窓に収まらない行があれば、最後の行に残りの行数を書く（フォーカスを入れればスクロールして読める）。
 // Fill なら、枠線を描かずに、窓をバッファの表示領域の全体（画面の幅と、表示領域の行数）に広げる（部品の client の画面）。
+// Switcher（切り替えの部品。FR-269）なら、窓の中の最初の行（枠線が無ければ見出しの次の行）に見出しの行を描き（drawSwitcher）、
+// 窓を中身の行数と幅に依らず置ける最大の大きさにする。窓の中を描く子の Renderer は子ごとに持つ（useFloatSubs）。
 func (r *Renderer) drawFloat(g *Grid, theme Theme, fl *Float, curRow, curCol int) (Cursor, bool) {
 	if fl.View == nil || fl.View.Text == nil {
 		return Cursor{}, false

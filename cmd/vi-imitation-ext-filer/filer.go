@@ -215,6 +215,6 @@ func (f *filer) dispatch(t *tree, e server.ViewEvent) {
 		if t.split {
 			t.post(func() { t.follow(e.Item) })
 		}
-	case server.ViewInputChanged:
+	case server.ViewInputChanged, server.ViewChildSelected:
 	}
 }

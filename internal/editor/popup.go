@@ -986,6 +986,9 @@ func floatLines(c ext.ViewComponent, expanded map[string]bool, icons *itemIcons)
 		return text, nil, c.Highlights
 	case ext.ViewInput:
 		return []string{c.Text}, nil, nil
+	case ext.ViewSwitcher:
+		// 切り替えの部品は子ごとの中身を作る（switcher.go）ので、ここへは来ない。
+		return []string{""}, nil, nil
 	case ext.ViewList, ext.ViewTree, ext.ViewFinder:
 	}
 	if icons != nil && !icons.column {
@@ -1408,7 +1411,8 @@ func componentKind(k ext.ViewKind) floatKind {
 		return floatFinder
 	case ext.ViewConsole:
 		return floatConsole
-	case ext.ViewText:
+	case ext.ViewText, ext.ViewSwitcher:
+		// 切り替えの部品の種類は、選んでいる子の種類で持つ（switcher.go）。呼び出し側が切り替えの部品を先に分ける。
 	}
 	return floatText
 }

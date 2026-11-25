@@ -644,6 +644,7 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 | `sign.executionPoint`、`sign.breakpoint`、`sign.breakpointUnverified` | 印の列のデバッガーの印 | 順に黄色、赤、灰色 |
 | `sign.diagnostic.error`、`sign.diagnostic.warning`、`sign.diagnostic.info`、`sign.diagnostic.hint` | 印の列の診断の印 | 順に赤、黄色、青、灰色 |
 | `tabline`、`tabline.selected`、`tabline.fill` | タブの行の、ほかのタブ、いまのタブ、タブの右の空いた列 | 順に灰色の背景と下線、太字、反転 |
+| `view.child`、`view.child.selected` | 切り替えの部品（[複数の子を見出しの行で切り替える](#複数の子を見出しの行で切り替える)）の見出しの行の、ほかの子の名前と、選んでいる子の名前 | 書かなければ、順に `tabline`、`tabline.selected` の今の色を引き継ぐ |
 | `diff.add`、`diff.change`、`diff.delete`、`diff.text` | 見比べの、片側にだけある行、内容が違う行、もう片側にだけある行の位置の詰め物、違う行の中の違う文字 | 順に紺、紫、水色の背景（文字は青）、赤の背景と太字（Vim の暗い背景の既定と同じ番号） |
 
 既定の属性の値は `internal/ui/theme.go` の `DefaultTheme` にある。
@@ -2154,6 +2155,13 @@ tmux と herdr の中では、中央のポップアップを端末多重化ソ�
 端末多重化ソフトの外では、ペインに代えて画面の中央のポップアップに出し、`<Esc>` で閉じる（FR-123）。
 拡張機能は、端末多重化ソフトの中でもペインに代えて中央のポップアップに出すことと、中央のポップアップで項目を選んだら閉じることを指定できる（FR-147。[ファイラ](#ファイラ)の `<Space>e`）。
 
+拡張機能は、複数の画面を 1 つのペインかポップアップに重ね、最初の行の見出しの行で切り替える部品（切り替えの部品。FR-269）も出せる。
+見出しの行には、子の名前と、その子へ直に切り替えるキー（`[S]` の形）が並び、選んでいる子の名前を目立たせる。
+部品の中のノーマルモードで `]v`、`[v` を打つと次、前の子へ（回数の数だけ進み、端で折り返す）、`]V`、`[V` を打つと最後、最初の子へ切り替わる（操作の ID は `view.child-next`、`view.child-prev`、`view.child-last`、`view.child-first`。[操作の ID](#操作の-id)）。
+子のキーを打つか、見出しの行の子の名前をマウスで押しても切り替わる。
+拡張機能が宣言していれば、部品の中の `<Tab>` と `<S-Tab>` でも切り替わる（エディタの側の `<Tab>` と `<S-Tab>` はタブの移動のまま）。
+子を切り替えても、それぞれの子のカーソル、スクロール、木の開閉、入力の行の中身とモードは残る。
+
 ### herdr のプラグインを登録する
 
 herdr の中で中央のポップアップとペインを開くには、配布物の `herdr-plugin/` にある同梱のプラグインを、herdr に 1 回登録する。
@@ -3618,6 +3626,51 @@ s.Command("echo.open", func(_ context.Context, _ *server.Buffer, _ *ext.CommandE
 	return ext.CommandExecuteResult{OK: true}, nil
 })
 ```
+
+### 複数の子を見出しの行で切り替える
+
+切り替えの部品（`ext.ViewSwitcher`）は、テキスト、一覧、木、出力と入力の行の組の部品を子として並べ、見出しの行で選んだ 1 つの子だけを出す（拡張機能 API の 0.23.0 から）。
+デバッガーの区画（変数、スタック、REPL、出力）のように、1 つのペインに複数の画面を重ねて置くのに使う。
+ペイン（`OpenPane`）にも中央のポップアップ（`OpenPopup` の `Placement` が `center`）にも開ける。
+
+子（`ext.ViewChild`）は、部品の中で一意な `ID`、見出しの行に出す `Title`、子の部品の `Component` と、省ける `Key`（その子へ直に切り替えるノーマルモードの 1 つのキー。見出しの行に `[S]` の形で出る）を持つ。
+部品の `Selected` で、開いたときに選ぶ子を指す（省けば最初の子）。
+本体は子ごとに中身（カーソル、スクロール、木の開閉、入力の行と履歴）を持ち、子を切り替えても捨てない。
+
+利用者は、部品の中のノーマルモードで、次のキーで子を切り替える。
+
+| キー | 操作の ID | 働き |
+|---|---|---|
+| `]v`、`[v` | `view.child-next`、`view.child-prev` | 次、前の子へ。回数の数だけ進み、端で折り返す |
+| `]V`、`[V` | `view.child-last`、`view.child-first` | 最後、最初の子へ |
+| 子の `Key` | - | その子へ |
+
+見出しの行の子の名前をマウスで押しても切り替わる。
+出力と入力の行の組の子では、出力と入力の行のどちらのノーマルモードでも切り替えのキーが効く。
+組の子を初めて出したときは入力の行のインサートモードにし、切り替え直したときは、最後にいた出力か入力の行と、そのモードに戻す。
+利用者が切り替えると、`view/childSelect`（`OnView` の `ViewChildSelected`。`Child` が選んだ子）で知らせる。
+見えていない子の中身は、この知らせを受けてから作ってもよい。
+
+子の中身は、`UpdateView` と `AppendView` の `Child` に子の ID を入れて、その子だけを置き換えるか書き足す。見えていない子にも当たり、切り替えたときに最新の中身が出る。
+`Child` を書かない `UpdateView` は部品の全体を置き換え、同じ ID の子は状態を保ったまま中身を替え、無くなった子を捨てる。`Selected` を書けばその子を選ぶ（このときは `view/childSelect` を送らない）。
+子の中で起きた知らせ（`ViewSelected`、`ViewKey`、`ViewExpanded`、`ViewInputChanged`）は、`Child` に子の ID が入る。
+写し（`server.NewTextLog`、`server.NewConsoleLog`）を子に結びつけるときは、`Open` の 2 つ目の引数か `Rebind(view, child)` に子の ID を渡す。
+
+宣言ファイルの `contributes.popupKeys` の項目に `children`（子の ID の列）を書くと、その子を出しているときだけキーが効く（書かない項目は、その拡張機能のどの部品でも効く）。
+同じキーを子ごとに別の働きにできる。
+`action` に `view.child-next`、`view.child-prev`、`view.child-first`、`view.child-last` を書くと、拡張機能を呼ばずに子を切り替える。
+`popupKeys` は部品の中で本体の既定のキーより先に効くので、次のように書くと、部品の中の `<Tab>` と `<S-Tab>` が子の切り替えになり、エディタの側の `<Tab>` と `<S-Tab>` はタブの移動のままである。
+
+```jsonc
+"popupKeys": [
+  { "id": "dap.next", "keys": "<Tab>", "action": "view.child-next", "children": ["scopes", "threads", "repl"] },
+  { "id": "dap.prev", "keys": "<S-Tab>", "action": "view.child-prev", "children": ["scopes", "threads", "repl"] },
+  { "id": "dap.remove", "keys": "d", "children": ["watches"] }
+]
+```
+
+`children` を書かない `<Tab>` の項目は、その拡張機能のどの部品でも効き、切り替えの部品でない部品では何もしない（タブの移動にもならない）。
+古い本体は `switcher` の部品を開けないので、`initialize` の `apiVersion` を `ext.VersionLess` で比べてから使う。
 
 ### 1 行の入力を聞く
 

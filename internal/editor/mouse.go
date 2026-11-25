@@ -166,7 +166,7 @@ func (m mouseLocator) Target(drag bool) command.MouseTarget {
 	case ui.HitChild:
 		// 切り替えの部品の見出しの行の子の名前は、タブの見出しと同じく、ほかの部品（MouseElsewhere。Activate でその子に切り替える）である
 		// （FR-269。FR-185 の例外）。キーを受けているのがその部品の子のバッファのときだけである。
-		if f := e.mouseFloat(); f != nil && f.sw != nil && slices.Contains(f.floatContent.buffers(), m.bs) && !drag {
+		if f := e.mouseFloat(); f != nil && f.sw != nil && slices.Contains(f.buffers(), m.bs) && !drag {
 			return command.MouseTarget{Kind: command.MouseElsewhere}
 		}
 	case ui.HitScrollbar:

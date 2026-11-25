@@ -92,7 +92,7 @@ func (d *debugger) pick(ctx context.Context, title string, items []ext.ViewItem)
 				return e.Item, nil
 			case server.ViewClosed:
 				return "", errPickCancelled
-			case server.ViewInputChanged, server.ViewKey, server.ViewExpanded, server.ViewTabChanged:
+			case server.ViewInputChanged, server.ViewKey, server.ViewExpanded, server.ViewTabChanged, server.ViewChildSelected:
 				// 一覧では使わない知らせである。
 			}
 		case <-ctx.Done():

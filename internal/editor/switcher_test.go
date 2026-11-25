@@ -75,7 +75,7 @@ func startSwitcher(t *testing.T) *harness {
 // 書き足すテキストと入力の行の組の子を初めて出すと入力の行のインサートモードにし、切り替え直すと最後にフォーカスのあったバッファとモードに戻す。
 // 組の子では、出力と入力の行のどちらのノーマルモードでも切り替えのキーが効き、インサートモードの ]v は文字として入る。
 //
-// req: FR-269, FR-301
+// req: FR-269, FR-270, FR-301
 func TestSwitcherKeys(t *testing.T) {
 	h := startSwitcher(t)
 	openSwitcher(t, h, "switcher")

@@ -26,9 +26,8 @@ import (
 // 結合文字を前の文字と一緒に 1 文字として扱い（prevCharStart、nextCharEnd）、<C-w> の区切りも input/ask と同じ prevWordStart である
 // （consoleKey）。横のスクロールは、入力の行を描く子の Renderer が行う（ui.drawConsole）。
 //
-// 切り替えの部品（FR-269）の子にしたときの規則（子を初めて出したときのモード、切り替え直したときにフォーカスとモードを戻すこと）は、
-// 切り替えの部品の実装で足す。そのときは、子ごとに consoleState と tailState を持ち、フォーカスのある方（outFocus）から
-// consoleFocusBuffer で戻す先を決める。
+// 切り替えの部品（FR-269）の子にしたときは、子ごとの中身（floatContent）が consoleState と tailState を持ち、子を初めて出したときに
+// 入力の行のインサートモードにし、切り替え直したときはフォーカスのある方（outFocus）とそのバッファのモードに戻す（switcher.go。FR-301）。
 //
 // 入力の行の改行は持たない。貼り付けと、行を増やす編集（行単位の p、o）で入った改行は、consoleInputText で空白に替える
 // （input/ask の貼り付けと同じ。PR #415 のレビューの必須 1）。ACP のプロンプトで改行を保つ形（記号で見せて送るときに戻す、
