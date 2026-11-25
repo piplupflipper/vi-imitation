@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -16,11 +17,12 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/piplupflipper/vi-imitation/ext/expand"
 )
 
-// clientAddrPlaceholder は、デバッグアダプターの引数の中で、拡張機能が待ち受けるソケットのアドレスに置き換える文字列である。
-// 引数のどれかがこれを含むと、拡張機能は Unix ドメインソケットで待ち受け、デバッグアダプターからの接続を受けて DAP を話す。
-// 含まなければ、デバッグアダプターの標準入出力で DAP を話す。
+// clientAddrPlaceholder は、デバッグアダプターの起動の方法の中で、拡張機能が待ち受けるソケットのアドレスに置き換える変数である
+// （つなぎ方 clientSocket。transport.go）。
 //
 // delve の dlv dap は TCP かソケットでしか DAP を話さず、--client-addr で指定したアドレスへ自分から接続する
 // （https://github.com/go-delve/delve/blob/master/Documentation/usage/dlv_dap.md）。
@@ -30,19 +32,31 @@ const clientAddrPlaceholder = "${clientAddr}"
 // outputChannel は、output/append で書き足す欄の名前である（基本設計 6.4）。
 const outputChannel = "dap"
 
-// session は、1 回のデバッグである。デバッグアダプターの子プロセスと、それとの DAP の接続を持つ。
+// session は、1 回のデバッグである。デバッグアダプターとの DAP の接続と、拡張機能が起動したならその子プロセスを持つ。
 //
 // 開始の手順（run）は DAP の仕様の Overview の Launch Sequencing に従う。
-// initialize の response を受け取った後に launch を送り、initialized の event を待って、
-// ブレークポイントを setBreakpoints で送り、configurationDone を送ってから launch の response を待つ。
+// initialize の response を受け取った後に launch か attach を送り、initialized の event を待って、
+// ブレークポイントを setBreakpoints で送り、configurationDone を送ってから launch か attach の response を待つ。
 // デバッグアダプターは configurationDone の response の後に launch に応答してよい（同 Overview）ので、
 // launch の response を待ってから設定を送ると詰まる。
+//
+// 終え方（stop）は、request と、アダプターを拡張機能が起動したか（cmd が nil でないか）で分ける（FR-284。基本設計 6.4 の「終了と切断」）。
 type session struct {
-	d   *debugger
-	cmd *exec.Cmd
-	// ln は、ソケットで話すときに待ち受けるソケットである。標準入出力で話すときは nil。
+	d *debugger
+	// spec は、このセッションの構成とアダプターの起動の方法である。書き換えない。
+	spec *runSpec
+	// procMu は、proc を守る。serverPort でポートを選び直すとき（transport.go の respawn）に、proc を替えるためである。
+	procMu sync.Mutex
+	// proc は、アダプターの子プロセス（拡張機能が起動したもの）か、既に動いているアダプターへの接続の終わりである。nil にしない。
+	proc *adapterProc
+	// respawn は、serverPort で、アダプターが待ち受ける前に終わったときに、ポートを選び直して 1 回だけ起動し直す関数である。
+	// ほかのつなぎ方と、起動し直した後は nil。
+	respawn func() error
+	// ln は、clientSocket で待ち受けるソケットである。ほかのつなぎ方では nil。
 	ln      *net.UnixListener
 	sockDir string
+	// dial は、TCP でつなぐ先（serverPort、server、connectFrom）である。ほかのつなぎ方では nil。
+	dial *endpoint
 	// stdio は、標準入出力で話すときの、子プロセスの標準入力への書き込み口と標準出力の読み取り口である。
 	stdinW  *os.File
 	stdoutR *os.File
@@ -54,9 +68,6 @@ type session struct {
 	// initialized は、initialized の event を受け取ると閉じる。
 	initialized     chan struct{}
 	initializedOnce sync.Once
-	// procDone は、子プロセスが終わると閉じる。
-	procDone chan struct{}
-
 	// caps は、initialize の応答の capabilities である。stop が別の goroutine から読むので atomic にする。
 	caps atomic.Pointer[capabilities]
 	// terminatedCh は、terminated の event を受け取ると閉じる。
@@ -68,9 +79,11 @@ type session struct {
 	terminated atomic.Bool
 	// lastThread は、最後に止まったスレッドの ID である。0 は未知。
 	lastThread atomic.Int64
+	// halted は、デバッグ対象が止まっている（stopped の後、続行かステップ実行か continued の前）ことを表す。
+	halted atomic.Bool
 	// ended は、後始末が終わると閉じる。
 	ended chan struct{}
-	// eventCtx は、event の処理（stopped）が本体とデバッグアダプターへ送る request の ctx の親である。
+	// eventCtx は、event の処理（stopped）と接続の試し直しが本体とデバッグアダプターへ送る request の ctx の親である。
 	// stop の始めと後始末の終わりに cancelEvents で取り消す。止める間に event の処理が本体の応答を待ち続けると、
 	// その後ろに並んだ terminated の event を処理できず、stop が期限まで待つからである。
 	// 本体から shutdown を受け取った後は、Server のループが止まるので、WaitBuffer などは応答しない。
@@ -82,107 +95,55 @@ type session struct {
 // DAP の既定に合わせて 1 から数え、受け取った値は fromDAPLine と utf16ColumnToByte で本体の位置へ変換する。
 const linesStartAt1 = true
 
-// spawn は、設定 cfg のデバッグアダプターを子プロセスとして起動する。DAP の初期化はまだ行わない（run が行う）。
-// 起動できなければ誤りを返し、子プロセスとソケットを残さない。
-func spawn(d *debugger, cfg adapterConfig) (*session, error) {
-	if cfg.Command == "" {
-		return nil, errors.New("adapter command is empty")
-	}
+// newSession は、spec のセッションを作る。アダプターの起動と接続は spawn と run が行う。
+func newSession(d *debugger, spec *runSpec) *session {
 	s := &session{
 		d:            d,
+		spec:         spec,
 		events:       newEventQueue(),
 		initialized:  make(chan struct{}),
 		terminatedCh: make(chan struct{}),
-		procDone:     make(chan struct{}),
 		ended:        make(chan struct{}),
-	}
-	args := slices.Clone(cfg.Args)
-	useSocket := false
-	for _, a := range args {
-		if strings.Contains(a, clientAddrPlaceholder) {
-			useSocket = true
-		}
-	}
-	if useSocket {
-		dir, err := os.MkdirTemp("", "vi-imitation-ext-dap-")
-		if err != nil {
-			return nil, err
-		}
-		path := filepath.Join(dir, "dap.sock")
-		ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
-		if err != nil {
-			_ = os.RemoveAll(dir)
-			return nil, err
-		}
-		s.ln, s.sockDir = ln, dir
-		for i, a := range args {
-			args[i] = strings.ReplaceAll(a, clientAddrPlaceholder, "unix:"+path)
-		}
-	}
-	// 子プロセスの実行ファイルと引数は、利用者の設定から来る。拡張機能はそれを起動するためにある。
-	cmd := exec.Command(cfg.Command, args...) //nolint:gosec // 利用者が設定したデバッグアダプターを起動する
-	cmd.Dir = cfg.Cwd
-	s.cmd = cmd
-	var parentEnds, childEnds []*os.File
-	closeAll := func(fs []*os.File) {
-		for _, f := range fs {
-			_ = f.Close()
-		}
-	}
-	fail := func(err error) (*session, error) {
-		closeAll(parentEnds)
-		closeAll(childEnds)
-		s.closeSocket()
-		return nil, err
-	}
-	if useSocket {
-		// ソケットで話すときは、子プロセスの標準出力と標準エラー出力をデバッグ対象の出力として欄へ書き足す。
-		// dlv dap は、デバッグ対象の標準出力と標準エラー出力を output の event で送らず、自分の標準出力と標準エラー出力へ書く
-		// （https://github.com/go-delve/delve/blob/master/Documentation/api/dap/README.md）。
-		r, w, err := os.Pipe()
-		if err != nil {
-			return fail(err)
-		}
-		parentEnds, childEnds = append(parentEnds, r), append(childEnds, w)
-		cmd.Stdout, cmd.Stderr = w, w
-		go s.forward(r, func(text string) { d.appendOutput(text) })
-	} else {
-		inR, inW, err := os.Pipe()
-		if err != nil {
-			return fail(err)
-		}
-		parentEnds, childEnds = append(parentEnds, inW), append(childEnds, inR)
-		outR, outW, err := os.Pipe()
-		if err != nil {
-			return fail(err)
-		}
-		parentEnds, childEnds = append(parentEnds, outR), append(childEnds, outW)
-		errR, errW, err := os.Pipe()
-		if err != nil {
-			return fail(err)
-		}
-		parentEnds, childEnds = append(parentEnds, errR), append(childEnds, errW)
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
-		s.stdinW, s.stdoutR = inW, outR
-		// 標準入出力で話すときは、標準エラー出力はデバッグアダプターのログなので、拡張機能のログ（本体が記録する）へ書く。
-		go s.forward(errR, func(text string) { d.logf("adapter: %s", strings.TrimRight(text, "\n")) })
-	}
-	if err := startAdapter(cmd); err != nil {
-		return fail(err)
+		proc:         newAdapterProc(nil),
 	}
 	s.eventCtx, s.cancelEvents = context.WithCancel(context.Background())
-	closeAll(childEnds)
-	go func() {
-		_ = cmd.Wait()
-		close(s.procDone)
-		// 子プロセスが終わったら、接続とソケットを閉じ、読み取りと Accept を終わらせる。
-		s.closeSocket()
-		if c := s.getConn(); c != nil {
-			c.close()
-		}
-	}()
-	return s, nil
+	return s
 }
+
+// adapterProc は、アダプターの子プロセス 1 つか、既に動いているアダプターへの接続である。
+type adapterProc struct {
+	// cmd は、拡張機能が起動したプロセス（見張り。guard_linux.go）である。既に動いているアダプターへ繋ぐときは nil。
+	cmd *exec.Cmd
+	// done は、プロセスが終わると閉じる。cmd が nil なら、接続が終わると閉じる。
+	done chan struct{}
+	once sync.Once
+}
+
+func newAdapterProc(cmd *exec.Cmd) *adapterProc {
+	return &adapterProc{cmd: cmd, done: make(chan struct{})}
+}
+
+// markDone は、done を閉じる。2 回目からは何もしない。
+func (p *adapterProc) markDone() { p.once.Do(func() { close(p.done) }) }
+
+// getProc は、今のアダプターのプロセスを返す。
+func (s *session) getProc() *adapterProc {
+	s.procMu.Lock()
+	defer s.procMu.Unlock()
+	return s.proc
+}
+
+// procDone は、今のアダプターのプロセスが終わると閉じる通り道を返す。
+func (s *session) procDone() <-chan struct{} { return s.getProc().done }
+
+// owned は、拡張機能がアダプターを起動したか（終えた後に終わらなければ止めるか）を返す（FR-284）。
+func (s *session) owned() bool { return s.getProc().cmd != nil }
+
+// launched は、デバッグ対象を launch で始めたか（終えるときに終わらせるか）を返す（FR-284）。
+func (s *session) launched() bool { return s.spec.request == "launch" }
+
+// markProcDone は、今のプロセスの done を閉じる。2 回目からは何もしない。
+func (s *session) markProcDone() { s.getProc().markDone() }
 
 // forward は、r から読んだテキストを、塊ごとに f へ渡す。r が終わるまで続ける。
 func (s *session) forward(r io.ReadCloser, f func(string)) {
@@ -214,13 +175,20 @@ func (s *session) getConn() *dapConn {
 	return s.conn
 }
 
-// connect は、DAP の接続を作る。ソケットで話すときは、デバッグアダプターからの接続を timeout まで待つ。
-func (s *session) connect(timeout time.Duration) error {
+// connect は、DAP の接続を作る。clientSocket ではアダプターからの接続を、serverPort ではアダプターが待ち受けるまでを、timeout まで待つ。
+// 拡張機能が起動していないアダプターでは、接続が終わったら procDone を閉じる（接続に失敗したらすぐ閉じる）。
+func (s *session) connect(timeout time.Duration) (err error) {
+	if !s.owned() {
+		defer func() {
+			if err != nil {
+				s.markProcDone()
+			}
+		}()
+	}
 	onEvent := func(event string, body json.RawMessage) { s.events.push(dapEvent{name: event, body: body}) }
 	var c *dapConn
-	if s.ln == nil {
-		c = newDAPConn(s.stdoutR, s.stdinW, multiCloser{s.stdinW, s.stdoutR}, onEvent)
-	} else {
+	switch {
+	case s.ln != nil:
 		if err := s.ln.SetDeadline(time.Now().Add(timeout)); err != nil {
 			return err
 		}
@@ -230,12 +198,26 @@ func (s *session) connect(timeout time.Duration) error {
 			return fmt.Errorf("accept connection from adapter: %w", err)
 		}
 		c = newDAPConn(nc, nc, nc, onEvent)
+	case s.dial != nil:
+		nc, err := s.dialAdapter(timeout)
+		if err != nil {
+			return err
+		}
+		c = newDAPConn(nc, nc, nc, onEvent)
+	default:
+		c = newDAPConn(s.stdoutR, s.stdinW, multiCloser{s.stdinW, s.stdoutR}, onEvent)
 	}
 	s.connMu.Lock()
 	s.conn = c
 	s.connMu.Unlock()
+	if !s.owned() {
+		go func() {
+			<-c.doneCh()
+			s.markProcDone()
+		}()
+	}
 	select {
-	case <-s.procDone:
+	case <-s.procDone():
 		// 子プロセスが接続の前に終わっていたら、後始末の goroutine は接続を閉じられないので、ここで閉じる。
 		c.close()
 	default:
@@ -254,24 +236,31 @@ func (m multiCloser) Close() error {
 }
 
 // run は、DAP の初期化から終わりまでを行う。spawn の後に別の goroutine で呼ぶ。
-// launch は launch の引数である。
-func (s *session) run(launch map[string]any) {
+func (s *session) run() {
 	handled := make(chan struct{})
 	go func() {
 		defer close(handled)
 		s.handleEvents()
 	}()
-	err := s.start(launch)
-	if err != nil {
+	err := s.start()
+	switch {
+	case err != nil && s.stopping.Load():
+		// 始める途中で終えた（debug.terminate、子のセッションを断った）。理由は既に知らせたので、ログにだけ書く。
+		s.d.logf("start interrupted by stop: %v", err)
+		s.kill()
+	case err != nil:
 		s.d.showError("デバッグを開始できない: " + err.Error())
 		s.kill()
-	} else {
-		s.d.showInfo("デバッグを開始した")
+	case !s.stopping.Load():
+		s.d.showInfo(fmt.Sprintf("デバッグを開始した（%s、%s）", s.spec.name, s.spec.request))
 	}
 	if c := s.getConn(); c != nil {
 		<-c.doneCh()
 	}
-	<-s.procDoneOrTimeout()
+	if s.spec.adapter.transport != transportServerPort || !s.owned() {
+		// serverPort のアダプターは、接続が終わっても次の接続を待ち続けるので、待たずに止める。
+		<-s.procDoneOrTimeout()
+	}
 	s.kill()
 	s.events.close()
 	<-handled
@@ -286,7 +275,7 @@ func (s *session) procDoneOrTimeout() <-chan struct{} {
 	ch := make(chan struct{})
 	go func() {
 		select {
-		case <-s.procDone:
+		case <-s.procDone():
 		case <-time.After(s.d.timeouts.stop):
 		}
 		close(ch)
@@ -295,7 +284,12 @@ func (s *session) procDoneOrTimeout() <-chan struct{} {
 }
 
 // start は、DAP の初期化の手順を行う。
-func (s *session) start(launch map[string]any) error {
+// initialize で申し出る client の能力は、linesStartAt1 と columnsStartAt1 が true、pathFormat が path、supportsVariableType が true である。
+// supportsRunInTerminalRequest は申し出ない（FR-288）。supportsStartDebuggingRequest は、子のセッション（FR-285）を作るまで申し出ない。
+// launch か attach の引数は、決めた構成を JSON の値にしたもの（type、request、name を含む）である。
+//
+// req: FR-280, FR-288
+func (s *session) start() error {
 	t := s.d.timeouts
 	if err := s.connect(t.initialize); err != nil {
 		return err
@@ -305,12 +299,13 @@ func (s *session) start(launch map[string]any) error {
 	defer cancel()
 	var caps capabilities
 	err := c.call(ctx, "initialize", initializeArguments{
-		ClientID:        "vi-imitation",
-		ClientName:      "vi-imitation",
-		AdapterID:       s.d.settings.AdapterID,
-		LinesStartAt1:   linesStartAt1,
-		ColumnsStartAt1: linesStartAt1,
-		PathFormat:      "path",
+		ClientID:             "vi-imitation",
+		ClientName:           "vi-imitation",
+		AdapterID:            s.spec.adapter.adapterID,
+		LinesStartAt1:        linesStartAt1,
+		ColumnsStartAt1:      linesStartAt1,
+		PathFormat:           "path",
+		SupportsVariableType: true,
 	}, &caps)
 	if err != nil {
 		return err
@@ -320,7 +315,8 @@ func (s *session) start(launch map[string]any) error {
 	launchCtx, cancelLaunch := context.WithTimeout(context.Background(), t.launch)
 	defer cancelLaunch()
 	launched := make(chan error, 1)
-	go func() { launched <- c.call(launchCtx, "launch", launch, nil) }()
+	args := expand.Plain(s.spec.config)
+	go func() { launched <- c.call(launchCtx, s.spec.request, args, nil) }()
 
 	select {
 	case <-s.initialized:
@@ -397,7 +393,11 @@ func (s *session) resume(ctx context.Context, command string) error {
 	if err != nil {
 		return err
 	}
-	return c.call(ctx, command, threadArguments{ThreadID: tid}, nil)
+	if err := c.call(ctx, command, threadArguments{ThreadID: tid}, nil); err != nil {
+		return err
+	}
+	s.halted.Store(false)
+	return nil
 }
 
 // pause は、DAP の pause を送る。実行中は止まったスレッドを知らないので、threads の最初のスレッドを対象にする。
@@ -418,16 +418,19 @@ func (s *session) pause(ctx context.Context) error {
 	return c.call(ctx, "pause", threadArguments{ThreadID: tid}, nil)
 }
 
-// stop は、disconnect を送ってデバッグ対象とデバッグアダプターを終わらせる。
-// 期限までに子プロセスが終わらなければ強制終了する（kill）。後始末が終わるまで待つ。
+// stop は、デバッグを終える（FR-284）。後始末が終わるまで待つ。
 //
-// デバッグアダプターが supportsTerminateRequest を持てば、先に terminate を送り、デバッグ対象を穏やかに終わらせる
-// （DAP の仕様の Overview の Debug Session End）。期限までに子プロセスが終わらなければ disconnect を送る。
+//   - launch で始めたなら、デバッグアダプターが supportsTerminateRequest を持てば先に terminate を送り、
+//     デバッグ対象を穏やかに終わらせる（DAP の仕様の Overview の Debug Session End）。続けて terminateDebuggee を true にした disconnect を送る
+//   - attach で繋いだなら、terminate を送らず、terminateDebuggee を false にした disconnect を送る。デバッグ対象は動き続ける
+//   - 拡張機能が起動したアダプターは、期限までに終わらなければ強制終了する（kill）。既に動いていたアダプターは、接続を閉じるだけで止めない
 //
 // 手順ごとの期限は timeouts.stop である。ctx が終わると、残りの手順を打ち切って強制終了する。
 // grace は、強制終了で SIGTERM を送ってから SIGKILL を送るまでの猶予である。
 // ctx が終わった後に stop が戻るまでは、最長で grace に少し足した時間である。
 // ctx が終わって強制終了したときは、run の後始末（sessionEnded）を待たずに戻る。
+//
+// req: FR-284
 func (s *session) stop(ctx context.Context, grace time.Duration) {
 	s.stopping.Store(true)
 	s.cancelEvents()
@@ -444,11 +447,11 @@ func (s *session) stop(ctx context.Context, grace time.Duration) {
 	}
 }
 
-// terminate は、デバッグアダプターが対応していれば terminate を送り、terminated の event か子プロセスの終了を、
-// timeouts.stop と ctx の早い方まで待つ。
+// terminate は、launch で始めたセッションで、デバッグアダプターが対応していれば terminate を送り、
+// terminated の event か子プロセスの終了を、timeouts.stop と ctx の早い方まで待つ。
 func (s *session) terminate(ctx context.Context) {
 	c := s.getConn()
-	if caps := s.caps.Load(); c == nil || caps == nil || !caps.SupportsTerminateRequest {
+	if caps := s.caps.Load(); c == nil || caps == nil || !caps.SupportsTerminateRequest || !s.launched() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.d.timeouts.stop)
@@ -459,26 +462,47 @@ func (s *session) terminate(ctx context.Context) {
 	}
 	select {
 	case <-s.terminatedCh:
-	case <-s.procDone:
+	case <-s.procDone():
 	case <-ctx.Done():
 	}
 }
 
-// disconnect は、disconnect を送り、子プロセスが終わるのを timeouts.stop と ctx の早い方まで待ち、
-// 終わらなければ猶予 grace で強制終了する。
+// disconnect は、disconnect を送る。terminateDebuggee は launch で始めたときだけ true にする（FR-284）。
+// 拡張機能が起動したアダプターなら、子プロセスが終わるのを timeouts.stop と ctx の早い方まで待ち、終わらなければ猶予 grace で強制終了する。
+// serverPort のアダプターは次の接続を待ち続けるので、待たずに止める。
+// 既に動いていたアダプターなら、接続を閉じるだけで止めない。
+//
+// attach で繋いだデバッグ対象が止まっていれば、disconnect の前に continue を送って動かす。
+// DAP の仕様の DisconnectArguments の suspendDebuggee は「If unspecified, the debuggee should resume execution」だが、
+// dlv 1.27.2 の複数の client を受けるサーバー（--accept-multiclient）は、disconnect でデバッグ対象を止まったまま残す
+// （service/dap/server.go の onDisconnectRequest の「The target is left in whatever state it is already in」。
+// #408 のレビューの推奨 3 で確かめた）。suspendDebuggee も false で明示する。
+//
+// req: FR-284
 func (s *session) disconnect(ctx context.Context, grace time.Duration) {
 	if c := s.getConn(); c != nil {
+		if !s.launched() {
+			s.releaseAttached(ctx, c)
+		}
 		cctx, cancel := context.WithTimeout(ctx, s.d.timeouts.stop)
-		err := c.call(cctx, "disconnect", disconnectArguments{TerminateDebuggee: true}, nil)
+		err := c.call(cctx, "disconnect", disconnectArguments{TerminateDebuggee: s.launched()}, nil)
 		cancel()
 		if err != nil && !errors.Is(err, errDAPClosed) && !s.exited() {
 			s.d.logf("disconnect: %v", err)
 		}
+		if !s.owned() {
+			c.close()
+			return
+		}
+	}
+	if s.owned() && s.spec.adapter.transport == transportServerPort {
+		s.killWithin(grace)
+		return
 	}
 	wait := time.NewTimer(s.d.timeouts.stop)
 	defer wait.Stop()
 	select {
-	case <-s.procDone:
+	case <-s.procDone():
 	case <-wait.C:
 		s.killWithin(grace)
 	case <-ctx.Done():
@@ -486,10 +510,34 @@ func (s *session) disconnect(ctx context.Context, grace time.Duration) {
 	}
 }
 
+// releaseAttached は、attach で繋いだデバッグ対象を、切断の後も動き続けられるようにする（#408 のレビューの推奨 3）。
+// 置いたブレークポイントを空の setBreakpoints で外し、止まっていれば continue を送る。
+// dlv の複数の client を受けるサーバーは、切断の後もブレークポイントを残すので、外さずに続けると、次のブレークポイントでまた止まり、
+// client の無いまま止まったままになる（2026-11-25 に dlv 1.27.2 の --headless --accept-multiclient で確かめた）。
+// 拡張機能が持つブレークポイント（debugger.bps）は変えない。
+func (s *session) releaseAttached(ctx context.Context, c *dapConn) {
+	cctx, cancel := context.WithTimeout(ctx, s.d.timeouts.stop)
+	defer cancel()
+	s.d.mu.Lock()
+	paths := slices.Sorted(maps.Keys(s.d.bps))
+	s.d.mu.Unlock()
+	for _, path := range paths {
+		args := setBreakpointsArguments{Source: source{Name: filepath.Base(path), Path: path}, Breakpoints: []sourceBreakpoint{}}
+		if err := c.call(cctx, "setBreakpoints", args, nil); err != nil {
+			s.d.logf("clear breakpoints before disconnect %s: %v", path, err)
+		}
+	}
+	if s.halted.Load() {
+		if err := s.resume(cctx, "continue"); err != nil {
+			s.d.logf("continue before disconnect: %v", err)
+		}
+	}
+}
+
 // exited は、子プロセスが終わったかどうかを返す。
 func (s *session) exited() bool {
 	select {
-	case <-s.procDone:
+	case <-s.procDone():
 		return true
 	default:
 		return false
@@ -499,26 +547,32 @@ func (s *session) exited() bool {
 // kill は、猶予を killGrace にして killWithin を呼ぶ。
 func (s *session) kill() { s.killWithin(killGrace) }
 
-// killWithin は、子プロセスに SIGTERM を送り、grace までに終わらなければ SIGKILL を送り、接続を閉じる。終わっていれば何もしない。
-// 先に SIGTERM を送るのは、dlv が SIGTERM でデバッグ対象を終わらせ、ビルドした実行ファイルを消すからである（startAdapter の doc）。
-// SIGKILL だと、別のプロセスグループのデバッグ対象が孤児で残る。
+// killWithin は、拡張機能が起動したアダプターの子プロセスに SIGTERM を送り、grace までに終わらなければ SIGKILL を送り、接続を閉じる。
+// 終わっていれば何もしない。既に動いていたアダプター（cmd が nil）は止めず、接続だけを閉じる。
+// 先に SIGTERM を送るのは、見張り（guard_linux.go）がアダプターに後始末をさせてから子孫を止めるからである
+// （dlv は SIGTERM でデバッグ対象を終わらせ、ビルドした実行ファイルを消す）。
+// 見張りが SIGKILL で終わっても、アダプターは Pdeathsig の SIGTERM を受ける。
 func (s *session) killWithin(grace time.Duration) {
+	p := s.getProc()
 	select {
-	case <-s.procDone:
+	case <-p.done:
 	default:
-		if s.cmd.Process != nil {
-			_ = s.cmd.Process.Signal(syscall.SIGTERM)
+		if p.cmd != nil && p.cmd.Process != nil {
+			_ = p.cmd.Process.Signal(syscall.SIGTERM)
 			t := time.NewTimer(grace)
 			select {
-			case <-s.procDone:
+			case <-p.done:
 			case <-t.C:
-				_ = s.cmd.Process.Kill()
+				_ = p.cmd.Process.Kill()
 			}
 			t.Stop()
 		}
 	}
 	if c := s.getConn(); c != nil {
 		c.close()
+	}
+	if p.cmd == nil {
+		p.markDone()
 	}
 	s.closeSocket()
 }
@@ -550,6 +604,7 @@ func (s *session) handleEvent(e dapEvent) {
 		}
 		s.stopped(&body)
 	case "continued":
+		s.halted.Store(false)
 		s.d.clearExecution()
 	case "exited":
 		var body exitedEvent
@@ -577,12 +632,34 @@ func (s *session) handleEvent(e dapEvent) {
 		}
 		s.d.appendOutput(body.Output)
 	default:
+		if command, ok := strings.CutPrefix(e.name, reverseRequestEvent); ok {
+			// 対応しない逆向きの request（dapConn が失敗で応答した）。
+			s.d.logf("adapter request %s is not supported: %s", command, e.body)
+			if command == "startDebugging" {
+				s.refuseChildSession()
+			}
+			return
+		}
 		// breakpoint、thread、module などの event は、最初の範囲では使わない。
 	}
 }
 
+// refuseChildSession は、アダプターが子のセッション（startDebugging。FR-285）を求めたときに、まだ対応していないことを
+// メッセージの行に出し、デバッグを終える（#408 のレビューの必須 2）。
+// vscode-js-debug は、launch と attach の後に、デバッグ対象を子のセッションで扱うことを求め、子のセッションが無いとブレークポイントで止まらない
+// （2026-11-25 に確かめた）。「デバッグを開始した」のまま止まらない状態にせず、終え方の表（FR-284）でデバッグ対象とアダプターを片付ける。
+// 2 回目からは何もしない。
+func (s *session) refuseChildSession() {
+	if !s.stopping.CompareAndSwap(false, true) {
+		return
+	}
+	s.d.showError(fmt.Sprintf("アダプター %s が子のセッション（startDebugging）を求めたが、まだ対応していないので、デバッグを終える", s.spec.adapter.name))
+	go s.stop(context.Background(), killGrace)
+}
+
 // stopped は、stopped の event を処理する。止まったスレッドの先頭のフレームの位置へカーソルを移し、実行位置の印を付ける。
 func (s *session) stopped(body *stoppedEvent) {
+	s.halted.Store(true)
 	ctx, cancel := context.WithTimeout(s.eventCtx, s.d.timeouts.request)
 	defer cancel()
 	tid := 0

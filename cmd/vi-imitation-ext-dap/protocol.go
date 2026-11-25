@@ -13,6 +13,8 @@ type initializeArguments struct {
 	LinesStartAt1   bool   `json:"linesStartAt1"`
 	ColumnsStartAt1 bool   `json:"columnsStartAt1"`
 	PathFormat      string `json:"pathFormat,omitempty"`
+	// SupportsVariableType は、変数の型（Variable の type）を受け取るかどうかである（基本設計 6.4 の開始の流れの 8）。
+	SupportsVariableType bool `json:"supportsVariableType,omitempty"`
 }
 
 // capabilities は、initialize の response の body（仕様の Capabilities）のうち、使う項目である。
@@ -99,6 +101,8 @@ type threadsResponse struct {
 type disconnectArguments struct {
 	// TerminateDebuggee は、切断のときにデバッグ対象を終わらせるかどうかである。
 	TerminateDebuggee bool `json:"terminateDebuggee"`
+	// SuspendDebuggee は、切断のときにデバッグ対象を止めたままにするかどうかである。常に false を送る（session.disconnect）。
+	SuspendDebuggee bool `json:"suspendDebuggee"`
 }
 
 // stoppedEvent は、stopped の event の body である。ThreadID は省かれることがある。

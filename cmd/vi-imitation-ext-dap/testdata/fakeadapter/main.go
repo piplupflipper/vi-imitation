@@ -55,6 +55,10 @@ type fakeOptions struct {
 	ExceptionOnContinue bool `json:"exceptionOnContinue"`
 	// NoSource は、stackTrace のフレームの source を省く（止まった位置のソースが分からない停止の代役）。
 	NoSource bool `json:"noSource"`
+	// OrphanOnTerm は、SIGTERM で子プロセスを止めずに終わる（vscode-js-debug の dapDebugServer.js の代役）。
+	OrphanOnTerm bool `json:"orphanOnTerm"`
+	// StartDebugging は、configurationDone の後に、逆向きの request の startDebugging を送る（vscode-js-debug の子のセッションの代役）。
+	StartDebugging bool `json:"startDebugging"`
 }
 
 type message struct {
@@ -95,15 +99,23 @@ type adapter struct {
 
 	childMu sync.Mutex
 	child   *exec.Cmd
+
+	// conn は、TCP で待ち受けたとき（-listen）の接続である。disconnect で、終わらずにこれを閉じる。標準入出力とソケットでは nil。
+	conn net.Conn
 }
 
 func main() {
 	clientAddr := flag.String("client-addr", "", "unix:<path> of the client socket")
+	listen := flag.String("listen", "", "listen on this TCP address (host:port) and serve each connection (serverPort and server)")
 	terminate := flag.Bool("terminate", false, "support the terminate request")
 	sleep := flag.Bool("sleep", false, "sleep forever (the debuggee stand-in)")
 	flag.Parse()
 	if *sleep {
 		select {}
+	}
+	if *listen != "" {
+		serve(*listen, *terminate)
+		return
 	}
 	var r io.Reader = os.Stdin
 	var w io.Writer = os.Stdout
@@ -122,7 +134,12 @@ func main() {
 	signal.Notify(sigs, syscall.SIGTERM)
 	go func() {
 		<-sigs
-		a.killChild()
+		a.stateMu.Lock()
+		orphan := a.opts.OrphanOnTerm
+		a.stateMu.Unlock()
+		if !orphan {
+			a.killChild()
+		}
 		os.Exit(0)
 	}()
 	for {
@@ -132,6 +149,49 @@ func main() {
 			select {}
 		}
 		a.handle(m)
+	}
+}
+
+// serve は、addr で TCP の接続を待ち受け、接続ごとに DAP を話す（vscode-js-debug の dapDebugServer.js と、既に動いているアダプターの代役）。
+// 待ち受けたら "listening <port>" を標準出力へ書く。disconnect を受けても終わらず、次の接続を待つ。SIGTERM で終わる。
+func serve(addr string, terminate bool) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("listening %d\n", ln.Addr().(*net.TCPAddr).Port)
+	var mu sync.Mutex
+	var adapters []*adapter
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		mu.Lock()
+		for _, a := range adapters {
+			a.killChild()
+		}
+		os.Exit(0)
+	}()
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			os.Exit(1)
+		}
+		a := &adapter{r: bufio.NewReader(c), w: c, bps: map[string][]int{}, cur: -1, terminate: terminate, conn: c}
+		mu.Lock()
+		adapters = append(adapters, a)
+		mu.Unlock()
+		go func() {
+			for {
+				m, err := a.read()
+				if err != nil {
+					_ = c.Close()
+					return
+				}
+				a.handle(m)
+			}
+		}()
 	}
 }
 
@@ -195,6 +255,10 @@ func (a *adapter) output(category, text string) {
 func (a *adapter) handle(m *message) {
 	if m.Type == "response" {
 		// 逆向きの request への応答である。
+		if a.opts.StartDebugging {
+			a.output("console", fmt.Sprintf("startDebugging success=%v\n", m.Success))
+			return
+		}
 		a.output("console", fmt.Sprintf("runInTerminal success=%v\n", m.Success))
 		a.run()
 		return
@@ -219,16 +283,27 @@ func (a *adapter) handle(m *message) {
 			return
 		}
 		a.respond(m, map[string]any{"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": a.terminate})
-	case "launch":
+	case "launch", "attach":
 		var args struct {
 			Program string      `json:"program"`
 			Fake    fakeOptions `json:"fake"`
 		}
 		_ = json.Unmarshal(m.Arguments, &args)
+		a.stateMu.Lock()
 		a.opts = args.Fake
+		a.stateMu.Unlock()
 		if a.opts.FailLaunch {
 			a.respondError(m, "cannot build "+args.Program)
 			return
+		}
+		// 受け取った引数の全体（fake を除く）を 1 行の JSON で出す。テストが type、request、name、env などを確かめる。
+		var all map[string]any
+		_ = json.Unmarshal(m.Arguments, &all)
+		delete(all, "fake")
+		body, _ := json.Marshal(all)
+		a.output("console", fmt.Sprintf("%s args %s\n", m.Command, body))
+		if v := os.Getenv("FAKEADAPTER_ENV"); v != "" {
+			a.output("console", "adapterenv "+v+"\n")
 		}
 		a.output("console", "launch "+args.Program+"\n")
 		a.output("console", fmt.Sprintf("adapter %d\n", os.Getpid()))
@@ -280,6 +355,11 @@ func (a *adapter) handle(m *message) {
 		a.output("telemetry", "telemetry must not be shown\n")
 		if a.opts.Reverse {
 			a.send(message{Type: "request", Command: "runInTerminal", Arguments: json.RawMessage(`{"args":["true"]}`)})
+			return
+		}
+		if a.opts.StartDebugging {
+			// 子のセッションを求め、応答を待つ（ブレークポイントでは止まらない）。
+			a.send(message{Type: "request", Command: "startDebugging", Arguments: json.RawMessage(`{"request":"launch","configuration":{"type":"fake"}}`)})
 			return
 		}
 		a.run()
@@ -339,8 +419,20 @@ func (a *adapter) handle(m *message) {
 		a.killChild()
 		a.event("terminated", nil)
 	case "disconnect":
+		var args struct {
+			TerminateDebuggee bool `json:"terminateDebuggee"`
+		}
+		_ = json.Unmarshal(m.Arguments, &args)
+		a.output("console", fmt.Sprintf("disconnect terminateDebuggee=%v\n", args.TerminateDebuggee))
 		a.respond(m, nil)
-		a.killChild()
+		if args.TerminateDebuggee {
+			a.killChild()
+		}
+		if a.conn != nil {
+			// 待ち受けたアダプターは終わらずに、次の接続を待つ。
+			_ = a.conn.Close()
+			return
+		}
 		os.Exit(0)
 	default:
 		a.respondError(m, "unknown command "+m.Command)

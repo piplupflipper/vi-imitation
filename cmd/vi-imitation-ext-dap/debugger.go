@@ -8,7 +8,6 @@ import (
 	"log"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -33,50 +32,6 @@ var resumeCommands = map[ext.Operation]string{
 	ext.OpDebugStepOver: "next",
 	ext.OpDebugStepIn:   "stepIn",
 	ext.OpDebugStepOut:  "stepOut",
-}
-
-// adapterConfig は、デバッグアダプターの起動の方法である。
-type adapterConfig struct {
-	// Command は、実行ファイルの名前かパスである。名前なら PATH から探す。
-	Command string `json:"command"`
-	// Args は、Command に渡す引数である。clientAddrPlaceholder を含めると、ソケットで話す。
-	Args []string `json:"args,omitempty"`
-	// Cwd は、子プロセスの作業ディレクトリである。省くと、デバッグを始めた（debug.continue を呼んだ）バッファのファイルのあるディレクトリにする。
-	// そのバッファがファイルに対応しないか、ディレクトリが無ければ、拡張機能の作業ディレクトリ（本体の作業ディレクトリ）にする。
-	// dlv dap は、program のビルドを自分の作業ディレクトリで行い、program と出力の実行ファイルのパスを作業ディレクトリから解決する
-	// （https://github.com/go-delve/delve/blob/master/Documentation/usage/dlv_dap.md）。
-	// 本体の作業ディレクトリが program のモジュールの外にあると、ビルドに失敗する（2026-11-16 に dlv 1.27.2 で確かめた）。
-	Cwd string `json:"cwd,omitempty"`
-}
-
-// settings は、利用者の設定のうち、この拡張機能に向けた部分（initialize の settings）である。項目の名前は仮である。
-//
-//	{
-//	  "adapter": { "command": "dlv", "args": ["dap", "--client-addr=${clientAddr}"], "cwd": "/path/to/module" },
-//	  "adapterID": "go",
-//	  "launch": { "mode": "debug" }
-//	}
-//
-// 省いた項目は defaultSettings の値になる。
-type settings struct {
-	// Adapter は、デバッグアダプターの起動の方法である。
-	Adapter adapterConfig `json:"adapter"`
-	// AdapterID は、initialize の adapterID である。
-	AdapterID string `json:"adapterID"`
-	// Launch は、launch の引数である。中身はデバッグアダプターごとに違う（DAP の仕様の LaunchRequestArguments）。
-	// program を省くと、デバッグを始めたバッファのファイルのあるディレクトリを program にする。
-	Launch map[string]any `json:"launch"`
-}
-
-// defaultSettings は、設定を省いたときの値である。最初のデバッグアダプターは delve（dlv dap）にする（#51）。
-// mode の debug は、program のパッケージをビルドしてデバッグする delve の launch の種類である
-// （https://github.com/go-delve/delve/blob/master/Documentation/api/dap/README.md）。
-func defaultSettings() settings {
-	return settings{
-		Adapter:   adapterConfig{Command: "dlv", Args: []string{"dap", "--client-addr=" + clientAddrPlaceholder}},
-		AdapterID: "go",
-		Launch:    map[string]any{"mode": "debug"},
-	}
 }
 
 // timeouts は、待つ時間の上限である。値は仮で、テストが短くする。
@@ -125,10 +80,10 @@ type bp struct {
 	cond string
 }
 
-// lastRun は、最後にデバッグを始めたときの launch の引数とデバッグアダプターの起動の方法である（debug.runLast と debug.restart）。
-type lastRun struct {
-	launch map[string]any
-	cfg    adapterConfig
+// prepJob は、デバッグを始める準備（構成の選択と値の決定。prepare）の 1 回である。
+// debug.terminate と shutdown で cancel を呼んで取り消す（FR-282 の取り消し）。
+type prepJob struct {
+	cancel context.CancelFunc
 }
 
 // bufState は、開いているバッファの番号と、複製のバージョン番号である。
@@ -174,8 +129,17 @@ type debugger struct {
 	// configured は、sess の初期化で setBreakpoints を送る対象を決め終えたことを表す。
 	// これより後に変わったブレークポイントは、その都度送る。
 	configured bool
-	// last は、最後に始めたデバッグの設定である。まだ始めていなければ nil。
-	last *lastRun
+	// last は、最後に始めたデバッグの、値を決め終えた構成とアダプターの起動の方法である。まだ始めていなければ nil。
+	last *runSpec
+	// preparing は、デバッグを始める準備の途中の仕事である。無ければ nil。
+	preparing *prepJob
+	// pickers は、開いている一覧（picker.go）の知らせの受け口である。
+	pickers pickers
+	// apiVersion は、本体の拡張機能 API の版（initialize の apiVersion）である。apiWarned は、古いことを知らせたことを表す。
+	apiVersion string
+	apiWarned  bool
+	// compoundsShown は、compounds を扱えないことを知らせた launch.json のパスである（拡張機能のプロセスが動いている間に 2 回出さない）。
+	compoundsShown map[string]bool
 	// restartPending は、debug.restart で止めたセッションが終わったら、last で始め直すことを表す。
 	restartPending bool
 	// stopWaiter は、再生中（sync）に呼ばれた、デバッグ対象を動かす操作の応答の受け口である（waitStopLocked）。
@@ -240,6 +204,10 @@ func (w *waiter) abandon() (ext.ProviderInvokeResult, bool) {
 // 期限とほぼ同時に止まり、結果が既に届いていたときも、本体はその応答を捨てるので、結果の open を editor/open で送り直す（#217 のレビュー）。
 func (d *debugger) asyncProvider(h opHandler) server.AsyncProviderHandler {
 	return func(ctx context.Context, b *server.Buffer, p *ext.ProviderInvokeParams, reply func(ext.ProviderInvokeResult, error)) {
+		if !d.apiSupported(p.Operation) {
+			reply(ext.ProviderInvokeResult{OK: false}, nil)
+			return
+		}
 		res, w := h(ctx, b, p)
 		if w == nil {
 			reply(res, nil)
@@ -317,6 +285,11 @@ func newDebugger() *debugger {
 		gens:     make(map[string]uint64),
 		buffers:  make(map[string]bufState),
 		paths:    make(map[ext.BufferID]string),
+		pickers: pickers{
+			waiting: make(map[ext.ViewID]chan server.ViewEvent),
+			early:   make(map[ext.ViewID][]server.ViewEvent),
+		},
+		compoundsShown: make(map[string]bool),
 	}
 	d.srv = d.newServer()
 	return d
@@ -331,6 +304,7 @@ func (d *debugger) newServer() *server.Server {
 	s.OnBufferChange(d.onBufferChange)
 	s.OnBufferClose(d.onBufferClose)
 	s.OnBufferDidSave(d.onBufferDidSave)
+	s.OnView(d.onView)
 	s.ProviderAsync(ext.OpBreakpointToggle, d.asyncProvider(d.noArgs(d.toggleBreakpoint)))
 	s.ProviderAsync(ext.OpBreakpointConditional, d.asyncProvider(d.conditionalBreakpoint))
 	s.ProviderAsync(ext.OpBreakpointClear, d.asyncProvider(d.noArgs(d.clearBreakpoints)))
@@ -361,6 +335,11 @@ func (d *debugger) shutdown() {
 	d.shutdownOnce.Do(func() {
 		d.mu.Lock()
 		s := d.sess
+		if d.preparing != nil {
+			// 始める準備（resolveCommand など）を取り消す（FR-282）。
+			d.preparing.cancel()
+			d.preparing = nil
+		}
 		d.mu.Unlock()
 		if s == nil {
 			return
@@ -430,23 +409,44 @@ func (d *debugger) appendOutput(text string) {
 	}
 }
 
-func (d *debugger) onInitialize(_ context.Context, e *server.InitializeEvent) error {
-	if len(e.Settings) == 0 || string(e.Settings) == "null" {
-		return nil
+// minAPIVersion は、この拡張機能が要る本体の拡張機能 API の版である（基本設計 1.4 の「古い本体での標準の拡張機能」。FR-271）。
+// 値は、使うメッセージのうち最後に足したものの版で、今は progress/report（resolveCommand の進み具合。API 0.14.0）である。
+// pane/open の center と closeOnSelect（構成の候補と ${pickProcess} の一覧）は 0.10.0、editor/state の workDir は 0.9.0 で足した。
+// #399 の切り替えの部品と書き足しのメッセージを使い始める PR が、その版に上げる。
+const minAPIVersion = "0.14.0"
+
+// apiSupported は、本体の拡張機能 API の版が minAPIVersion 以上かを返す。
+// 足りなければ、最初の 1 回だけ要る版をメッセージの行に出す。操作は、段階 2 の取り決めだけを使うものも含めてすべて断る（基本設計 1.4）。
+// FR-271 の振る舞いの一部（切り替えの部品はまだ使わない）なので、要件の注釈は付けない。
+func (d *debugger) apiSupported(op ext.Operation) bool {
+	d.mu.Lock()
+	old := ext.VersionLess(d.apiVersion, minAPIVersion)
+	first := old && !d.apiWarned
+	if first {
+		d.apiWarned = true
 	}
-	var s settings
-	if err := json.Unmarshal(e.Settings, &s); err != nil {
+	version := d.apiVersion
+	d.mu.Unlock()
+	if first {
+		d.showError(fmt.Sprintf("DAP の拡張機能には本体の拡張機能 API %s 以上が要ります（この本体は %s）", minAPIVersion, version))
+	}
+	if old {
+		d.logf("%s: refused (host API %s < %s)", op, version, minAPIVersion)
+	}
+	return !old
+}
+
+func (d *debugger) onInitialize(_ context.Context, e *server.InitializeEvent) error {
+	d.mu.Lock()
+	d.apiVersion = e.APIVersion
+	d.mu.Unlock()
+	s, err := parseSettings(e.Settings)
+	if err != nil {
 		return fmt.Errorf("invalid settings: %w", err)
 	}
-	if s.Adapter.Command != "" {
-		d.settings.Adapter = s.Adapter
-	}
-	if s.AdapterID != "" {
-		d.settings.AdapterID = s.AdapterID
-	}
-	if s.Launch != nil {
-		d.settings.Launch = s.Launch
-	}
+	d.mu.Lock()
+	d.settings = s
+	d.mu.Unlock()
 	return nil
 }
 
@@ -636,7 +636,11 @@ func (d *debugger) clearBreakpoints(_ context.Context, _ *server.Buffer, p *ext.
 func (d *debugger) continueOrStart(ctx context.Context, b *server.Buffer, p *ext.ProviderInvokeParams) (ext.ProviderInvokeResult, *waiter) {
 	d.mu.Lock()
 	running := d.sess != nil
+	preparing := d.preparing != nil
 	d.mu.Unlock()
+	if preparing {
+		return d.fail("デバッグを始める準備の途中（やめるときは debug.terminate）")
+	}
 	if !running {
 		return d.start(ctx, b, p)
 	}
@@ -653,7 +657,10 @@ func (d *debugger) runLast(_ context.Context, _ *server.Buffer, p *ext.ProviderI
 	if d.last == nil {
 		return d.fail("前回のデバッグが無い")
 	}
-	return d.startLocked(*d.last, p.Sync)
+	if d.preparing != nil {
+		return d.fail("デバッグを始める準備の途中（やめるときは debug.terminate）")
+	}
+	return d.startLocked(d.last, p.Sync)
 }
 
 // restart は、デバッグを終えてから、前回と同じ設定で始め直す（本体の操作 debug.restart）。
@@ -723,58 +730,81 @@ func (d *debugger) pause(_ context.Context, _ *server.Buffer, p *ext.ProviderInv
 	return ok()
 }
 
-// start は、デバッグアダプターを起動し、デバッグを始める（基本設計 6.4）。
-// 子プロセスの起動までをハンドラーの中で行い、DAP の初期化は別の goroutine で行う。
-// 結果は message/show で知らせる。
-// 再生中（sync）なら、デバッグ対象が最初に止まるか、止まらずに終わるまで応答を遅らせる（startLocked）。
+// start は、デバッグを始める（基本設計 6.4 の開始の流れ）。
 //
-// req: FR-31, FR-19
+// 再生中（sync）でなければ、受け付けたことだけを応答し、構成の選択と値の決定（prepare）を別の goroutine で行う。
+// 候補の一覧、choice/ask、${pickProcess}、resolveCommand は、利用者の応答や外部のコマンドを待つので、
+// ext/server のメッセージを処理する goroutine の上で行わない（dev-cycle 2.2）。結果は message/show で知らせる。
+//
+// 再生中（sync）は、一覧も問いも出さず、前回に値を決め終えた構成で始める。前回が無ければ失敗させる（FR-280）。
+// デバッグ対象が最初に止まるか、止まらずに終わるまで応答を遅らせる（startLocked）。
+//
+// req: FR-31, FR-19, FR-280
 func (d *debugger) start(_ context.Context, b *server.Buffer, p *ext.ProviderInvokeParams) (ext.ProviderInvokeResult, *waiter) {
-	launch := maps.Clone(d.settings.Launch)
-	if launch == nil {
-		launch = map[string]any{}
-	}
-	// 本体が不正な UTF-8 のためにバッファを送っていない（p.Withheld）なら b は nil で、ファイルに対応しないバッファと同じに扱う。
-	path := ""
-	if b != nil {
-		path = b.Path()
-	}
-	if _, ok := launch["program"]; !ok {
-		if path == "" {
-			return d.fail("デバッグする対象が決まらない（ファイルに対応しないか、拡張機能へ送っていないバッファで、設定の launch に program も無い）")
-		}
-		launch["program"] = filepath.Dir(path)
-	}
-	cfg := d.settings.Adapter
-	if cfg.Cwd == "" && path != "" {
-		if fi, err := os.Stat(filepath.Dir(path)); err == nil && fi.IsDir() {
-			cfg.Cwd = filepath.Dir(path)
-		}
-	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.startLocked(lastRun{launch: launch, cfg: cfg}, p.Sync)
+	if p.Sync {
+		if d.last == nil {
+			return d.fail("再生の中では構成を選べない（前回のデバッグが無い）")
+		}
+		return d.startLocked(d.last, true)
+	}
+	if d.preparing != nil || d.sess != nil {
+		return d.fail("デバッグは既に始まっている")
+	}
+	// 本体が不正な UTF-8 のためにバッファを送っていない（p.Withheld）なら b は nil で、ファイルに対応しないバッファと同じに扱う。
+	inv := newInvocation(b, p)
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &prepJob{cancel: cancel}
+	d.preparing = job
+	go d.prepareAndStart(ctx, job, inv)
+	return ok()
 }
 
-// startLocked は、run の設定でデバッグアダプターを起動し、デバッグを始め、run を前回の設定として覚える。mu を持って呼ぶ。
+// prepareAndStart は、構成を選んで値を決め、アダプターにつないでデバッグを始める。start の後に別の goroutine で呼ぶ。
+func (d *debugger) prepareAndStart(ctx context.Context, job *prepJob, inv invocation) {
+	defer job.cancel()
+	spec, err := d.prepare(ctx, inv)
+	d.mu.Lock()
+	current := d.preparing == job
+	if current {
+		d.preparing = nil
+	}
+	if err == nil && current {
+		d.startLocked(spec, false)
+	}
+	d.mu.Unlock()
+	if err == nil {
+		return
+	}
+	var se *startError
+	switch {
+	case errors.As(err, &se) && se.cancelled, !current:
+		d.showInfo(errStartCancelled.msg)
+	default:
+		d.showError(err.Error())
+	}
+}
+
+// startLocked は、spec のアダプターにつなぎ（spawn）、デバッグを始め、spec を前回の設定として覚える。mu を持って呼ぶ。
 // sync なら、デバッグ対象が最初に止まるか、デバッグが終わるまで応答を遅らせる waiter を返す。
 // waiter は mu を持ったまま、セッションを動かし始める前に置くので、最初の停止を取りこぼさない。
-func (d *debugger) startLocked(run lastRun, sync bool) (ext.ProviderInvokeResult, *waiter) {
+func (d *debugger) startLocked(spec *runSpec, sync bool) (ext.ProviderInvokeResult, *waiter) {
 	if d.sess != nil {
 		return d.fail("デバッグは既に始まっている")
 	}
-	s, err := spawn(d, run.cfg)
+	s, err := spawn(d, spec)
 	if err != nil {
-		return d.fail(fmt.Sprintf("デバッグアダプター %s を起動できない: %v", run.cfg.Command, err))
+		return d.fail(fmt.Sprintf("デバッグアダプター %s を起動できない: %v", spec.adapter.name, err))
 	}
 	d.sess = s
 	d.configured = false
-	d.last = &run
+	d.last = spec
 	var w *waiter
 	if sync {
 		w = d.waitStopLocked()
 	}
-	go s.run(maps.Clone(run.launch))
+	go s.run()
 	if w != nil {
 		return ext.ProviderInvokeResult{}, w
 	}
@@ -789,7 +819,14 @@ func (d *debugger) stop(_ context.Context, _ *server.Buffer, p *ext.ProviderInvo
 	d.mu.Lock()
 	s := d.sess
 	d.restartPending = false
+	job := d.preparing
+	d.preparing = nil
 	d.mu.Unlock()
+	if job != nil {
+		// 始める準備の途中（一覧、問い、resolveCommand）なら、取り消して始めない（FR-282）。知らせは prepareAndStart が出す。
+		job.cancel()
+		return ok()
+	}
 	if s == nil {
 		return d.fail("デバッグを始めていない")
 	}
@@ -1077,7 +1114,7 @@ func (d *debugger) sessionEnded(s *session, abnormal, quiet bool) {
 	if restart {
 		// debug.restart で止めたので、前回の設定で始め直す。失敗は startLocked が知らせる。
 		d.mu.Lock()
-		if res, _ := d.startLocked(*d.last, false); !res.OK {
+		if res, _ := d.startLocked(d.last, false); !res.OK {
 			d.takeStopWaiterLocked().resolve(ext.ProviderInvokeResult{OK: false})
 		}
 		d.mu.Unlock()

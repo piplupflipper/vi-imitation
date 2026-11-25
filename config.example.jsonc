@@ -369,6 +369,122 @@
           "lua", "vim", "fish", "tmux", "toml", "yaml", "conf",
         ],
       },
+      // DAP のデバッグアダプターと、ファイルの種類ごとのデバッグの構成。説明は docs/usage.md の「DAP によるデバッグ」にある。
+      // 構成は .vscode/launch.json の構成と同じ形で、<leader>dc で始めるときに、.vscode/launch.json の構成と一緒に候補に出る。
+      // 値の中の ${file}、${workspaceFolder} などの変数は、始めるときに展開する（VS Code の変数と同じ書き方）。
+      // ${port} と ${clientAddr} は、アダプターの command、args、env、cwd でだけ使える、つなぐときに決まる値である
+      "dap": {
+        "adapters": {
+          // Delve。dlv dap は、拡張機能が待ち受けるソケットへ自分から繋ぐ（clientSocket）。
+          // dlv はプログラムを自分の作業ディレクトリでビルドするので、cwd をファイルのディレクトリにする
+          "go": {
+            "transport": "clientSocket",
+            "command": "dlv",
+            "args": ["dap", "--client-addr=${clientAddr}"],
+            "cwd": "${fileDirname}",
+          },
+          // debugpy のアダプター（uv tool install debugpy などで PATH に入れる）を標準入出力で起動する。
+          // .vscode/launch.json の type の debugpy もこのアダプターで引く（aliases）。
+          // 構成が connect を持てば、アダプターを起動せずに、python -m debugpy --listen で待つプロセスへ直に繋ぐ（connectFrom）
+          "python": {
+            "transport": "stdio",
+            "command": "debugpy-adapter",
+            "aliases": ["debugpy"],
+            "connectFrom": "connect",
+          },
+          // vscode-js-debug の dapDebugServer.js。拡張機能が決めた空いたポート（${port}）で待ち受けさせて繋ぐ（serverPort）。
+          // 置き場は入れ方で変わるので、自分の置き場に書き換える。1 つのアダプターで pwa-node と pwa-chrome を type で分ける。
+          // vscode-js-debug は launch と attach の後に子のセッション（startDebugging）を求めるが、拡張機能はまだ子のセッションを作らないので、
+          // 今はそのことを知らせてデバッグを終える（ブレークポイントでは止まらない。docs/usage.md）
+          "pwa-node": {
+            "transport": "serverPort",
+            "command": "node",
+            "args": ["${userHome}/.local/share/vscode-js-debug/js-debug/src/dapDebugServer.js", "${port}", "127.0.0.1"],
+            "aliases": ["pwa-chrome"],
+          },
+        },
+        "configurations": {
+          "go": [
+            { "name": "パッケージを実行", "type": "go", "request": "launch", "mode": "debug", "program": "${fileDirname}" },
+            // 動いているプロセスを一覧から選んで attach する（${pickProcess}）
+            { "name": "プロセスへ attach（選ぶ）", "type": "go", "request": "attach", "mode": "local", "processId": "${pickProcess}" },
+          ],
+          // デバッグ対象を動かす python は、プロジェクトの .venv の python にする。仮想環境の置き場が違うプロジェクトでは、
+          // .vscode/launch.json に書くか、resolveCommand（外部のコマンドが JSON で python と cwd を返す）で決める。
+          // console は省かずに internalConsole と書く（integratedTerminal は、拡張機能が internalConsole に替えて送る）
+          "python": [
+            {
+              "name": "今のファイルを実行",
+              "type": "python",
+              "request": "launch",
+              "program": "${file}",
+              "console": "internalConsole",
+              "cwd": "${workspaceFolder}",
+              "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            {
+              "name": "pytest: 今のファイル",
+              "type": "python",
+              "request": "launch",
+              "module": "pytest",
+              "args": ["-s", "${file}"],
+              "console": "internalConsole",
+              "cwd": "${workspaceFolder}",
+              "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            // python -m debugpy --listen 127.0.0.1:5678 app.py で待つプロセス（コンテナなど）へ attach する。
+            // ソースは bind mount の前提で、localRoot（ワークスペースの根）と remoteRoot を対応づける
+            {
+              "name": "debugpy へ attach（5678）",
+              "type": "python",
+              "request": "attach",
+              "justMyCode": false,
+              "connect": { "host": "127.0.0.1", "port": 5678 },
+              "pathMappings": [{ "localRoot": "${workspaceFolder}", "remoteRoot": "/app" }],
+            },
+          ],
+          // javascriptreact と typescriptreact で使うときは、同じ構成を並べる
+          "javascript": [
+            {
+              "name": "今のファイルを実行（node）",
+              "type": "pwa-node",
+              "request": "launch",
+              "program": "${file}",
+              "cwd": "${workspaceFolder}",
+              "sourceMaps": true,
+              "skipFiles": ["<node_internals>/**"],
+            },
+            { "name": "プロセスへ attach（選ぶ）", "type": "pwa-node", "request": "attach", "processId": "${pickProcess}", "cwd": "${workspaceFolder}", "sourceMaps": true },
+            // NODE_OPTIONS=--inspect で起動した開発用のサーバー（9229 で待つ）へ attach する
+            {
+              "name": "開発用のサーバーへ attach（9229）",
+              "type": "pwa-node",
+              "request": "attach",
+              "port": 9229,
+              "cwd": "${workspaceFolder}",
+              "sourceMaps": true,
+              "resolveSourceMapLocations": ["${workspaceFolder}/**", "!**/node_modules/**"],
+              "skipFiles": ["<node_internals>/**"],
+            },
+            // --remote-debugging-port=9222 で起動した Chrome へ attach する
+            { "name": "Chrome へ attach（9222）", "type": "pwa-chrome", "request": "attach", "port": 9222, "webRoot": "${workspaceFolder}", "sourceMaps": true },
+          ],
+          "typescript": [
+            // TypeScript は、プロジェクトの tsx で実行する
+            {
+              "name": "今のファイルを実行（tsx）",
+              "type": "pwa-node",
+              "request": "launch",
+              "program": "${file}",
+              "cwd": "${workspaceFolder}",
+              "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
+              "sourceMaps": true,
+              "skipFiles": ["<node_internals>/**"],
+            },
+            { "name": "開発用のサーバーへ attach（9229）", "type": "pwa-node", "request": "attach", "port": 9229, "cwd": "${workspaceFolder}", "sourceMaps": true, "skipFiles": ["<node_internals>/**"] },
+          ],
+        },
+      },
     },
     "activation": { "lsp": [{ "on": "filetype", "pattern": "python" }] },
   },

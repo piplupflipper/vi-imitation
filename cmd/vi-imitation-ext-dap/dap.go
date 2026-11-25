@@ -24,6 +24,10 @@ import (
 // 本体との接続の既定値（rpc.DefaultMaxMessageSize）に揃える。
 const maxDAPMessageSize = rpc.DefaultMaxMessageSize
 
+// reverseRequestEvent は、対応しない逆向きの request を受けたことを onEvent へ渡すときの名前の前置きである
+// （後ろに request の command を付ける。DAP の event の名前と重ならない）。body は、その request の引数である。
+const reverseRequestEvent = "$reverseRequest:"
+
 // errDAPClosed は、デバッグアダプターとの接続が終わっていることを表す。
 var errDAPClosed = errors.New("dap: connection closed")
 
@@ -163,7 +167,11 @@ func (c *dapConn) readLoop(r *bufio.Reader) {
 				c.onEvent(m.Event, m.Body)
 			}
 		case "request":
-			// 逆向きの request には対応しない（基本設計 6.4 の最初の範囲に runInTerminal を入れない）。
+			// 逆向きの request には対応しない（runInTerminal は作らない。FR-288。startDebugging は子のセッションの issue で作る）。
+			// 何を求められたかをログに残せるよう、reverseRequestEvent の名前で onEvent へも渡す。
+			if c.onEvent != nil {
+				c.onEvent(reverseRequestEvent+m.Command, m.Arguments)
+			}
 			_ = c.write(func(seq int) any {
 				return dapResponse{
 					Seq: seq, Type: "response", RequestSeq: m.Seq, Success: false,

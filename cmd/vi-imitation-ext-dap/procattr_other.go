@@ -9,3 +9,10 @@ import "os/exec"
 func startAdapter(cmd *exec.Cmd) error {
 	return cmd.Start()
 }
+
+// killGroup は、cmd を止める。Linux 以外では別のプロセスグループにしないので、cmd のプロセスだけを止める。
+func killGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+}

@@ -29,6 +29,8 @@ var fakeAdapter string
 var extBinary string
 
 func TestMain(m *testing.M) {
+	// テストの中の拡張機能は、アダプターの見張りに、このテストの実行ファイルを使う（os.Executable）。
+	maybeRunGuard()
 	dir, err := os.MkdirTemp("", "ext-dap-test-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -64,9 +66,23 @@ type host struct {
 	outputs chan string
 	opens   chan ext.EditorOpenParams
 
+	panes   chan openedPane
+	closes  chan ext.ViewID
+	asks    chan ext.ChoiceAskParams
+	answers chan ext.ChoiceAskResult
+
 	mu       sync.Mutex
 	versions map[ext.BufferID]ext.Version
 	ids      map[string]ext.BufferID
+	// workDir は、editor/state で返す作業ディレクトリである。
+	workDir  string
+	nextView ext.ViewID
+}
+
+// openedPane は、拡張機能が pane/open で開いた部品である。
+type openedPane struct {
+	id     ext.ViewID
+	params ext.PaneOpenParams
 }
 
 // newHost は、settings（JSON。空なら設定無し）で拡張機能を初期化した本体の役を返す。
@@ -112,8 +128,13 @@ func newHostState(t *testing.T) *host {
 		msgs:     make(chan ext.MessageShowParams, 1024),
 		outputs:  make(chan string, 1024),
 		opens:    make(chan ext.EditorOpenParams, 1024),
+		panes:    make(chan openedPane, 16),
+		closes:   make(chan ext.ViewID, 16),
+		asks:     make(chan ext.ChoiceAskParams, 16),
+		answers:  make(chan ext.ChoiceAskResult, 16),
 		versions: map[ext.BufferID]ext.Version{},
 		ids:      map[string]ext.BufferID{},
+		workDir:  t.TempDir(),
 	}
 }
 
@@ -156,12 +177,40 @@ func (h *host) notification(_ context.Context, n *rpc.Notification) {
 			h.t.Errorf("output/append channel = %q, want %q", p.Channel, outputChannel)
 		}
 		h.outputs <- p.Text
+	case ext.MethodViewClose:
+		h.closes <- decode[ext.ViewCloseParams](h.t, n.Params).View
 	}
 }
 
-// request は、editor/open に答える。開いているバッファだけを扱い、応答の版は本体の役が覚えている現在の版にする。
+// request は、editor/open、editor/state、pane/open、choice/ask に答える。
+// editor/open は、開いているバッファだけを扱い、応答の版は本体の役が覚えている現在の版にする。
+// editor/state は、作業ディレクトリ workDir だけを返す。
+// pane/open は、部品を panes に流し、新しい部品の ID で答える。テストは選んだことを selectItem で知らせる。
+// choice/ask は、問いを asks に流し、テストが answer で渡した答えで答える。
 func (h *host) request(_ context.Context, req *rpc.Request, reply rpc.Replier) {
-	if req.Method != ext.MethodEditorOpen {
+	switch req.Method {
+	case ext.MethodEditorState:
+		h.mu.Lock()
+		wd := h.workDir
+		h.mu.Unlock()
+		_ = reply(ext.EditorStateResult{WorkDir: wd}, nil)
+		return
+	case ext.MethodPaneOpen:
+		p := decode[ext.PaneOpenParams](h.t, req.Params)
+		h.mu.Lock()
+		h.nextView++
+		id := h.nextView
+		h.mu.Unlock()
+		_ = reply(ext.PaneOpenResult{View: id}, nil)
+		h.panes <- openedPane{id: id, params: p}
+		return
+	case ext.MethodChoiceAsk:
+		p := decode[ext.ChoiceAskParams](h.t, req.Params)
+		h.asks <- p
+		go func() { _ = reply(<-h.answers, nil) }()
+		return
+	case ext.MethodEditorOpen:
+	default:
 		_ = reply(nil, &rpc.Error{Code: rpc.CodeMethodNotFound, Message: req.Method})
 		return
 	}
@@ -659,6 +708,7 @@ func TestProviderOperations(t *testing.T) {
 func TestReplayWaitsForStop(t *testing.T) {
 	h := newHost(t, fakeSettings(t, nil, map[string]any{"stopDelayMs": 200}))
 	h.open(1, srcPath, srcText)
+	h.prime()
 	if res := h.replay(cmdToggleBreakpoint, 2); !res.OK || res.Open != nil {
 		t.Fatalf("toggle (sync) = %+v, want ok without open", res)
 	}
@@ -728,6 +778,7 @@ func TestReplayStepFailure(t *testing.T) {
 	h := newHost(t, fakeSettings(t, nil, map[string]any{"ignore": []string{"stepOut"}}))
 	h.d.timeouts.request = 300 * time.Millisecond
 	h.open(1, srcPath, srcText)
+	h.prime()
 	h.mustExec(cmdToggleBreakpoint, 2)
 	if res := h.replay(cmdStart, 0); !res.OK {
 		t.Fatalf("start (sync) = %+v", res)
@@ -750,6 +801,7 @@ func TestReplayStepFailure(t *testing.T) {
 func TestReplayStopsOnException(t *testing.T) {
 	h := newHost(t, fakeSettings(t, nil, map[string]any{"exceptionOnContinue": true}))
 	h.open(1, srcPath, srcText)
+	h.prime()
 	h.mustExec(cmdToggleBreakpoint, 2)
 	if res := h.replay(cmdStart, 0); !res.OK {
 		t.Fatalf("start (sync) = %+v", res)
@@ -770,6 +822,7 @@ func TestReplayStopsOnException(t *testing.T) {
 func TestReplayStopsOnExceptionWithoutSource(t *testing.T) {
 	h := newHost(t, fakeSettings(t, nil, map[string]any{"exceptionOnContinue": true, "noSource": true}))
 	h.open(1, srcPath, srcText)
+	h.prime()
 	h.mustExec(cmdToggleBreakpoint, 2)
 	if res := h.replay(cmdStart, 0); !res.OK || res.Open != nil {
 		t.Fatalf("start (sync) = %+v, want ok without open", res)
@@ -799,6 +852,7 @@ func TestReplayStopInUnopenedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.open(1, srcPath, srcText)
+	h.prime()
 	res := h.replay(cmdStart, 0)
 	if !res.OK || res.Open == nil || res.Open.Path != path || res.Open.Buffer != nil || res.Open.Position == nil || *res.Open.Position != (ext.Position{Line: 1, Byte: 5}) {
 		t.Errorf("start (sync) = %+v, want open %s at 1:5", res, path)
@@ -861,10 +915,29 @@ func TestLaunchFailure(t *testing.T) {
 func TestAdapterNotFound(t *testing.T) {
 	h := newHost(t, `{"adapter": {"command": "/nonexistent/adapter"}}`)
 	h.open(1, srcPath, srcText)
-	if res := h.exec(1, cmdStart, 0); res.OK {
-		t.Error("start with a missing adapter: ok = true, want false")
+	// 構成を決める間は待たせないので、開始は受け付けてから、起動できないことを知らせる。
+	h.mustExec(cmdStart, 0)
+	if m := h.waitMessage("起動できない"); m.Level != ext.MessageError {
+		t.Errorf("message = %+v, want an error", m)
 	}
-	h.waitMessage("起動できない")
+	h.d.mu.Lock()
+	defer h.d.mu.Unlock()
+	if h.d.sess != nil || h.d.preparing != nil {
+		t.Error("a session remains after the adapter failed to start")
+	}
+}
+
+// prime は、前回の構成（debug.runLast と再生の開始が使う）を、srcPath のバッファで始めたときの構成にする。
+// 再生中（sync）の開始は一覧も問いも出さずに前回の構成で始める（FR-280）ので、再生のテストの前に呼ぶ。
+func (h *host) prime() {
+	h.t.Helper()
+	spec, err := h.d.prepare(context.Background(), invocation{file: srcPath, line: 1, column: 1})
+	if err != nil {
+		h.t.Fatalf("prepare: %v", err)
+	}
+	h.d.mu.Lock()
+	h.d.last = spec
+	h.d.mu.Unlock()
 }
 
 // TestStop は、dap.stop で disconnect を送り、デバッグアダプターが終わって状態が消えることを確かめる。
@@ -887,12 +960,12 @@ func TestStop(t *testing.T) {
 	h.waitMessage("デバッグを終了した")
 	h.waitEnded()
 	select {
-	case <-s.procDone:
+	case <-s.procDone():
 	case <-time.After(testTimeout):
 		t.Fatal("adapter process did not exit")
 	}
-	if !s.cmd.ProcessState.Success() {
-		t.Errorf("adapter exit = %v, want success (exited by disconnect, not killed)", s.cmd.ProcessState)
+	if !s.getProc().cmd.ProcessState.Success() {
+		t.Errorf("adapter exit = %v, want success (exited by disconnect, not killed)", s.getProc().cmd.ProcessState)
 	}
 }
 
@@ -913,8 +986,8 @@ func TestStopWithTerminate(t *testing.T) {
 	h.waitOutput("terminate requested")
 	h.waitMessage("デバッグを終了した")
 	h.waitEnded()
-	if !s.cmd.ProcessState.Success() {
-		t.Errorf("adapter exit = %v, want success (exited by disconnect)", s.cmd.ProcessState)
+	if !s.getProc().cmd.ProcessState.Success() {
+		t.Errorf("adapter exit = %v, want success (exited by disconnect)", s.getProc().cmd.ProcessState)
 	}
 }
 
