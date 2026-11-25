@@ -825,6 +825,13 @@ DAP の REPL（FR-293）も、送信、履歴、フォーカス、出力中の�
 |---|---|---|
 | `ext/expand` | 拡張機能の設定の値（JSON の値の全体）の中の変数（`${名前}`、`${名前:引数}`）を集め、評価せずに確かめ、1 回の展開として評価して置き換えること。`${env:名前}` の読み方 | 変数の意味（呼び出す側が `expand.Resolver` で渡す）、値を利用者に聞くこと |
 
+#406 で、次のパッケージを同じく土台の層（`ext` と同じ層）に足した（6.7 の「プロジェクトの根と実行ファイルの探索」）。標準ライブラリだけを import し、`ext` も import しない。図 2 にはまだ描いていない。
+`ext/expand` と同じく、拡張機能の作者に見せる補助なので `ext` の下に置いた。本体（server）は使わない。
+
+| パッケージ | 責務 | 持たないもの |
+|---|---|---|
+| `ext/project` | ファイルのパスから、プロジェクトの根（目印の名前の列で親へたどる）、プロジェクトの中の実行ファイル（Python の仮想環境の `bin`、`node_modules/.bin`、PATH）、Python の仮想環境を探すこと | 入れ方の案内（mise）、作業ディレクトリをどれにするかの決め、外部のコマンドの起動 |
+
 Go は、パッケージが互いを import する循環を、コンパイルエラーにする。
 層を決めておくのは、実装の途中で循環に行き当たるのを避けるためである。
 
@@ -3278,7 +3285,7 @@ VS Code の文書「Debug configuration」（https://code.visualstudio.com/docs/
 
 | 項目 | 扱い |
 |---|---|
-| 置き場 | ワークスペースの根（下の `${workspaceFolder}`）の `.vscode/launch.json`。無ければ候補にしない。上のディレクトリへはたどらない（6.7 の「プロジェクトの根と実行ファイルの探索」が決まるまでの仮） |
+| 置き場 | ワークスペースの根（下の `${workspaceFolder}`）の `.vscode/launch.json`。無ければ候補にしない。上のディレクトリへはたどらない（DAP の拡張機能が 6.7 の「プロジェクトの根と実行ファイルの探索」の `ext/project` を使うように改めるまでの仮） |
 | 形式 | JSONC（`github.com/tailscale/hujson` で読む。要件定義 6 章の JSONC の読み方）。読めなければ、その誤りをメッセージの行に出し、設定の構成だけを候補にする |
 | `version` | 読まない |
 | OS ごとの上書き | `linux` の中のキーで、構成の同じキーを置き換える（文書の「Platform-specific properties」）。`type` は OS ごとに変えられない（同じ節）ので、`linux` の中の `type` は扱えない項目にする |
@@ -3317,7 +3324,7 @@ VS Code の文書「Variables reference」の「Predefined variables」の表の
 
 | 変数 | 値 |
 |---|---|
-| `${workspaceFolder}` | `.vscode/launch.json` の構成では、その `.vscode` のあるディレクトリ。設定の構成では、`editor/state` の `workDir`（操作中の client の作業ディレクトリ）。どちらも 6.7 の「プロジェクトの根と実行ファイルの探索」が決まるまでの仮である |
+| `${workspaceFolder}` | `.vscode/launch.json` の構成では、その `.vscode` のあるディレクトリ。設定の構成では、`editor/state` の `workDir`（操作中の client の作業ディレクトリ）。どちらも、DAP の拡張機能が 6.7 の「プロジェクトの根と実行ファイルの探索」の `ext/project` を使うように改めるまでの仮である |
 | `${workspaceFolderBasename}` | `${workspaceFolder}` の最後の名前 |
 | `${file}`、`${fileBasename}`、`${fileBasenameNoExtension}`、`${fileExtname}`、`${fileDirname}`、`${fileDirnameBasename}` | `provider/invoke` のバッファのファイルのパスから作る。ファイルでないバッファでは決められない |
 | `${relativeFile}`、`${relativeFileDirname}`、`${fileWorkspaceFolder}` | `${workspaceFolder}` からの相対のパスと、`${workspaceFolder}` |
@@ -4476,8 +4483,10 @@ VS Code の文書は「Variable substitution is supported inside some key and va
 
 #### プロジェクトの根と実行ファイルの探索
 
-#399 の A5（プロジェクトの根と実行ファイルの探索）は、置き場をオーナーが決める（#399 の「未決」。10 章）。
-この節は、#400 の時点の事実と案と、決まるまでの通し方である。
+#399 の A5（プロジェクトの根と実行ファイルの探索）は、2026-11-25 にオーナーが、拡張機能の側の共有の Go のパッケージに置き、根の探索、実行ファイルの探索、入れ方の案内を別々の責務にすると決めた（#399 のコメント）。
+#406 で、根の探索と実行ファイルの探索を `ext/project` に作った（FR-300。`ext/project` の package の doc）。
+入れ方の案内は、LSP の拡張機能の `mise.go` に残し、部品へ移すかは別の issue で決める。
+この節は、#400 の時点の事実と、#406 で決めた形と、各拡張機能が移るまでの通し方である。
 
 2026-11-25（main の 0cdd910）の事実は次のとおりである。
 
@@ -4489,27 +4498,60 @@ VS Code の文書は「Variable substitution is supported inside some key and va
 
 オーナーの nvim の DAP の設定は、venv の python（デバッグ対象を動かす python）、作業ディレクトリ、`.node-version` の node を、Lua の関数で開始のたびに決めている（#399 の「相談の材料」）。
 
-案は、拡張機能の側の共有の Go のパッケージ（例: `ext/project`）に、次の 3 つを別の責務として置くことである（#399 の未決の案）。
+#406 で作った `ext/project` の口は、次のとおりである。
+探し方の順は、オーナーの nvim の `lsp/resolver.lua`（LSP、整形ツール、DAP に共通の解決の層。2026-11-25 に読んだ）に合わせた。
 
-| 責務 | 中身 | 今の置き場から移すもの |
-|---|---|---|
-| 根の探索 | 目印のファイルの列で、ファイルのディレクトリから親へたどって根を決める | LSP の `findRoot` |
-| 実行ファイルの探索 | 名前から、プロジェクトの依存（`node_modules/.bin`、`.venv/bin`）、有効にした仮想環境、PATH の順に探す。どこで見つけたかを返す | 整形ツールの `run.go` の探し方 |
-| 入れ方の案内 | 見つからなかったときに、mise の道具の ID で案内するか入れる | LSP の `mise.go` |
+| 責務 | 口 | 探し方 | 移す元 |
+|---|---|---|---|
+| 根の探索 | `project.Root(path, markers) (string, error)`、`project.GitRoot(path)`（目印が `.git`） | 起点（下の共通の決め）から親へたどり、目印の名前（ファイルかディレクトリ。`os.Stat` で在ること）のどれかを含む最初のディレクトリ。1 つのディレクトリの中では目印の並びに意味を持たせない | LSP の `findRoot`（見つからなければファイルのディレクトリを返す。同じ結果は呼び出す側が `ErrNotFound` のときに `filepath.Dir(file)` で作る） |
+| 実行ファイルの探索 | `project.Find(name, path, kind) (project.Executable, error)`。`Executable` は `Path` と、見つけた場所の `Source`（`FromPath`、`FromVirtualEnv`、`FromProjectVenv`、`FromNodeModules`） | `KindPython` は、下の仮想環境の `bin/name`、PATH の順。仮想環境に `name` が無ければ、ほかの仮想環境を探さずに PATH へ進む。`KindNode` は、起点から `GitRoot(path)` まで親へたどった各 `node_modules/.bin/name`、PATH の順で、Git の作業ツリーの外では `node_modules/.bin` を探さない。`KindPath` は PATH だけ。名前がパスの区切りを含むなどなら `project.ErrInvalidName` | 整形ツールの `run.go` の `findCommand` |
+| Python の仮想環境 | `project.PythonVenv(path) (project.Venv, error)`。`Venv` は、仮想環境のディレクトリ `Dir`、その `bin/python` の `Python`、`Source`、仮想環境のあるディレクトリを返す `Parent()` | 起点から親へたどった各ディレクトリの `.venv`、`venv`、絶対パスの `VIRTUAL_ENV` の順で、`bin/python` を実行できる最初のもの。Git の根で止めない（uv のワークスペースのメンバーから根の `.venv` に届く） | 無し（オーナーの nvim の DAP の設定が Lua の関数で決めていたもの） |
 
-案を採るときに決めることは、次のとおりである（#399 の未決に書かれた注意を含む）。
+3 つの探索に共通の決めは、次のとおりである。
 
-- アダプターを動かす python（debugpy のアダプター。オーナーの nvim では `uv tool` で入れた 1 つの `debugpy-adapter`）と、デバッグ対象の venv の python（構成の `python`）は、別の選択として扱う
-- 作業ディレクトリ（構成の `cwd`）は、探索の根と同じと決めつけず、構成に書いた値を優先する
-- DAP の `${workspaceFolder}` を、探索の根にするか、`editor/state` の `workDir` のままにするか
-- `.vscode/launch.json` を、根で探すか、`workDir` で探すか
+- 起点は、パスがディレクトリならそのディレクトリ、それ以外（ファイル、まだ無いパス）なら `filepath.Dir(path)` である。ファイルのパスでは LSP の `findRoot` と同じ起点で、ディレクトリでは `lsp/resolver.lua` の `start_dir` と同じ起点である（オーナーの nvim の LSP の設定は、根のディレクトリを渡して呼ぶ。PR #407 のレビューの推奨 1）
+- 親へたどる途中で、他の利用者が書けるディレクトリ（パーミッションの `0o002` が立つもの。スティッキービットの有無を問わない。`/tmp`、`/var/tmp`、`/dev/shm` など）に当たったら、そのディレクトリの中の候補（目印、`.venv`、`venv`、`node_modules/.bin`）を見ずに、たどるのをそこで止める。他の利用者がそこに置いた `.venv/bin/python` や `.git` と `node_modules/.bin` を拾い、自分の権限で起動しないためである（PR #407 のレビューの必須 1）。`/tmp/proj/.venv` のように、誰でも書けるディレクトリの下の、そうでないディレクトリの中の候補は採る。候補の持ち主（git の `safe.directory` に当たる見方）は見ない
+- シンボリックリンクは解かない。リンクのファイルはリンクの置き場所のディレクトリから探し、目印、仮想環境、実行ファイル、たどるディレクトリの権限はリンクの先で見る。返すパスもリンクを解かない（仮想環境の `bin/python` は、ふつう元の python へのリンクで、解くと仮想環境の外を指す）
+- ホームディレクトリでは止めず、上の他の利用者が書けるディレクトリに当たるまで、ファイルシステムの根までたどる（`node_modules/.bin` だけは Git の根で止める）
+- 実行ファイルは、通常のファイルで、今の利用者が実行できる（Linux と macOS では `access(2)` の `X_OK`。nvim の `executable()` と同じ見方。PR #407 のレビューの推奨 4）ものだけを数え、実行できないものは無いものとして次を探す。`.venv` が通常のファイルか、`bin/python` の無いディレクトリなら、次の候補へ進む
+- パスが空（ファイルの無いバッファ）なら、パスから探す段を飛ばす（`VIRTUAL_ENV` と PATH は見る）
+- 見つからなければ `project.ErrNotFound` を包んだ誤りを返す。他の利用者が書けるディレクトリで止めた理由と、PATH の `exec.LookPath` の誤りを包む。候補を調べるときに権限の誤り（読めない `.venv` など）が起きたら、外側の候補へ進まずに止め、`fs.ErrPermission` を包んだ誤りを返す。呼び出す側は `errors.Is` で見分けて、利用者に理由を知らせられる（PR #407 のレビューの推奨 5）。在らないことと権限の誤りのほかの誤り（`ENOTDIR`、シンボリックリンクの輪など）は、在らないものとして扱う
+- 読むだけで、ファイルを作らず、外部のコマンドを起動しない。PATH で見つけた mise の shim の版が決まっているかは確かめない（LSP の拡張機能の FR-143 の扱いは、LSP の拡張機能に残す）
 
-決まるまでの通し方は、次のとおりである（#399 の決め）。
+#399 の未決に書かれた注意は、次のとおりに扱った。
+
+- アダプターを動かす python（debugpy のアダプター。オーナーの nvim では `uv tool` で入れた 1 つの `debugpy-adapter`）は `Find(名前, file, KindPath)` で、デバッグ対象の venv の python は `PythonVenv(file).Python` で、別の問い合わせとして引く
+- 作業ディレクトリは、部品が決めない。呼び出す側が、構成に書いた値、`Venv.Parent()`（オーナーの nvim の DAP の設定の既定）、`Root` の結果から選ぶ。`ext/project` の Example に、選び方の例がある
+
+`lsp/resolver.lua` と合わせなかった点は、次のとおりである。
+
+| 点 | `lsp/resolver.lua` | `ext/project` | 理由 |
+|---|---|---|---|
+| 他の利用者が書けるディレクトリ | 持ち主と権限を見ずに、ファイルシステムの根までたどる（`/tmp/.venv` も返す） | そこで止め、中の候補を見ない | 他の利用者の置いた実行ファイルを、自分の権限で起動しないため（PR #407 のレビューの必須 1） |
+| `VIRTUAL_ENV` の順 | プロジェクトの中より先 | プロジェクトの中の `.venv`、`venv` より後 | 拡張機能の環境は server の環境（6.4 の外部のコマンドの表の「環境」）で、server を起動したシェルの `VIRTUAL_ENV` が、同じ server で開いた別のプロジェクトのファイルにも効くため。整形ツールの拡張機能の PR #341 の再レビューの推奨 2 の決め（プロジェクトの中を先）と同じ順（PR #407 のレビューの推奨 2） |
+| `VIRTUAL_ENV` の形 | 相対パスでも使う | 絶対パスのときだけ使う | 相対パスは拡張機能の作業ディレクトリに依って意味が変わる。整形ツールの拡張機能の今の扱いと同じ |
+| 権限の誤り | 在らないものとして次へ進む | 止めて `fs.ErrPermission` を包んで返す | 読めない近い `.venv` を黙って飛ばし、外側の仮想環境を返さないため |
+| PATH で見つけたときの値 | 名前を返す | `exec.LookPath` のパスを返す | 拡張機能が子プロセスを起動するときに、同じ実行ファイルを指すため |
+| 入れ方の案内 | 見つからなければ mise の案内を出す | 持たない | 案内は別の責務（#399 の裁定）。LSP の `mise.go` に残す |
+
+`lsp/resolver.lua` の、pyproject.toml から型チェッカーを決める処理（`python_diag_owner`）は、根と実行ファイルの探索でないので移していない。
+
+各拡張機能が `ext/project` に移るまでの通し方は、次のとおりである（#399 の決め）。
 
 - DAP の拡張機能は、構成に書いた値（`python`、`cwd`、`runtimeExecutable`）と、外部のコマンドの値（`resolveCommand`。FR-282）だけで決める。拡張機能は、構成に書かれていない値を探して補わない
 - `${workspaceFolder}` と `.vscode/launch.json` の置き場は、6.4 の変数の表の仮の決め（`workDir`、または `.vscode` のあるディレクトリ）にする
-- LSP と整形ツールの探索は、今のまま変えない
-- 案が決まったら、DAP の拡張機能の変数の意味（`${workspaceFolder}`）と、構成に書いていない値を補うかを、その決めに合わせて改める issue を切る
+- LSP と整形ツールの探索は、今のまま変えない。整形ツールの拡張機能を移すときは、下の表の差で利用者の結果が変わるので、どちらに合わせるかを移す issue で決める（PR #407 のレビューの推奨 3）
+
+| 点 | 整形ツールの今の `findCommand` | `ext/project` | 結果が変わる例 |
+|---|---|---|---|
+| Git の作業ツリーの外の `node_modules/.bin` | ファイルシステムの根までたどる | 探さない | Git の外のファイルで、祖先の `node_modules/.bin/biome` を使わなくなる |
+| `.venv` の範囲 | `.venv/bin` を Git の根で止める | Git の根で止めず、`venv` も見る | worktree に `.venv` が無いと、Git の根の外の `.venv` に届く |
+| 他の利用者が書けるディレクトリ | 止めない | 止める | `/tmp` の `node_modules/.bin` を使わなくなる |
+| 種類 | 整形ツールを問わず、各ディレクトリで `node_modules/.bin` と `.venv/bin` の両方を見る | `Kind` で 1 つを選ぶ。設定に整形ツールごとの種類が要る（オーナーの nvim の `conform.lua` も、biome を `node_bin`、ruff を `python_bin` で引く） | pip で `.venv` に入れた taplo や clang-format は、`KindNode` か `KindPath` にすると見つからない |
+| 壊れた `.git` のシンボリックリンク | `isGitRoot` が `os.Lstat` なので Git の根とみなし、その下の `node_modules/.bin` を使う | `os.Stat` なので Git の外とみなし、`node_modules/.bin` を探さない（nvim と同じ） | 壊れた `.git` の下の `node_modules/.bin/biome` を使わず、PATH へ進む |
+| 仮想環境の数え方 | `.venv/bin/<名前>` があれば使う | `bin/python` を実行できる `.venv`、`venv` だけ（nvim と同じ） | `bin/python` の無い `.venv/bin/ruff` は見つからない |
+| 実行できるかの見方 | どれかの x のビット | 今の利用者が実行できるか（`access(2)`） | root が `0o700` で作った `.venv/bin/ruff` を飛ばして PATH へ進む |
+- DAP の拡張機能の変数の意味（`${workspaceFolder}`）と、構成に書いていない値を `ext/project` で補うかは、DAP の拡張機能を `ext/project` に移す issue で決める（10 章）
 
 ### 6.8 diff
 
@@ -6021,7 +6063,7 @@ tmux の中の構成（server と編集の client が別のプロセス）の起
 | プレビューのスクロールの操作（`preview.page-down` など。#308）の名前と既定のキーと 1 画面の行数。fzf-lua の `preview-reset`（`<S-Left>`）は足していない。`<C-w>w` でプレビューへフォーカスを移した後も、同じ操作でスクロールする（1.4 の表の「フォーカス」） | 1.4 |
 | マクロの再生で、ファインダーの候補を読み終える前に `<CR>` が来たとき、今の入力に答えた最初の空でない一覧（読みかけの一覧のこともある）で選ぶこと。一致が無い入力の `<CR>` は、選ばずに待ったままになる（PR #249 の仮の扱い）。ほかの拡張機能が再生中にポップアップを開くときも、応答の前に開けば同じく残りのキーがポップアップへ渡る | 1.4、3 |
 | ペインの部品（`pane/open`）の書き足し（`view/append` など）、末尾を追う指定、`contributes.popupKeys` のモードの宣言（今はノーマルモードだけで引く）。ACP の返答（FR-111）、デバッグ対象の出力（FR-108）、ファインダー（FR-106）で要る（PR #242 のレビューの推奨 5）。#399 で、書き足しを `view/append` にし、末尾の追従をカーソルが最後の行にあるかで決める形にした（1.4 の「#399 の切り替えの部品と書き足し」。FR-272）。`popupKeys` のモードの宣言は、ACP の取り消しのキー（FR-111）の issue で決める | 1.4、5.3 |
-| プロジェクトの根と実行ファイル（venv の python、`node_modules/.bin`）の探索の置き場（#399 の A5）。オーナーが調査の結果を見て決める。案は、拡張機能の側の共有の Go のパッケージに、根の探索、実行ファイルの探索、入れ方の案内を別の責務として置くこと。決まるまでは、DAP の拡張機能は構成に書いた値と外部のコマンドの値で通す（6.7 の「プロジェクトの根と実行ファイルの探索」） | 6.3、6.4、6.7、6.10 |
+| DAP の `${workspaceFolder}` を `ext/project` の根にするか `editor/state` の `workDir` のままにするか、`.vscode/launch.json` を根で探すか、構成に書いていない値（venv の python、`cwd`）を `ext/project` で補うか。探索の置き場（#399 の A5）は 2026-11-25 のオーナーの裁定で決まり、#406 で `ext/project` を作った。DAP の拡張機能を `ext/project` に移す issue で決める（6.7 の「プロジェクトの根と実行ファイルの探索」） | 6.4、6.7 |
 | 切り替えの部品（FR-269）の中でだけ別の操作にするキーの割り当ての口。オーナーの nvim は DAP のペインの中の `<Tab>` と `<S-Tab>` で区画を切り替えるが、本体の `<Tab>` はタブの移動（FR-98）で、`keymap` は部品を区別しない（1.4 の「#399 の切り替えの部品と書き足し」）。裁定までは既定のキーと子の `key` だけで作り（PR #401 の裁定要 1 の A）、部品の中だけの割り当てを後で足せるよう、キーを引く順の 2 番目を空けておく。推奨は、`keymap` に部品の中だけの割り当ての置き場を足す形（同じく B） | 1.4、7 |
 | `${input:ID}` のように文字列で展開した値を、数を要る構成の項目に渡すときに数に直すか（6.7 の「設定の文字列の変数の展開」） | 6.4、6.7 |
 | DAP の `serverPort` のつなぎ方で、空いたポートを決めてからアダプターが待ち受けるまでの間に、別のプロセスが同じ番号を取りうること（6.4 の「アダプターのつなぎ方」） | 6.4 |
