@@ -150,7 +150,7 @@ func TestViewAppendLimit(t *testing.T) {
 // req: FR-272, FR-273
 func TestViewAppendMatchesModel(t *testing.T) {
 	h := start(t, Config{})
-	r := rand.New(rand.NewPCG(5, 6))
+	r := rand.New(rand.NewPCG(5, 6)) //nolint:gosec // 再現できる試験の入力を作る
 	pieces := []string{"a", "bc\n", "\n", "あい", strings.Repeat("x", 3000), "line\n"}
 	h.e.do(func() {
 		e := h.e

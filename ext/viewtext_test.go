@@ -125,7 +125,7 @@ func TestAppendViewText(t *testing.T) {
 //
 // req: FR-272
 func TestAppendViewTextChunks(t *testing.T) {
-	r := rand.New(rand.NewPCG(1, 2))
+	r := rand.New(rand.NewPCG(1, 2)) //nolint:gosec // 再現できる試験の入力を作る
 	pieces := []string{"a", "bc", "\n", "あい", "\n\n", strings.Repeat("x", 3000), "é"}
 	for range 200 {
 		var sb strings.Builder
@@ -163,7 +163,7 @@ func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
 //
 // req: FR-272
 func TestViewAppendMerge(t *testing.T) {
-	r := rand.New(rand.NewPCG(3, 4))
+	r := rand.New(rand.NewPCG(3, 4)) //nolint:gosec // 再現できる試験の入力を作る
 	lines := func(n int, tag string) string {
 		var sb strings.Builder
 		for i := range n {

@@ -221,11 +221,10 @@ func TestTextLog(t *testing.T) {
 
 	// 開き直すと、閉じる前と閉じている間の中身が戻る。色も戻る。
 	var opened ext.ViewComponent
-	err := log.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
+	if err := log.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
 		opened = c
 		return openPane(s)(c)
-	}, "")
-	if err != nil {
+	}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if opened.Text != "before\none two\nthree\n" {
@@ -290,7 +289,7 @@ func TestTextLog(t *testing.T) {
 
 	// open が誤りを返したら結びつけず、その間の書き足しも写しに残す。
 	vh.setFailOpen(true)
-	err = log.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
+	err := log.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
 		_ = log.Append("during\n", "")
 		return openPane(s)(c)
 	}, "")
@@ -304,8 +303,8 @@ func TestTextLog(t *testing.T) {
 	// 開いている最中の書き足しは、開き終えてから送る。
 	err = log.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
 		_ = log.Append("opening\n", "")
-		if err := log.Open(openPane(s), ""); !errors.Is(err, server.ErrOpening) {
-			t.Errorf("nested Open = %v", err)
+		if nested := log.Open(openPane(s), ""); !errors.Is(nested, server.ErrOpening) {
+			t.Errorf("nested Open = %v", nested)
 		}
 		return openPane(s)(c)
 	}, "")

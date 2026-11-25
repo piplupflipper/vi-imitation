@@ -854,8 +854,8 @@ func floatLines(c ext.ViewComponent, expanded map[string]bool, icons *itemIcons)
 		}
 		// 行は Vim と同じく数え、末尾の改行は 1 つだけを除く（"a\n\n" は "a" と空の行の 2 行）。view/append で書き足した中身を
 		// 拡張機能の写し（TextLog）から開き直したときに、末尾の空の行まで同じ行にするためである（ext.SplitViewText）。
-		lines, _ := ext.SplitViewText(c.Text)
-		return lines, nil, c.Highlights
+		text, _ := ext.SplitViewText(c.Text)
+		return text, nil, c.Highlights
 	case ext.ViewInput:
 		return []string{c.Text}, nil, nil
 	case ext.ViewList, ext.ViewTree, ext.ViewFinder:
