@@ -543,6 +543,7 @@ func (e *Editor) choiceKey(k editcmd.Key) {
 		ch := c.Params.Choices[k.Rune-'1']
 		_ = c.Reply(ext.ChoiceAskResult{Selected: ch.ID})
 		e.answered(fmt.Sprintf("%sに「%s」と答えました", which, strings.Join(strings.Fields(ch.Label), " ")))
+		e.startAskGap()
 	default:
 		e.dropChoiceInput()
 	}

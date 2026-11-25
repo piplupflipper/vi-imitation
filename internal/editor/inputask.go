@@ -86,6 +86,8 @@ func (e *Editor) enqueueQuestion(extID string, q *extQuestion) {
 	q.pane = e.extPane[extID]
 	e.withdrawn = nil
 	e.choices = append(e.choices, q)
+	// 前の問いに答えた後に取っておいたキーは、この問いの入力にする（startAskGap。#420）。
+	e.stopAskGap()
 	go e.watchQuestion(q)
 }
 
@@ -207,6 +209,79 @@ func (e *Editor) discardAfterWithdrawn(k editcmd.Key) bool {
 	return true
 }
 
+// askGap は、拡張機能の問いに答えた直後の、次の問いを待つ間である（startAskGap）。
+type askGap struct {
+	// c は、答えた client である。この client が外れたら、取っておくのをやめる（keyAllowed）。
+	c *clientView
+	// timer は、取っておく間が過ぎたことを askGapEnd へ送るタイマーである。間の途中で次の問いが届いたら止める。
+	timer *time.Timer
+}
+
+// askGapDefault は、拡張機能の問いに答えた後に、次の問いを待ってキーを取っておく間である（仮。#420）。
+// 拡張機能が答えを受け取ってから次の問いを送るまでの往復（手元の DAP の拡張機能で 10 ms 未満。PR #418 のレビュー）に
+// 十分な余裕を持たせ、問いが 1 つだけだったときに、答えの直後に打ったキーを遅らせる時間は、気になりにくい長さに抑えた。
+const askGapDefault = 300 * time.Millisecond
+
+// startAskGap は、拡張機能の問いに答えて（取り消しでない）、待たせている問いが無いときに呼び、次の問いが届くか
+// askGapDefault が過ぎるまで、どの client のキーと貼り付けも処理せずに列に取っておく（keyAllowed）。
+// 拡張機能は前の問いの答えを受け取ってから次の問いを送る（DAP の拡張機能の inputs、opencode の権限の問い）ので、
+// 答えから次の問いが届くまでの間に処理したキーは、次の問いへのつもりで打ったキーでも、ノーマルモードのコマンドとしてバッファを
+// 書き換える（PR #418 のレビューの推奨 1）。次の問いが届いたら、取っておいたキーをその問いの入力にする（enqueueQuestion）。
+// 届かなければ、間が過ぎた後に、取っておいたキーをふつうのキーとして順に処理する（endAskGap）。問いが 1 つだけだったときに、
+// 答えの直後に始めた編集を捨てないためである。
+// 他の client のキーも、問いの間と同じく待たせ続ける。答えの直後に、待たせていた他の client のキーで続く問いの流れを
+// 取り消さないためである（PR #418 のレビューの推奨 1 の再現 2）。
+//
+// req: FR-308
+func (e *Editor) startAskGap() {
+	if len(e.choices) > 0 {
+		return // 次の問いを待たせているので、そのまま出す
+	}
+	e.stopAskGap()
+	c := e.asker
+	if c == nil {
+		c = e.op
+	}
+	window := askGapDefault
+	if e.askGapWindow > 0 {
+		window = e.askGapWindow
+	}
+	g := &askGap{c: c}
+	stop := e.stop
+	g.timer = time.AfterFunc(window, func() {
+		select {
+		case e.askGapEnd <- g:
+		case <-stop:
+		}
+	})
+	e.askGap = g
+}
+
+// endAskGap は、取っておく間 g が過ぎたときに（askGapEnd）、取っておくのをやめ、取っておいたキーの処理を始める。
+// 既に次の問いが届いて終えた間なら、何もしない。
+//
+// req: FR-308
+func (e *Editor) endAskGap(g *askGap) {
+	if e.askGap != g {
+		return
+	}
+	e.stopAskGap()
+}
+
+// stopAskGap は、取っておく間を終え、列に残したキーがあればイベントループに処理させる。間でなければ何もしない。
+// 取っておいている間の keyAllowed は偽を返すので、popFor は列のキーを取り出さず、知らせ直しもしない。ここで知らせ直す。
+func (e *Editor) stopAskGap() {
+	g := e.askGap
+	if g == nil {
+		return
+	}
+	g.timer.Stop()
+	e.askGap = nil
+	if !e.keys.empty() {
+		signal(e.keys.ready)
+	}
+}
+
 // inputKey は、表示中の 1 行の入力の問いへのキーを処理する（FR-275）。
 //
 // 文字はカーソルの位置に入れ、<Tab> はタブ文字として入れる（補完はしない）。ここまでと <BS> は : のコマンドラインと同じである。
@@ -233,6 +308,7 @@ func (e *Editor) inputKey(k editcmd.Key) {
 		} else {
 			e.answered(fmt.Sprintf("%sに「%s」と答えました", e.questionName(), q.text))
 		}
+		e.startAskGap()
 	case k == editcmd.Special(editcmd.CodeBackspace):
 		q.deleteTo(prevCharStart(q.text, q.cursor))
 	case k == editcmd.Special(editcmd.CodeDelete):

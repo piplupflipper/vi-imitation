@@ -646,5 +646,9 @@ func (e *Editor) keyAllowed(c *clientView) bool {
 	if q := e.asker; q != nil && q != c {
 		return false
 	}
+	if g := e.askGap; g != nil && !g.c.detached {
+		// 拡張機能の問いに答えた直後は、次の問いが届くまでどの client のキーも取っておく（inputask.go の startAskGap。#420）。
+		return false
+	}
 	return (e.shell == nil || e.shell.client != c || e.shell.reclaimed) && c.replay == nil && c.completionJob == nil
 }

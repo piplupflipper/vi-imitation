@@ -447,3 +447,111 @@ func TestInputAskPopupAndComponent(t *testing.T) {
 	comp.keys("<CR>")
 	h.eventually("部品の client で打った答え", func() bool { return strings.Contains(h.outputOf("input"), `value="中"`) })
 }
+
+// passAskGap は、問いに答えた後にキーを取っておく間（askGap）を、時間が過ぎたときと同じく終える。
+// 負荷で拡張機能の往復が遅れても切れないように間を長くしたテストが、その後のキーを処理させるのに使う。
+func (h *harness) passAskGap() {
+	h.t.Helper()
+	h.e.do(func() {
+		if g := h.e.askGap; g != nil {
+			h.e.endAskGap(g)
+		}
+	})
+}
+
+// 拡張機能が問いを続けて聞くとき、1 つ目に答えてから 2 つ目の問いが届くまでの間に打ったキー（先打ちと 2 行の貼り付け）は、
+// バッファの編集にせずに取っておき、2 つ目の問いの入力にする（#420。PR #418 のレビューの推奨 1 の再現 1）。
+// 2 つ目が選択肢の問いでも同じく、取っておいたキーを答えにする。
+//
+// req: FR-308
+func TestInputAskTypeahead(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	// 負荷で拡張機能の往復が遅れても取っておく間が切れないように、間を長くしておく。
+	h.e.do(func() { h.e.askGapWindow = time.Minute })
+	h.keys(":fake.inputseq<CR>")
+	h.waitInput("1 つ目の問い", "", "モジュール:")
+	// 1 つ目の答えと 2 つ目の答えを、1 回で続けて送る（tmux send-keys 'pkg.worker' Enter 'a b' Enter と同じ）。
+	h.keys("pkg.worker<CR>a b<CR>")
+	want := "module value=\"pkg.worker\" cancelled=false err=<nil>\n" + "args value=\"a b\" cancelled=false err=<nil>\n"
+	h.eventually("2 つの答え", func() bool { return h.outputOf("seq") == want })
+	h.settle()
+	if got := h.text(); got != "abc" {
+		t.Errorf("問いの間に打ったキーで編集した: %q", got)
+	}
+	if h.mode() != command.ModeNormal {
+		t.Errorf("mode = %v", h.mode())
+	}
+
+	// 2 つ目の答えの後も次の問いを待って取っておくので、間が過ぎたことにしてから次のコマンドを打つ。
+	h.passAskGap()
+	h.keys(":fake.inputseq choice<CR>")
+	h.waitInput("選択肢が続く 1 つ目の問い", "", "モジュール:")
+	h.keys("m<CR>2")
+	want += "module value=\"m\" cancelled=false err=<nil>\n" + "choice selected=b cancelled=false err=<nil>\n"
+	h.eventually("選択肢の答え", func() bool { return h.outputOf("seq") == want })
+	h.settle()
+	if got := h.text(); got != "abc" {
+		t.Errorf("選択肢の問いの前に打った 2 で編集した: %q", got)
+	}
+}
+
+// 問いが 1 つだけなら、答えた直後に打ったキーは、取っておく間（askGapWindow）が過ぎた後にふつうのキーとして処理する。
+// 取り消し（<Esc>）の後は取っておかずに、すぐ処理する。
+//
+// req: FR-308
+func TestInputAskTypeaheadSingle(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\ndef\nghi\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	h.keys(`\i`)
+	h.waitInput("1 つだけの問い", "", "名前:")
+	h.keys("v<CR>dd")
+	h.eventually("答え", func() bool { return strings.Contains(h.outputOf("input"), `value="v" cancelled=false`) })
+	h.settle()
+	if got := h.text(); got != "def\nghi" {
+		t.Errorf("答えの直後に打った dd = %q, want def\\nghi", got)
+	}
+	h.e.do(func() { h.e.askGapWindow = time.Minute })
+	h.keys(`\i`)
+	h.waitInput("取り消す問い", "", "名前:")
+	h.keys("<Esc>dd")
+	h.settle()
+	if got := h.text(); got != "ghi" {
+		t.Errorf("取り消しの直後に打った dd = %q, want ghi", got)
+	}
+}
+
+// 1 つ目に答えてから 2 つ目の問いが届くまでの間も、他の client のキーは待たせ続ける。待たせていたキーで続く問いの流れを
+// 取り消さず、問いを出した client が 2 つ目の問いのつもりで打ったキーで編集しない（PR #418 のレビューの推奨 1 の再現 2）。
+//
+// req: FR-308
+func TestInputAskTypeaheadOtherClient(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\n", "b.txt": "bb\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	h.e.do(func() {
+		h.e.clients[0].info.ID = 1
+		h.e.askGapWindow = time.Minute
+	})
+	b := h.attach(ClientInfo{ID: 2, Files: []string{filepath.Join(dir, "b.txt")}})
+	h.keys(":fake.inputseq<CR>")
+	h.eventually("A の問い", func() bool { q := h.e.activeChoice(); return q != nil && q.input != nil })
+	b.keys("x")
+	h.keys("m<CR>x")
+	h.waitInputHeld("A の 2 つ目の問い", "x", "問い 2: 引数: x")
+	if got := h.bufferText("b.txt"); got != "bb" {
+		t.Fatalf("問いの間に B のキーを処理した: b.txt = %q", got)
+	}
+	h.keys("<CR>")
+	h.eventually("A の 2 つ目の答え", func() bool { return strings.Contains(h.outputOf("seq"), `args value="x" cancelled=false`) })
+	h.passAskGap()
+	deadline := time.Now().Add(10 * time.Second)
+	for h.bufferText("b.txt") != "b" {
+		if time.Now().After(deadline) {
+			t.Fatalf("待たせていた B の x を処理しない: b.txt = %q", h.bufferText("b.txt"))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := h.bufferText("a.txt"); got != "abc" {
+		t.Errorf("A の 2 つ目の問いのつもりの x で編集した: %q", got)
+	}
+}
