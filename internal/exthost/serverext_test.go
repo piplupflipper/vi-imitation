@@ -35,6 +35,7 @@ const (
 	cmdSave   = "srv.save"   // buffer/save を送る
 	cmdDiag   = "srv.diag"   // diagnostic/list を送る
 	cmdChoice = "srv.choice" // choice/ask を送る
+	cmdInput  = "srv.input"  // input/ask を送る
 	cmdNotify = "srv.notify" // diagnostic/set、sign/set、popup/show を送る
 	cmdSync   = "srv.sync"   // params の Sync が true なら、応答の Open でカーソルの移動を返す
 	cmdArgs   = "srv.args"   // 起動したときの引数を書き出す
@@ -53,7 +54,7 @@ const (
 	shutdownEdit = "srv.shutdownEdit"
 )
 
-var serverCommands = []string{cmdState, cmdOpen, cmdSave, cmdDiag, cmdChoice, cmdNotify, cmdSync, cmdArgs, cmdChoiceCancel, cmdSpawn}
+var serverCommands = []string{cmdState, cmdOpen, cmdSave, cmdDiag, cmdChoice, cmdInput, cmdNotify, cmdSync, cmdArgs, cmdChoiceCancel, cmdSpawn}
 
 func runServerExt() int {
 	s := server.New()
@@ -113,6 +114,12 @@ func runServerExt() int {
 		_ = json.Unmarshal(args, &p)
 		res, err := s.AskChoice(ctx, p)
 		outJSON(cmdChoice, res, err)
+	})
+	background(cmdInput, func(ctx context.Context, args json.RawMessage) {
+		var p ext.InputAskParams
+		_ = json.Unmarshal(args, &p)
+		res, err := s.AskInput(ctx, p)
+		outJSON(cmdInput, res, err)
 	})
 	background(cmdChoiceCancel, func(ctx context.Context, _ json.RawMessage) {
 		ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
@@ -401,6 +408,20 @@ func TestStdExtRequestsRoundTrip(t *testing.T) {
 			t.Errorf("extension received %+v", got)
 		}
 	})
+
+	t.Run("input/ask", func(t *testing.T) {
+		hs.execute(cmdInput, ext.InputAskParams{Title: "式: ", Default: "x"}, false)
+		req := hs.waitEvent("input/ask", func(ev Event) bool { _, ok := ev.(*InputAskRequest); return ok }).(*InputAskRequest)
+		if req.Extension != "srv" || req.Params != (ext.InputAskParams{Title: "式: ", Default: "x"}) {
+			t.Errorf("InputAskRequest = %+v", req)
+		}
+		if err := req.Reply(ext.InputAskResult{Value: "x+1"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := decodeOutput[ext.InputAskResult](t, hs.waitOutput(cmdInput)); got != (ext.InputAskResult{Value: "x+1"}) {
+			t.Errorf("extension received %+v", got)
+		}
+	})
 }
 
 // 拡張機能からの表示の通知は、それぞれのイベントになる。
@@ -533,6 +554,10 @@ func TestRequestEventInvalidParams(t *testing.T) {
 		{ext.MethodOptionSet, `{"buffer":1}`, rpc.CodeInvalidParams},
 		{ext.MethodOptionSet, `{"options":[]}`, rpc.CodeInvalidParams},
 		{ext.MethodOptionGet, `{"names":"x"}`, rpc.CodeInvalidParams},
+		// input/ask の問いの文と初めの中身は改行を含められない（FR-275）。
+		{ext.MethodInputAsk, `{"title":"a\nb"}`, rpc.CodeInvalidParams},
+		{ext.MethodInputAsk, `{"title":"q","default":"x\r\ny"}`, rpc.CodeInvalidParams},
+		{ext.MethodInputAsk, `{"title":1}`, rpc.CodeInvalidParams},
 		{"editor/unknown", `{}`, rpc.CodeMethodNotFound},
 	}
 	for _, tt := range tests {
@@ -553,6 +578,11 @@ func TestRequestEventInvalidParams(t *testing.T) {
 	ev, err = requestEvent(ctx, "x", &rpc.Request{Method: ext.MethodOptionGet}, nil)
 	if _, ok := ev.(*OptionGetRequest); err != nil || !ok {
 		t.Errorf("option/get without params = %#v, %v", ev, err)
+	}
+	// input/ask は、問いの文と初めの中身を持つイベントになる。
+	ev, err = requestEvent(ctx, "x", &rpc.Request{Method: ext.MethodInputAsk, Params: json.RawMessage(`{"title":"式: ","default":"a\tb"}`)}, nil)
+	if in, ok := ev.(*InputAskRequest); err != nil || !ok || in.Extension != "x" || in.Params != (ext.InputAskParams{Title: "式: ", Default: "a\tb"}) {
+		t.Errorf("input/ask = %#v, %v", ev, err)
 	}
 }
 

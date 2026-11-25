@@ -46,9 +46,9 @@ func TestMessageJSON(t *testing.T) {
 
 	t.Run("initialize", func(t *testing.T) {
 		roundTrip(t, InitializeParams{APIVersion: APIVersion, Settings: json.RawMessage(`{"a":1}`)},
-			`{"apiVersion":"0.20.0","settings":{"a":1}}`)
-		roundTrip(t, InitializeParams{APIVersion: APIVersion}, `{"apiVersion":"0.20.0"}`)
-		roundTrip(t, InitializeResult{APIVersion: APIVersion}, `{"apiVersion":"0.20.0"}`)
+			`{"apiVersion":"0.21.0","settings":{"a":1}}`)
+		roundTrip(t, InitializeParams{APIVersion: APIVersion}, `{"apiVersion":"0.21.0"}`)
+		roundTrip(t, InitializeResult{APIVersion: APIVersion}, `{"apiVersion":"0.21.0"}`)
 	})
 	t.Run("provider/invoke", func(t *testing.T) {
 		rg := testRange
@@ -269,6 +269,32 @@ func TestStdExtMessageJSON(t *testing.T) {
 		roundTrip(t, ChoiceAskResult{Selected: "allow"}, `{"selected":"allow"}`)
 		roundTrip(t, ChoiceAskResult{Cancelled: true}, `{"cancelled":true}`)
 	})
+	t.Run("input/ask", func(t *testing.T) {
+		roundTrip(t, InputAskParams{Title: "式: ", Default: "x"}, `{"title":"式: ","default":"x"}`)
+		roundTrip(t, InputAskParams{Title: "名前: "}, `{"title":"名前: "}`)
+		// 空の文字列の確定でも value を出し、取り消しと JSON の上で区別できる。
+		roundTrip(t, InputAskResult{}, `{"value":""}`)
+		roundTrip(t, InputAskResult{Value: "a b"}, `{"value":"a b"}`)
+		roundTrip(t, InputAskResult{Cancelled: true}, `{"value":"","cancelled":true}`)
+	})
+}
+
+// input/ask の問いの文と初めの中身は、改行を含められない（1 行に出すため）。
+func TestInputAskParamsValidate(t *testing.T) {
+	for _, c := range []struct {
+		p  InputAskParams
+		ok bool
+	}{
+		{InputAskParams{Title: "式: ", Default: "a\tb"}, true},
+		{InputAskParams{}, true},
+		{InputAskParams{Title: "a\nb"}, false},
+		{InputAskParams{Title: "a\r"}, false},
+		{InputAskParams{Title: "q", Default: "x\ny"}, false},
+	} {
+		if err := c.p.Validate(); (err == nil) != c.ok {
+			t.Errorf("Validate(%+v) = %v, want ok=%v", c.p, err, c.ok)
+		}
+	}
 }
 
 func TestEditorOpenParamsValidate(t *testing.T) {

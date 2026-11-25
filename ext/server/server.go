@@ -21,7 +21,7 @@ import (
 var ErrNotRunning = errors.New("server: not serving")
 
 // ErrEditInHandler は、Server が呼んだハンドラーかフックの中から、その ctx で、本体の応答を待つ関数を呼んだことを表す。
-// 対象は Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice、WaitBuffer である。
+// 対象は Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice、AskInput、WaitBuffer である。
 // 待つと詰まるので、これらはリクエストを送らずにこの誤りを返す（Edit と WaitBuffer の doc を参照）。
 var ErrEditInHandler = errors.New("server: request to the host called from a handler or hook; it would block the message loop")
 
@@ -73,7 +73,7 @@ const codeRequestCancelled = -32800
 // # 本体へ送るメッセージ
 //
 // 通知（SetDecorations、SetVirtualTexts、ShowMessage、SetDiagnostics、SetSigns、ShowPopup、AppendOutput、ReportProgress、SetBand）は、どこから呼んでもよい。
-// リクエスト（Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice）と WaitBuffer は、
+// リクエスト（Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice、AskInput）と WaitBuffer は、
 // 本体の応答かループの処理を待つので、ループの上から呼んではならない（Edit の doc）。
 // ハンドラーかフックから使うときは、go で別の goroutine を起こし、Server が渡したのとは別の ctx で呼ぶ。
 //

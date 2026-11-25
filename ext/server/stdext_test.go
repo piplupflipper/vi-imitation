@@ -43,6 +43,8 @@ func (sh *stdHost) handle(req *rpc.Request, reply rpc.Replier) bool {
 		res = ext.DiagnosticListResult{Entries: []ext.DiagnosticEntry{{Buffer: 1, Extension: "lsp", Version: 3}}}
 	case ext.MethodChoiceAsk:
 		res = ext.ChoiceAskResult{Selected: "yes"}
+	case ext.MethodInputAsk:
+		res = ext.InputAskResult{Value: ""}
 	case ext.MethodEditorList:
 		res = ext.EditorListResult{Tabs: []ext.ListTab{{Buffer: 1, Name: "a", Client: 1}}}
 	case ext.MethodEditorExecute:
@@ -108,6 +110,15 @@ func TestStdExtRequests(t *testing.T) {
 		t.Errorf("host received %s", got)
 	}
 
+	// 空の文字列の確定は、取り消しと区別できる（Cancelled が false）。
+	in, err := s.AskInput(ctx, ext.InputAskParams{Title: "式: ", Default: "a+b"})
+	if err != nil || in != (ext.InputAskResult{}) {
+		t.Errorf("AskInput = %+v, %v", in, err)
+	}
+	if got := sh.next(t); got != `input/ask {"title":"式: ","default":"a+b"}` {
+		t.Errorf("host received %s", got)
+	}
+
 	ls, err := s.ListEditor(ctx, ext.ListTabs)
 	if err != nil || len(ls.Tabs) != 1 || ls.Tabs[0].Name != "a" {
 		t.Errorf("ListEditor = %+v, %v", ls, err)
@@ -149,6 +160,12 @@ func TestStdExtRequests(t *testing.T) {
 	if _, err := s.ListEditor(ctx, "marks"); err == nil {
 		t.Error("ListEditor with an unknown list succeeded")
 	}
+	// 改行を含む input/ask の問いの文と初めの中身も送らない。
+	for _, p := range []ext.InputAskParams{{Title: "a\nb"}, {Title: "q", Default: "x\r"}} {
+		if _, err := s.AskInput(ctx, p); err == nil {
+			t.Errorf("AskInput(%+v) succeeded", p)
+		}
+	}
 	select {
 	case got := <-sh.params:
 		t.Errorf("host received %s", got)
@@ -171,6 +188,8 @@ func TestStdExtRequestsInHandler(t *testing.T) {
 		_, err = s.ListDiagnostics(ctx, ext.DiagnosticListParams{})
 		got = append(got, err)
 		_, err = s.AskChoice(ctx, ext.ChoiceAskParams{})
+		got = append(got, err)
+		_, err = s.AskInput(ctx, ext.InputAskParams{Title: "q"})
 		got = append(got, err)
 		_, err = s.WaitBuffer(ctx, 1, 1)
 		got = append(got, err)

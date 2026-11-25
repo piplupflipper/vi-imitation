@@ -110,4 +110,6 @@ package ext
 // virtualText/set を知らない通知として捨てる。直に付ける色を使う拡張機能は、initialize の apiVersion を見てから付ける。
 // 0.20.0 で、テキストの部品の末尾へ書き足す view/append（ViewAppendParams。view.go）を足した（#402。FR-272、FR-273）。
 // 古い本体は view/append を知らない通知として捨てる。使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
-const APIVersion = "0.20.0"
+// 0.21.0 で、利用者に 1 行の文字列を聞く input/ask（InputAskParams、InputAskResult。message.go）を足した（#409。FR-275）。
+// 古い本体は input/ask に method not found で応答する。使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
+const APIVersion = "0.21.0"
