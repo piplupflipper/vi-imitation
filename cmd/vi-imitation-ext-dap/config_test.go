@@ -520,7 +520,7 @@ func TestLaunchJSON(t *testing.T) {
 }
 
 // TestVariables は、構成の変数（ファイル、カーソル、ワークスペースの根、環境変数）を展開し、
-// まだ扱えない ${input:…} と、つなぐ段階の変数を使えない所に書いたものは、始めずに知らせることを確かめる。
+// inputs に無い ${input:…} と、つなぐ段階の変数を使えない所に書いたものは、始めずに知らせることを確かめる。
 //
 // req: FR-283, FR-279
 func TestVariables(t *testing.T) {
@@ -569,7 +569,7 @@ func TestVariables(t *testing.T) {
 	h.stopAndWait()
 
 	pick("input")
-	h.waitMessage("${input:x}")
+	h.waitMessage(`${input:x}（inputs に ID "x" が無い）`)
 	pick("port")
 	h.waitMessage("でだけ使える")
 	pick("adapterport")
@@ -787,7 +787,7 @@ func TestConfigExample(t *testing.T) {
 				t.Errorf("%s: %v", ft, err)
 			}
 			unit := map[string]any{"configuration": c.config}
-			r := (&debugger{}).resolver(t.Context(), invocation{}, "/w")
+			r := (&debugger{}).resolver(t.Context(), invocation{}, "/w", newInputAsker(t.Context(), nil, s.inputs))
 			if err := expand.Check(unit, r); err != nil {
 				t.Errorf("%s %s: %v", ft, c.name, err)
 			}

@@ -70,6 +70,9 @@ type host struct {
 	closes  chan ext.ViewID
 	asks    chan ext.ChoiceAskParams
 	answers chan ext.ChoiceAskResult
+	// inputAsks と inputAnswers は、input/ask の問いと、テストが渡す答えである。
+	inputAsks    chan ext.InputAskParams
+	inputAnswers chan ext.InputAskResult
 
 	mu       sync.Mutex
 	versions map[ext.BufferID]ext.Version
@@ -123,18 +126,20 @@ func newHost(t *testing.T, settings string) *host {
 // newHostState は、接続の無い本体の役を作る。
 func newHostState(t *testing.T) *host {
 	return &host{
-		t:        t,
-		signs:    make(chan ext.SignSetParams, 1024),
-		msgs:     make(chan ext.MessageShowParams, 1024),
-		outputs:  make(chan string, 1024),
-		opens:    make(chan ext.EditorOpenParams, 1024),
-		panes:    make(chan openedPane, 16),
-		closes:   make(chan ext.ViewID, 16),
-		asks:     make(chan ext.ChoiceAskParams, 16),
-		answers:  make(chan ext.ChoiceAskResult, 16),
-		versions: map[ext.BufferID]ext.Version{},
-		ids:      map[string]ext.BufferID{},
-		workDir:  t.TempDir(),
+		t:            t,
+		signs:        make(chan ext.SignSetParams, 1024),
+		msgs:         make(chan ext.MessageShowParams, 1024),
+		outputs:      make(chan string, 1024),
+		opens:        make(chan ext.EditorOpenParams, 1024),
+		panes:        make(chan openedPane, 16),
+		closes:       make(chan ext.ViewID, 16),
+		asks:         make(chan ext.ChoiceAskParams, 16),
+		answers:      make(chan ext.ChoiceAskResult, 16),
+		inputAsks:    make(chan ext.InputAskParams, 16),
+		inputAnswers: make(chan ext.InputAskResult, 16),
+		versions:     map[ext.BufferID]ext.Version{},
+		ids:          map[string]ext.BufferID{},
+		workDir:      t.TempDir(),
 	}
 }
 
@@ -182,11 +187,11 @@ func (h *host) notification(_ context.Context, n *rpc.Notification) {
 	}
 }
 
-// request は、editor/open、editor/state、pane/open、choice/ask に答える。
+// request は、editor/open、editor/state、pane/open、choice/ask、input/ask に答える。
 // editor/open は、開いているバッファだけを扱い、応答の版は本体の役が覚えている現在の版にする。
 // editor/state は、作業ディレクトリ workDir だけを返す。
 // pane/open は、部品を panes に流し、新しい部品の ID で答える。テストは選んだことを selectItem で知らせる。
-// choice/ask は、問いを asks に流し、テストが answer で渡した答えで答える。
+// choice/ask は、問いを asks に流し、テストが answer で渡した答えで答える。input/ask も同じく inputAsks と inputAnswers で答える。
 func (h *host) request(_ context.Context, req *rpc.Request, reply rpc.Replier) {
 	switch req.Method {
 	case ext.MethodEditorState:
@@ -208,6 +213,11 @@ func (h *host) request(_ context.Context, req *rpc.Request, reply rpc.Replier) {
 		p := decode[ext.ChoiceAskParams](h.t, req.Params)
 		h.asks <- p
 		go func() { _ = reply(<-h.answers, nil) }()
+		return
+	case ext.MethodInputAsk:
+		p := decode[ext.InputAskParams](h.t, req.Params)
+		h.inputAsks <- p
+		go func() { _ = reply(<-h.inputAnswers, nil) }()
 		return
 	case ext.MethodEditorOpen:
 	default:

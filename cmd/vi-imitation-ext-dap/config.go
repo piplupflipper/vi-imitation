@@ -27,7 +27,8 @@ import (
 //	}
 //
 // 今までの 1 組の設定（adapter、adapterID、launch）も読み続ける（legacySettings）。
-// inputs と ui は、後の issue（FR-298、FR-108）で読む。今は書いてあっても読み捨てる。
+// ${input:ID} の問いの表 inputs（FR-298）は、.vscode/launch.json の inputs と同じ形で読む（inputs.go）。
+// ui は、後の issue（FR-108）で読む。今は書いてあっても読み捨てる。
 
 // トランスポート（アダプターのつなぎ方。FR-279）の名前である。
 const (
@@ -66,6 +67,8 @@ type settings struct {
 	adapters map[string]*adapterDef
 	// configurations は、ファイルの種類から、構成の列への対応である。構成は JSON のオブジェクトで、書いた順に並ぶ。
 	configurations map[string][]map[string]any
+	// inputs は、設定の ${input:ID} の問いの表である（FR-298）。
+	inputs inputTable
 	// legacy は、今までの 1 組の設定の構成である。adapters か configurations を書き、1 組の設定を書かなければ nil。
 	legacy *legacySettings
 }
@@ -193,6 +196,11 @@ func parseSettings(data []byte) (settings, error) {
 			}
 		}
 	}
+	inputs, ierr := parseInputs(top["inputs"])
+	if ierr != nil {
+		return s, ierr
+	}
+	s.inputs = inputs
 	return s, nil
 }
 
@@ -363,6 +371,8 @@ type candidate struct {
 	legacy bool
 	// folder は、.vscode/launch.json の構成のときの ${workspaceFolder}（.vscode のあるディレクトリ）である。ほかの出どころでは空。
 	folder string
+	// inputs は、.vscode/launch.json の構成のときの、その launch.json の inputs である。ほかの出どころでは nil。
+	inputs inputTable
 }
 
 // label は、一覧の項目の文字列である。

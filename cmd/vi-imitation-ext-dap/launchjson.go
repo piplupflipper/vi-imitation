@@ -54,12 +54,14 @@ type launchFile struct {
 	configurations []map[string]any
 	// hasCompounds は、compounds を書いていることを表す。
 	hasCompounds bool
+	// inputs は、${input:ID} の問いの表である（FR-298）。
+	inputs inputTable
 }
 
 // readLaunchJSON は、folder の .vscode/launch.json を JSONC として読む（hujson で JSON に直してから UseNumber で読む）。
-// version は読まない。compounds は候補にしない。presentation.hidden が真の構成は候補から外す。
+// version は読まない。compounds は候補にしない。presentation.hidden が真の構成は候補から外す。inputs は ${input:ID} の問いの表にする。
 //
-// req: FR-281
+// req: FR-281, FR-298
 func readLaunchJSON(folder string) (*launchFile, error) {
 	path := filepath.Join(folder, launchJSONPath)
 	data, err := os.ReadFile(path)
@@ -86,6 +88,9 @@ func readLaunchJSON(folder string) (*launchFile, error) {
 		if arr, isArr := c.([]any); !isArr || len(arr) > 0 {
 			lf.hasCompounds = true
 		}
+	}
+	if lf.inputs, err = parseInputs(top["inputs"]); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	raw, ok := top["configurations"]
 	if !ok || raw == nil {

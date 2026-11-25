@@ -3499,7 +3499,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 | Go の `launch` | `dlv dap`（`clientSocket`） | 今の振る舞い（止まる、ステップ実行、出力、ブレークポイント）が変わらない。今までの 1 組の設定のままで動く |
 | Go の `attach` | `dlv dap`（`clientSocket`）の `attach`（`mode` が `local`、`processId` は `${pickProcess}`） | 終えてもデバッグ対象が動き続ける（FR-284）。`dlv dap` が `attach` の `local` に対応することは未確認 |
 | Python の `launch` | `debugpy-adapter`（`stdio`）、`console` は `internalConsole` | 出力が出力の区画に出る。`console` を省いたときに始まらず、`integratedTerminal` を替えて送れば始まる（上の `console` の行の確かめ） |
-| Python の `attach` | `python` のアダプター（`connectFrom` が `connect`）。`python -m debugpy --listen 5678` で起動したプログラムへ、構成の `connect` の `host` と `port`（`${input:port}`）で直に繋ぐ | 終えてもプログラムが動き続ける。DAP で直に繋いで止まり、`disconnect` の後も動き続けることは、2026-11-25 に debugpy 1.8.22 で、拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、`${input:port}` の文字列のポートで繋げるかを確かめる |
+| Python の `attach` | `python` のアダプター（`connectFrom` が `connect`）。`python -m debugpy --listen 5678` で起動したプログラムへ、構成の `connect` の `host` と `port`（`${input:port}`）で直に繋ぐ | 終えてもプログラムが動き続ける。DAP で直に繋いで止まり、`disconnect` の後も動き続けることは、2026-11-25 に debugpy 1.8.22 で、拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、`${input:port}` の文字列のポートで繋げるかを確かめる。#417 で、文字列のポートで繋いで止まることを確かめた（下の「#417 の inputs」） |
 | Python の子のプロセス | 上の `launch` で、`subprocess` で Python の子のプロセスを起こすプログラム | debugpy 1.8.22 が `startDebugging`（`request` は `attach`、`configuration` に `connect`）を送り、その `connect` へ直に繋いで子のセッションの `attach` が成り立つことは、2026-11-25 に拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、子のセッションが `connectFrom` で直に繋がり、子のプロセスのブレークポイントで止まる。手元の 1.8.20 でも同じものを送るかは未確認。`debug.terminate` で、親と一緒に子のプロセスも終わる（子の手順を親の `request` で引くことの確かめ） |
 | Node.js の `launch` | vscode-js-debug の `dapDebugServer.js`（`serverPort`）、`type` は `pwa-node` | 子のセッションが要るか。2026-11-25 に、手元の `dapDebugServer.js` が `startDebuggingRequest`（`configuration` に `type`、`name`、`__pendingTargetId` を入れたもの）を送る処理を持つことを読んだが、`launch` のたびに送るかは未確認。送るなら、子のセッションで止まる。#412 で、`launch` と `attach` のたびに送り、子のセッションで止まることを確かめた（下の「#412 の複数のセッション」） |
 | Node.js の `attach` | 同上。`port` が 9229 の `pwa-node` の `attach`（`NODE_OPTIONS=--inspect` で起動した開発用のサーバー） | 終えてもサーバーが動き続ける |
@@ -3519,6 +3519,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 
 #408 で、上の「設定の形」「アダプターのつなぎ方」「構成の出どころと値の当て方」「`.vscode/launch.json` の読み方」「外部のコマンドの取り決め」「変数」「開始の流れ」の 1〜7 と 10、「終了と切断」を実装した（`cmd/vi-imitation-ext-dap` の `config.go`、`launchjson.go`、`resolve.go`、`resolvecmd.go`、`transport.go`、`picker.go`）。
 `inputs`（FR-298）と `ui`（FR-108、FR-277、FR-278）は、設定に書いても読み捨て、`${input:…}` は扱えない変数として始めずに知らせる（次の issue）。
+`inputs` は #417 で実装した（下の「#417 の inputs」）。
 `startDebugging`（FR-285）は、`initialize` で申し出ず、届いたら失敗で応答してログに書く（#412 で子のセッションを作り、この扱いをやめた）。
 上の表に無い点は、次のとおりに決めた（どれも仮）。
 
@@ -3605,6 +3606,50 @@ vscode-js-debug の版は、`dapDebugServer.js` の置き場には無いが、`l
 
 拡張機能への SIGKILL（拡張機能のプロセスグループへ）は、vscode-js-debug の `launch` で止まっている間と、debugpy の子のセッションが止まっている間に送り、どちらもアダプターとデバッグ対象（debugpy は親と子のプロセス）が残らなかった。
 本体の `:qa!` は、vscode-js-debug の `launch` で止まっている間に打ち、何も残らなかった。
+
+#### #417 の inputs
+
+#417 で、上の「`.vscode/launch.json` の読み方」の `inputs` の行（FR-298）を実装した（`cmd/vi-imitation-ext-dap` の `inputs.go`）。
+VS Code の文書「Variables reference」（https://code.visualstudio.com/docs/reference/variables-reference）の「Input variables」と「Details of variable substitution」を、2026-11-25 に読み直して合わせた。
+拡張機能の `minAPIVersion` は、`input/ask` の版の 0.21.0 に上げた。
+上の表に無い点は、次のとおりに決めた（どれも仮）。
+
+- **置き場**: `.vscode/launch.json` の `inputs` と、設定の `inputs`（上の「設定の形」）。`.vscode/launch.json` の構成は、その `launch.json` の `inputs` を先に引き、無ければ設定の `inputs` を引く。設定の構成と今までの 1 組の設定の構成は、設定の `inputs` だけを引く（ほかのワークスペースの `launch.json` を引かないため）。同じ表の中に同じ `id` が 2 つあれば、前のものを使う
+- **形の誤り**: 表を作れない誤り（`inputs` が配列でない、要素がオブジェクトでない、`id` が空でない文字列でない）は、設定なら `initialize` を失敗させ、`.vscode/launch.json` なら読めない `launch.json` として扱う（上の表の「形式」）。ほかの形の誤り（`type` が文字列でない、`options` が配列でない、`default` が文字列でない など）は、その `ID` の `${input:…}` を使ったときに、扱えない変数として何も聞かずに知らせる。`pickString` で `options` が無いもの、`default` が `options` の値に無いもの（文書の「It must be one of the option values.」）、改行を含む `promptString` の `default` も同じにする
+- **聞く順**: 文書の「Details of variable substitution」は、すべての変数を評価してから置き換えると書くが、評価の順を書いていない（「makes substitution robust against evaluation order」）。展開の口（6.7）の評価の順は値のキーの辞書順で意味を持たない。利用者が順を決められるよう、展開の前に、値の全体に出てくる `${input:ID}` を、引く表の順（`.vscode/launch.json` の `inputs`、設定の `inputs` の順）に聞いて覚え、展開ではその答えを使う。`${pickProcess}` はその後の展開の中で聞く。取り消したら残りを聞かない
+- **問いの文**: `description`（無ければ `id`）の末尾に `:` と空白を足したもの。`description` の改行は空白にする。`choice/ask` の題には末尾の空白を付けない
+- **`pickString`**: `default` の選択肢を先頭に置き、9 つまでは `choice/ask` で、10 から上は中央のポップアップの一覧（構成の候補と同じ `pick`）で選ばせる。`choice/ask` は番号のキーで選ぶ問いで、10 個目から上は数だけを出すため（6.7）。選択肢の文は、`label` と `value` が違えば `label: value`（文書の「The dropdown will display label: value.」）、同じか `label` が無ければ `value`
+- **空の答え**: 空の文字列のまま使う。文書の `default` の説明（「default value that will be used if the user doesn't enter something else」）は、`input/ask` では初めの中身にしているので、利用者が消して確定した空は空にする
+- **取り消し**: `input/ask` と `choice/ask` の取り消し、一覧を閉じたこと、聞いている間の `debug.terminate`（準備の `ctx` を取り消す）は、どれも「デバッグの開始を取り消した」にして始めない
+- **前回の答え**: `debug.runLast`、`debug.restart`、再生中（`sync`）の開始は、答えを当て終えた構成（`runSpec`）を使うので聞かない（上の「構成の出どころと値の当て方」の末尾の取り決めのまま）
+- **外部のコマンドの値**: `resolveCommand` が返した値の中の `${input:…}` は、展開し直さない取り決め（6.7）のまま、聞かずに文字のまま送る
+- **値の型**: 答えは文字列のまま送り、数に直さない（10 章の未決のまま）。`connectFrom` のつなぐ先の `port` は、今までどおり数として読める文字列を受ける
+
+**答えを空白で分けて複数の引数にする書き方**
+
+オーナーの nvim は、引数を `vim.split(vim.fn.input("Args: "), " ", { trimempty = true })` で聞き、答えを空白で分けた列を `args` にしている。
+VS Code の文書は「Variable substitution replaces a variable with its string value. It doesn't add quotes or split the result on spaces.」と書き、`launch.json` に 1 つの答えを複数の要素に分ける書き方は無い。
+debugpy 1.8.22 は、`args` が 1 つの文字列ならシェルで分けるが、`console` が `internalConsole` のときは「Shell expansion in "args" is not available for "console":"internalConsole"」で断る（`adapter/clients.py` の `launch_request`。2026-11-25 に手元のソースで読んだ）。拡張機能は `console` を `internalConsole` にして送る（FR-288）ので、この形は使えない。
+このため、`inputs` の項目に VS Code に無い真偽の項目 `split` を足した。
+
+- `split` が真の項目を指す `${input:ID}` が、配列の要素の全体なら、展開の後に、その要素を答えを空白（Go の `strings.Fields`）で分けた複数の要素に置き換える。空白だけの答えは要素を作らない（nvim の `trimempty` と同じ）。引用符は解かない
+- 配列の要素でない所と、ほかの文字と混ざった所（`"--x=${input:args}"`）は、答えを 1 つの文字列のまま入れる
+- 外部のコマンドの構成に頼らずに書ける。VS Code は知らない項目を読み捨てるので（確かめていない）、同じ `launch.json` を VS Code で使っても、答えが 1 つの引数になるだけと見ている
+- `pytest -k` の式のように空白を含みうる答えは、`split` を付けずに `"-k", "${input:pytestK}"` と 2 つの要素に書く。空の答えは `-k ""` になる
+
+2026-11-25 に、`make dist` の本体を tmux の独自のサーバーで起動し、debugpy 1.8.22 と pytest 9.2.0 で、同梱の設定の例と同じ構成を次のとおり確かめた。
+
+| 構成 | 答え | 結果 |
+|---|---|---|
+| 今のファイルを実行（引数を聞く） | `foo  bar baz` | `sys.argv[1:]` が `['foo', 'bar', 'baz']` になり、ブレークポイントで止まった。`debug.runLast` は聞かずに同じ引数で始めた |
+| pytest の `-k` を聞く | `beta and not alpha` | 1 つのテストだけを選んで、そのテストのブレークポイントで止まった |
+| 同上 | 空 | 2 つのテストを選び、最初のテストのブレークポイントで止まった（`-k ""` はどのテストも選ぶ） |
+| モジュールを実行 | `pkg.worker` と `a b` | 相対の import を持つモジュールが `-m` で動き、引数が `['a', 'b']` になった |
+| debugpy へ attach（ポートを聞く） | `5689`（既定の `5678` を消して打った）と `remoteRoot` | `python -m debugpy --listen 127.0.0.1:5689` で動くプロセスへ、文字列のポートで直に繋いで止まった。`debug.terminate` の後もプロセスは動き続けた |
+
+問いを `<Esc>` と `<C-c>` で取り消すと、「デバッグの開始を取り消した」が出て、アダプターは起動しなかった。
+問いを出している間に打った `<leader>dt` は、問いの入力の文字になり、デバッグの操作にはならなかった（問いの入力はキーマップを通さない。1.4）。
+聞いている間の `debug.terminate` で始めないことは、本体の役のテストで確かめた（画面では、問いの間に操作を呼ぶ手段が無い）。
 
 ### 6.5 ACP
 

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -108,11 +109,11 @@ var errStartCancelled = &startError{msg: "デバッグの開始を取り消し�
 var ignorableKeys = []string{"preLaunchTask", "postDebugTask", "serverReadyAction"}
 
 // prepare は、デバッグを始めるために、構成を選び、値を決める（基本設計 6.4 の開始の流れの 2〜5）。
-// 利用者に聞く（一覧、choice/ask、${pickProcess}）ので、ext/server のループの外の goroutine から呼ぶ。
+// 利用者に聞く（一覧、choice/ask、input/ask、${pickProcess}）ので、ext/server のループの外の goroutine から呼ぶ。
 // ctx は debug.terminate と shutdown で取り消す。
 // 始めないときは *startError を返す。
 //
-// req: FR-280, FR-281, FR-283, FR-288
+// req: FR-280, FR-281, FR-283, FR-288, FR-298
 func (d *debugger) prepare(ctx context.Context, inv invocation) (*runSpec, error) {
 	workDir := d.workDir(ctx)
 	cands := d.candidates(inv, workDir)
@@ -198,7 +199,7 @@ func (d *debugger) candidates(inv invocation, workDir string) []candidate {
 			}
 			for _, c := range lf.configurations {
 				name, _ := c["name"].(string)
-				out = append(out, candidate{name: name, source: sourceLaunchJSON, config: c, folder: folder})
+				out = append(out, candidate{name: name, source: sourceLaunchJSON, config: c, folder: folder, inputs: lf.inputs})
 			}
 		}
 	}
@@ -257,7 +258,10 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 
 	// 3. 変数の展開。構成とアダプターの起動の方法の全体を 1 回の展開にする。
 	unit := map[string]any{"configuration": cfg, "adapter": deepCopy(a.launch)}
-	r := d.resolver(ctx, inv, folder)
+	// ${input:ID} は、launch.json の構成ならその inputs を先に、無ければ設定の inputs を引く（FR-298）。
+	inputs := append(slices.Clone(cand.inputs), s.inputs...)
+	asker := newInputAsker(ctx, d, inputs)
+	r := d.resolver(ctx, inv, folder, asker)
 	if err = expand.Check(unit, r); err != nil {
 		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
 	}
@@ -279,7 +283,14 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 		cfg["console"] = "internalConsole"
 		d.showInfo(fmt.Sprintf("構成 %s の console %s は扱えないので、internalConsole に替えて送る", cand.name, c))
 	}
-	cfgBefore := deepCopy(cfg)
+	// ${input:ID} を、inputs の表の順に先に聞く（FR-298）。取り消したら、ほかを聞かずに始めない。
+	if err = asker.askAll(unit); err != nil {
+		if errors.Is(err, errPickCancelled) || errors.Is(err, context.Canceled) {
+			return nil, errStartCancelled
+		}
+		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
+	}
+	unitBefore := deepCopy(unit)
 	v, err := expand.Expand(unit, r)
 	if err != nil {
 		// expand.Error の Unwrap は変数ごとの理由を返すので、${pickProcess} の取り消しを見分けられる。
@@ -288,8 +299,8 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 		}
 		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
 	}
-	unit = v.(map[string]any)
-	cfg = numberWholeVar(unit["configuration"], cfgBefore, "pickProcess").(map[string]any)
+	unit = spliceSplit(v, unitBefore, inputs).(map[string]any)
+	cfg = numberWholeVar(unit["configuration"], unitBefore.(map[string]any)["configuration"], "pickProcess").(map[string]any)
 	launch := unit["adapter"].(map[string]any)
 
 	// 4. envFile。
@@ -568,10 +579,10 @@ func applyEnvFile(cfg map[string]any, folder string) error {
 }
 
 // resolver は、構成の展開（基本設計 6.4 の値の当て方の 3）の変数の意味である（基本設計 6.4 の「変数」の表）。
-// ${port} と ${clientAddr} は残し、つなぐ段階で置き換える。${input:ID}（FR-298）は次の issue で聞くので、今は扱えない変数にする。
+// ${port} と ${clientAddr} は残し、つなぐ段階で置き換える。${input:ID}（FR-298）は ask の表を引いて聞く。
 //
-// req: FR-283, FR-299
-func (d *debugger) resolver(ctx context.Context, inv invocation, folder string) expand.Resolver {
+// req: FR-283, FR-298, FR-299
+func (d *debugger) resolver(ctx context.Context, inv invocation, folder string, ask *inputAsker) expand.Resolver {
 	noArg := func(f func() (string, error)) expand.Entry {
 		return expand.Entry{
 			Value: func(string) (string, error) { return f() },
@@ -618,12 +629,9 @@ func (d *debugger) resolver(ctx context.Context, inv invocation, folder string) 
 		"pathSeparator":           noArg(val(sep)),
 		"/":                       noArg(val(sep)),
 		"pickProcess":             noArg(func() (string, error) { return d.pickProcess(ctx) }),
-		"input": {
-			Value: func(string) (string, error) { return "", errors.New("まだ扱えない") },
-			Check: func(string) error { return errors.New("${input:…} はまだ扱えない") },
-		},
-		"port":       {Defer: true},
-		"clientAddr": {Defer: true},
+		"input":                   {Value: ask.value, Check: ask.check},
+		"port":                    {Defer: true},
+		"clientAddr":              {Defer: true},
 	}
 	return expand.Resolver{Vars: vars, Unknown: expand.Fail, Env: expand.Builtin}
 }
