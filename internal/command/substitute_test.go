@@ -16,10 +16,11 @@ func TestSubstituteKey(t *testing.T) {
 		switch {
 		case !insert || s.Replaying():
 		case k == sub:
-			s.SubstituteKey(editcmd.MustParseKeys("<BS>xyz"))
+			keys := editcmd.MustParseKeys("<BS>xyz")
+			s.SubstituteKey(keys, keys)
 			return true, nil, nil
 		case k == drop:
-			s.SubstituteKey(nil)
+			s.SubstituteKey(nil, nil)
 			return true, nil, nil
 		}
 		return false, nil, nil

@@ -116,7 +116,7 @@ func (e *Editor) completeKey(f *floatState, k editcmd.Key) bool {
 		default:
 			return false
 		}
-		st.SubstituteKey(nil)
+		st.SubstituteKey(nil, nil)
 		return true
 	}
 	switch {
@@ -128,7 +128,7 @@ func (e *Editor) completeKey(f *floatState, k editcmd.Key) bool {
 	default:
 		return false
 	}
-	st.SubstituteKey(nil)
+	st.SubstituteKey(nil, nil)
 	return true
 }
 
@@ -344,18 +344,40 @@ func (e *Editor) acceptCompletion(f *floatState) {
 	// 置き換えを、カーソルの前を消す <BS>、カーソルの後ろを消す <Del>、入れる文字の列のキーとして State に解釈させ、受けたキー
 	// （<CR> か <C-y>）の記録をそのキーの列に置き換える（command.State.SubstituteKey）。マクロの再生とドットリピートは、答えを待たずに
 	// 入れた文字列をそのまま入れる（PR #428 のレビューの裁定要 1 へのオーケストレータの決め。blink.cmp の dot_repeat に近い）。
-	var keys []editcmd.Key
-	for range utf8.RuneCountInString(text[start:at]) {
+	record, keys := replaceKeys(text, start, at, end, ins)
+	f.bs.state.SubstituteKey(record, keys)
+	c.last, c.lastAt = f.bs.buf.Line(0), f.bs.state.Cursor().Byte
+}
+
+// replaceKeys は、入力の行の中身 text のカーソル at の周りの範囲 [start, end) を ins で置き換えるキーの列を返す。
+// keys は、KeyHook を通さずにその場で解釈させる列で、<BS> と <Del> の 1 つで 1 符号位置を消す。
+// record は、マクロに記録する列で、再生では組の入力の行の KeyHook（consoleKey）を通るので、<BS> と <Del> の 1 つで、結合文字を
+// 前の文字と一緒にした 1 文字（prevCharStart、nextCharEnd の単位）を消す。このため record の <BS> と <Del> はその単位で数える
+// （PR #428 の再レビューの必須。符号位置で数えると、"x é" の "é"（e と U+0301）を置き換えた記録の再生が、前の空白まで消した）。
+// 範囲の始まりが 1 文字の途中（結合文字の前）にあれば、その文字の始まりまで消してから、消しすぎた分を入れ直す。
+// 範囲の終わりが 1 文字の途中にあれば、その文字の終わりまで消す。どちらでも、その場と再生で同じ中身になる。
+func replaceKeys(text string, start, at, end int, ins string) (record, keys []editcmd.Key) {
+	from := at
+	for from > start {
+		from = prevCharStart(text, from)
+		record = append(record, consoleBS)
+	}
+	to := at
+	for to < end {
+		to = nextCharEnd(text, to)
+		record = append(record, consoleDel)
+	}
+	for range utf8.RuneCountInString(text[from:at]) {
 		keys = append(keys, consoleBS)
 	}
-	for range utf8.RuneCountInString(text[at:end]) {
+	for range utf8.RuneCountInString(text[at:to]) {
 		keys = append(keys, consoleDel)
 	}
-	for _, r := range ins {
-		keys = append(keys, editcmd.Rune(r))
+	var typed []editcmd.Key
+	for _, r := range text[from:start] + ins {
+		typed = append(typed, editcmd.Rune(r))
 	}
-	f.bs.state.SubstituteKey(keys)
-	c.last, c.lastAt = f.bs.buf.Line(0), f.bs.state.Cursor().Byte
+	return append(record, typed...), append(keys, typed...)
 }
 
 // completeAfterKey は、補完を引き受けた組 f で、キーの処理の後に、入力の行の中身かカーソルが変わっていれば補完を決め直す（FR-297）。

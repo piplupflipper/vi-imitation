@@ -387,13 +387,15 @@ func (s *State) Feed(k editcmd.Key) Result {
 }
 
 // SubstituteKey は、KeyHook の中から呼び、KeyHook が受けているキーの代わりに、キーの列 keys を KeyHook を通さずに通常のキーとして
-// 解釈する。受けているキーをマクロに記録していれば、その記録を keys に置き換える。インサートモードなら、keys の入力はドットリピートの
-// 記録にも入る。呼んだ KeyHook は done を true で返す。
+// 解釈する。受けているキーをマクロに記録していれば、その記録をキーの列 record に置き換える。インサートモードなら、keys の入力は
+// ドットリピートの記録にも入る。呼んだ KeyHook は done を true で返す。
+// record は、マクロの再生で KeyHook を通して解釈したときに keys と同じ結果になる列にする。KeyHook が 1 つのキーを複数のキーに
+// 広げる（書き足すテキストと入力の行の組の <BS> は、結合文字を前の文字と一緒に消す）なら、record はその広げる前の列である。
 // 拡張機能の答えで決まる入力（書き足すテキストと入力の行の組の補完で入れた候補。internal/editor）を、答えでなく入れた文字列として
 // 記録し、再生とドットリピートが答えの届く時機に依らずに同じ文字列を入れるために使う（#427）。
-func (s *State) SubstituteKey(keys []editcmd.Key) {
+func (s *State) SubstituteKey(record, keys []editcmd.Key) {
 	if s.hookRecorded && len(s.recorded) > 0 {
-		s.recorded = append(s.recorded[:len(s.recorded)-1], keys...)
+		s.recorded = append(s.recorded[:len(s.recorded)-1], record...)
 		s.hookRecorded = false
 	}
 	for _, k := range keys {

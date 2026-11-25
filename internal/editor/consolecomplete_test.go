@@ -10,11 +10,20 @@ import (
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/ext/server"
 	"github.com/piplupflipper/vi-imitation/internal/command"
+	"github.com/piplupflipper/vi-imitation/internal/editcmd"
 )
 
 // fakeCompleteWords は、fakeComplete が返す候補の語と種類である。
 var fakeCompleteWords = []struct{ word, kind string }{
-	{"alpha", "variable"}, {"alps", "function"}, {"beta", "variable"}, {"あいう", "variable"}, {"あかい", "module"},
+	{"alpha", "variable"},
+	{"alps", "function"},
+	{"beta", "variable"},
+	{"あいう", "variable"},
+	{"あかい", "module"},
+	// 結合文字を含む語（e と U+0301、U+2764 と U+FE0F）と、ZWJ でつないだ絵文字の語（PR #428 の再レビューの必須）。
+	{"éclair", "variable"},
+	{"❤️ok", "variable"},
+	{"\U0001F468‍\U0001F469‍\U0001F467", "variable"},
 }
 
 // fakeComplete は、偽の拡張機能の console/complete の答えである（FR-297）。カーソルの前の語（空白、"."、"(" の後ろから
@@ -184,7 +193,7 @@ func TestConsoleCompleteRange(t *testing.T) {
 
 	// <C-e> で閉じる。閉じた後の補完のキーでは問い合わせ直す。
 	h.keys("<End><C-u>(")
-	h.waitMenu("alpha,alps,beta,あいう,あかい")
+	h.waitMenu("alpha,alps,beta,あいう,あかい,éclair,❤️ok,\U0001F468‍\U0001F469‍\U0001F467")
 	h.keys("<C-e>")
 	if mi := h.cmenu(); mi.items != "" || mi.input != "(" {
 		t.Fatalf("<C-e> の後: %+v", mi)
@@ -323,6 +332,64 @@ func TestConsoleCompleteReplay(t *testing.T) {
 	}
 	if h.seen("kind=1 item=") {
 		t.Error("再生で送った")
+	}
+}
+
+// 結合文字、全角文字、絵文字の語を補完で置き換えたマクロの再生は、記録したときと同じ範囲を消す。記録する <BS> は、再生で
+// 組の入力の行が消す単位（結合文字を前の文字と一緒にした 1 文字）で数える（PR #428 の再レビューの必須）。
+//
+// req: FR-297
+func TestConsoleCompleteReplayCombining(t *testing.T) {
+	for _, tt := range []struct{ name, typed, want string }{
+		{"結合文字", "é", "éclair"},
+		{"全角文字", "あ", "あいう"},
+		{"異体字セレクター", "❤️", "❤️ok"},
+		{"ZWJ の絵文字", "\U0001F468‍\U0001F469", "\U0001F468‍\U0001F469‍\U0001F467"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := startComplete(t)
+			h.keys("<Esc>qqA")
+			h.keys("x " + tt.typed)
+			h.settle()
+			h.eventually("一覧", func() bool {
+				f := h.e.float
+				return f != nil && strings.HasPrefix(completeMenuOf(h.e, f).items, tt.want)
+			})
+			h.keys("<C-n><CR><Esc>q")
+			once := "x " + tt.want
+			if mi := h.cmenu(); mi.input != once {
+				t.Fatalf("記録した後: %q, want %q", mi.input, once)
+			}
+			h.keys("@q")
+			h.settle()
+			if mi := h.cmenu(); mi.input != once+once {
+				t.Errorf("再生の後: %q, want %q", mi.input, once+once)
+			}
+		})
+	}
+}
+
+// replaceKeys は、範囲の始まりが 1 文字の途中（結合文字の前）なら、その文字の始まりまで消してから消しすぎた分を入れ直す。
+// その場で解釈する列（符号位置の単位）と、記録する列（結合文字を前の文字と一緒にした単位）が同じ中身を作る。
+//
+// req: FR-297
+func TestReplaceKeys(t *testing.T) {
+	text := "xé"
+	record, keys := replaceKeys(text, 2, len(text), len(text), "Z")
+	str := func(ks []editcmd.Key) string { return editcmd.KeysString(ks) }
+	if got, want := str(record), "<BS>eZ"; got != want {
+		t.Errorf("record = %q, want %q", got, want)
+	}
+	if got, want := str(keys), "<BS><BS>eZ"; got != want {
+		t.Errorf("keys = %q, want %q", got, want)
+	}
+	// カーソルの後ろの 1 文字の途中で終わる範囲は、その文字の終わりまで消す。
+	record, keys = replaceKeys("aéb", 1, 1, 2, "")
+	if got, want := str(record), "<Del>"; got != want {
+		t.Errorf("後ろの record = %q, want %q", got, want)
+	}
+	if got, want := str(keys), "<Del><Del>"; got != want {
+		t.Errorf("後ろの keys = %q, want %q", got, want)
 	}
 }
 
