@@ -109,6 +109,14 @@ func TestConsoleNarrow(t *testing.T) {
 	if c := s.Cursor; c.Row != 0 || c.Col < 1 || c.Col > 5 {
 		t.Errorf("カーソル = %+v", c)
 	}
+	// 見出しのある窓でも、1 行しか無ければ見出しを除いて入力の行を描く。
+	fl.Title = "repl"
+	fl.Console.Prompt = "> "
+	s = r.Render(&Frame{Float: fl})
+	// 入力の幅は 2 列なので、行末のカーソルが見えるまで横にスクロールしている。
+	if rows := screenRows(s); !strings.HasPrefix(rows[0], " >") || s.Cursor.Row != 0 || s.Cursor.Col < 3 || s.Cursor.Col > 4 {
+		t.Errorf("見出しのある 1 行の窓 = %q, カーソル %+v（画面:\n%s）", rows[0], s.Cursor, s.Grid.String())
+	}
 	r = &Renderer{Width: 2, Height: 3, Theme: testTheme()}
 	_ = r.Render(&Frame{Float: fl}) // 描けない幅でも panic しない
 }

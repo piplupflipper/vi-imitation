@@ -399,4 +399,11 @@ func TestConsolePane(t *testing.T) {
 	if ci := paneConsole(); ci.outLine >= pane.out.buf.LineCount()-1 {
 		t.Errorf("ペインの出力で k が効かない: %+v", ci)
 	}
+	// 入力の行に打ちかけの中身があっても、:q でペインを閉じられる（入力の行は未保存の変更に数えない）。
+	comp.keys("<C-w>w:q<CR>")
+	h.waitSeen(fmt.Sprintf("view %d kind=0 item= key=", call.view))
+	h.e.do(func() { panes = len(h.e.viewOf(h.clientOf(peer.term)).panes) })
+	if panes != 0 {
+		t.Errorf(":q でペインを閉じない（message %q）", h.message())
+	}
 }

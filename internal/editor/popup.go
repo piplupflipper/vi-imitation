@@ -830,6 +830,11 @@ func (e *Editor) afterFloatKey() {
 		e.message = infoMessage("入力の行は 1 行だけです")
 	}
 	e.notifyInputChange(f)
+	if f.kind == floatConsole {
+		// 書き足すテキストと入力の行の組の入力の行は、保存するものではないので、未保存の変更として数えない。
+		// 数えると、ペインを閉じる :q が E37 で断られ、ステータス行に [+] が出続ける（#413 の画面の確認で見つけた）。
+		f.bs.buf.MarkSaved()
+	}
 }
 
 // notifyInputChange は、入力の行の中身が最後に知らせたものから変わっていれば、番号を進めて input/change で知らせる。
