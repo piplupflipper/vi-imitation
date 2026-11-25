@@ -340,6 +340,52 @@ func TestRegisterSetOrigin(t *testing.T) {
 	}
 }
 
+// 分割したペインの部品の client で記録したマクロ（qqj"Azykq）を、ペインで再生しても（@q、3@q）、待ちの後の残り（k）をペインで続け、
+// 回数のとおりに入れる（DAP のウォッチ式の値を集める使い方。PR #433 の再レビューの前に実物で見つけた）。
+//
+// req: FR-19, FR-315
+func TestRegisterSetReplayInPane(t *testing.T) {
+	var calls muxCalls
+	cfg := Config{Extensions: fakeSpecs(t)}
+	calls.config(&cfg)
+	h := start(t, cfg)
+	peer := h.attach(ClientInfo{ID: 2, Pane: "%9"})
+	peer.keys(":fake.pane list<CR>")
+	h.eventually("OpenPane", func() bool { _, ok := calls.last(true); return ok })
+	call, _ := calls.last(true)
+	h.waitPaneOpened(call.view)
+	comp := h.attachComponent(call.view, true)
+	comp.waitScreen("first")
+	// reg は、イベントループの goroutine（eventually の中）で呼ぶ。
+	reg := func() string { r, _ := h.e.shared.Registers().Get('a'); return r.Text }
+	comp.keys(`gg"azy`)
+	h.eventually("a", func() bool { return reg() == "yank:one" })
+	comp.keys(`qqj"Azykq`)
+	h.eventually("記録", func() bool { return reg() == "yank:oneyank:close" })
+	comp.keys("@q")
+	h.settle()
+	h.eventually("@q", func() bool { return !h.e.replayPending() && strings.Count(reg(), "close") == 2 })
+	comp.keys("3@q")
+	h.settle()
+	h.eventually("3@q", func() bool { return !h.e.replayPending() && strings.Count(reg(), "close") == 5 })
+	var got string
+	h.e.do(func() { got = reg() })
+	if got != "yank:one"+strings.Repeat("yank:close", 5) {
+		t.Errorf("a = %q", got)
+	}
+	var line int
+	h.e.do(func() {
+		for _, p := range h.e.panes {
+			if p.id == call.view {
+				line = p.bs.state.Cursor().Line
+			}
+		}
+	})
+	if line != 0 {
+		t.Errorf("pane cursor line = %d, want 0 (k ran in the pane)", line)
+	}
+}
+
 // 64 MiB のメッセージの上限を超える値は、ext/server が送らずに誤りを返し、拡張機能は止まらない（PR #433 のレビューの推奨 1）。
 //
 // req: FR-315

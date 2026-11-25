@@ -3,6 +3,7 @@ package editor
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/command"
@@ -79,7 +80,7 @@ func (e *Editor) sendKeyReplay(f *floatState, id string, p ext.ViewKeyParams) er
 	if old := c.replay; old != nil {
 		old.q.Cancel()
 	}
-	c.replay = &replayWait{q: q, tag: tag, bs: e.cur, client: c, ref: ref, key: true}
+	c.replay = &replayWait{q: q, tag: tag, bs: e.cur, client: c, ref: ref, key: true, float: f}
 	return command.ErrQueryPending
 }
 
@@ -91,7 +92,6 @@ func (e *Editor) sendKeyReplay(f *floatState, id string, p ext.ViewKeyParams) er
 // req: FR-19, FR-315
 func (e *Editor) keyReplayAnswered(c *clientView, w *replayWait, r *exthost.QueryResult, interrupted bool) {
 	e.useClient(c)
-	defer e.afterFloatKey()
 	var err error
 	var res ext.ViewKeyResult
 	switch {
@@ -115,6 +115,14 @@ func (e *Editor) keyReplayAnswered(c *clientView, w *replayWait, r *exthost.Quer
 			err = e.writeRegister(p)
 		}
 	}
+	// 分割したペインで打ったキーなら、続きもそのペインで再生する。ペインのキーは、処理する間だけペインを元の client のフォーカスのある
+	// ポップアップにし、処理し終えたら元のタブへ戻す（paneInput）ので、待つ間にカーソルのあるバッファは元のタブに戻っている。
+	// 戻したまま続けると、残りのキー（qqj"Azykq の k）を元のタブで再生し、ペインのキーが効かなかった。
+	inPane := false
+	if f := w.float; f != nil && f.pane && slices.Contains(e.panes, f) && e.float != f {
+		e.enterPane(f)
+		inPane = true
+	}
 	next := e.cur
 	var out command.Result
 	if err != nil {
@@ -122,7 +130,12 @@ func (e *Editor) keyReplayAnswered(c *clientView, w *replayWait, r *exthost.Quer
 	} else {
 		out = next.state.ContinueReplay(w.rest)
 	}
-	if e.handleResult(next, out) != nil && e.suspension() == nil {
+	failed := e.handleResult(next, out) != nil && e.suspension() == nil
+	e.afterFloatKey()
+	if inPane {
+		e.leavePane()
+	}
+	if failed {
 		e.remap.reset()
 		return
 	}

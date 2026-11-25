@@ -49,6 +49,8 @@ type replayWait struct {
 	// key は、操作の問い合わせでなく、Sync の popupKeys のキーの view/keySync の待ちであることを表す（keysync.go。FR-315）。
 	// State はキーの KeyHook の誤りとして止まるので、d は無く、rest だけを持つ。結果は keyReplayAnswered が受ける。
 	key bool
+	// float は、key の待ちのキーを打ったポップアップかペインである。分割したペインなら、続きをそのペインで再生する（keyReplayAnswered）。
+	float *floatState
 	// held は、State が止まったことを返し、holdReplay が rest（と d）を結びつけたことを表す。
 	held bool
 }

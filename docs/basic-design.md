@@ -2402,6 +2402,7 @@ DAP の拡張機能のウォッチ式の区画の `c`（FR-311。6.4）のため
 
 - 待ち方は、再生中の操作の問い合わせ（5.4 の FR-19。`replayWait`）に合わせ、イベントループを止めない。`popupKey` は `view/keySync` を送り、`command.ErrQueryPending` を `KeyHook` の誤りとして返す。`State` は、ほかの再生を止める誤りと同じく、再生の残りのキーを `Result.Remaining` に入れて止まる。操作の問い合わせと違って実行し直す操作（`Deferred`）が無いので、待ちの控え（`replayWait`）には残りだけを持たせる（`replayWait.key`）
 - 本体は待つ間も拡張機能のリクエストを処理するが、応答の後に届く `register/set` と順が入れ替わらないよう、拡張機能はそのキーの結果を `register/set` でなく応答の `register`（`ext.ViewKeyResult`）で返す。本体は応答を受けてから書き（`writeRegister`）、カーソルのあるバッファの `State` の `ContinueReplay` で残りを続ける
+- 分割したペインで打ったキーなら、続きもそのペインで再生する。ペインのキーは、処理する間だけペインを元の client のフォーカスのあるポップアップにし、処理し終えたら元のタブへ戻す（1.2。`paneInput` と `leavePane`）ので、待つ間にカーソルのあるバッファは元のタブに戻っている。`keyReplayAnswered` は、ペインがまだ開いていれば `enterPane` でペインへ入り直してから続け、続け終えたら `leavePane` で戻す。最初の版は元のタブで続けたので、ペインで `qqj"Azykq` を記録した後の `@q` の `k` が元のタブで動き、続く `3@q` が効かなかった（2026-11-26 に実物の debugpy で見つけた。`TestRegisterSetReplayInPane`）
 - 期限（`Config.ReplayTimeout`）までに応答が無い、拡張機能が誤りで応答した、`<C-c>` で取り消した、応答の `register` が使えない名前、のどれかなら、その位置で再生を止め、残りを再生しない（`State.AbortReplay`。ドットリピートの対象は `ContinueReplay` の失敗と同じに決める）
 - 待ちを挟む再帰のマクロ（`qr"Azy@rq` の後の `@r`）は、残りの区切りが入れ子の深さ（`ReplaySegment.Depth`）を持つので、待ちを挟まない再帰と同じく入れ子の上限で止まり、`<C-c>` でも止まる（`TestRegisterSetReplayRecursion`。dev-cycle 2.2）
 - 待ちの前後の変更は、`ErrBufferSwitched` の続きと同じく、1 回の `u` でまとめて戻らない（外部のコマンドの待ちのようにアンドゥの単位をつながない）

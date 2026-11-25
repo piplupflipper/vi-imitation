@@ -241,6 +241,15 @@ func (e *Editor) feedInput(in keyInput) {
 //
 // req: FR-115
 func (e *Editor) paneInput(p *floatState, in keyInput) {
+	e.enterPane(p)
+	e.feedInput(in)
+	e.afterKey()
+	e.leavePane()
+}
+
+// enterPane は、ペインの部品 p を、元の client のフォーカスのあるポップアップにし、キーを受けるバッファを p のバッファにする
+// （元の client のポップアップは退避する）。leavePane で元へ戻す。paneInput と、ペインで止めた再生の続き（keysync.go）が使う。
+func (e *Editor) enterPane(p *floatState) {
 	// 利用者はペインを見ているので、元の client の画面の診断のポップアップを閉じ、カーソルが止まった契機を知らせない（cursorhold.go）。
 	e.leaveFocus()
 	e.paneSaved, e.paneActive = e.float, p
@@ -248,9 +257,6 @@ func (e *Editor) paneInput(p *floatState, in keyInput) {
 	p.focused = false
 	e.float = p
 	e.focusFloat()
-	e.feedInput(in)
-	e.afterKey()
-	e.leavePane()
 }
 
 // leavePane は、paneInput の途中なら、キーを受けるバッファをペインのバッファから元のタブ（フォーカスのあったポップアップ）へ戻し、
