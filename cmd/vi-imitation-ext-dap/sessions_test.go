@@ -483,7 +483,7 @@ func TestStaleStackTrace(t *testing.T) {
 		}
 		// フレームを選ぶと、選択に出て、世代が進む。
 		gen := s.gen.Load()
-		if !h.d.selectFrame(s, 1000) {
+		if !h.d.selectFrame(s, stackFrame{ID: 1000}) {
 			t.Fatal("selectFrame = false")
 		}
 		if sel := h.d.currentSelection(); !sel.hasFrame || sel.frame != 1000 || sel.thread != 1 || s.gen.Load() == gen {

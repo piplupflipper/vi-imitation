@@ -78,6 +78,9 @@ type host struct {
 	appends chan ext.ViewAppendParams
 	// popups は、拡張機能が popup/open で開いた部品である（ウォッチ式の区画の値のヤンク）。
 	popups chan ext.PopupOpenParams
+	// vtexts は、拡張機能が送った virtualText/set である（行末の変数の値）。optionGets は、option/get を受けた数である。
+	vtexts     chan ext.VirtualTextSetParams
+	optionGets chan ext.OptionGetParams
 
 	mu       sync.Mutex
 	versions map[ext.BufferID]ext.Version
@@ -152,6 +155,8 @@ func newHostState(t *testing.T) *host {
 		updates:      make(chan ext.ViewUpdateParams, 4096),
 		appends:      make(chan ext.ViewAppendParams, 4096),
 		popups:       make(chan ext.PopupOpenParams, 16),
+		vtexts:       make(chan ext.VirtualTextSetParams, 1024),
+		optionGets:   make(chan ext.OptionGetParams, 1024),
 		versions:     map[ext.BufferID]ext.Version{},
 		ids:          map[string]ext.BufferID{},
 		workDir:      t.TempDir(),
@@ -199,6 +204,8 @@ func (h *host) notification(_ context.Context, n *rpc.Notification) {
 		h.appends <- decode[ext.ViewAppendParams](h.t, n.Params)
 	case ext.MethodViewClose:
 		h.closes <- decode[ext.ViewCloseParams](h.t, n.Params).View
+	case ext.MethodVirtualTextSet:
+		h.vtexts <- decode[ext.VirtualTextSetParams](h.t, n.Params)
 	}
 }
 
@@ -242,6 +249,12 @@ func (h *host) request(_ context.Context, req *rpc.Request, reply rpc.Replier) {
 		p := decode[ext.InputAskParams](h.t, req.Params)
 		h.inputAsks <- p
 		go func() { _ = reply(<-h.inputAnswers, nil) }()
+		return
+	case ext.MethodOptionGet:
+		// comment.string だけを答える（Go の既定の形）。
+		p := decode[ext.OptionGetParams](h.t, req.Params)
+		h.optionGets <- p
+		_ = reply(ext.OptionGetResult{Values: map[string]json.RawMessage{"comment.string": json.RawMessage(`"// %s"`)}}, nil)
 		return
 	case ext.MethodEditorOpen:
 	default:

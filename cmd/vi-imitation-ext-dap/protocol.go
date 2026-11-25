@@ -102,6 +102,9 @@ type scope struct {
 	VariablesReference int    `json:"variablesReference"`
 	// Expensive は、変数が多いか読むのが重いことを表す（同仕様）。スコープの区画は、これの無いスコープだけを開いて出す（基本設計 6.4）。
 	Expensive bool `json:"expensive,omitempty"`
+	// PresentationHint は、スコープの種類（arguments、locals、registers など）である。行末の変数の値は、同じ名前の変数が
+	// 複数のスコープにあれば locals のものを採る（nvim-dap-virtual-text と同じ。virtualtext.go）。
+	PresentationHint string `json:"presentationHint,omitempty"`
 }
 
 // scopesResponse は、scopes の response の body である。

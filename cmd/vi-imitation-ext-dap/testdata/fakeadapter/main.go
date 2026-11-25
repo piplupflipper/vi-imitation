@@ -109,6 +109,12 @@ type fakeOptions struct {
 	EvaluateDelayMs int `json:"evaluateDelayMs"`
 	// EvaluateDelayRepl は、EvaluateDelayMs を context が repl の evaluate にも当てる。
 	EvaluateDelayRepl bool `json:"evaluateDelayRepl"`
+	// ExtraVars は、Locals（参照 1）の変数の後ろに足す変数である（行末の変数の値のテスト）。
+	ExtraVars []map[string]any `json:"extraVars"`
+	// LocalsHint は、Locals のスコープの presentationHint である。空なら付けない。
+	LocalsHint string `json:"localsHint"`
+	// CheapGlobals は、Globals のスコープを expensive にしない（行末の変数の値が、expensive でないスコープを読むことのテスト）。
+	CheapGlobals bool `json:"cheapGlobals"`
 }
 
 type message struct {
@@ -630,9 +636,13 @@ func (a *adapter) handle(m *message) {
 			a.respond(m, map[string]any{"scopes": []map[string]any{{"name": "Locals", "variablesReference": 11}}})
 			return
 		}
+		locals := map[string]any{"name": "Locals", "variablesReference": 1}
+		if a.opts.LocalsHint != "" {
+			locals["presentationHint"] = a.opts.LocalsHint
+		}
 		a.respond(m, map[string]any{"scopes": []map[string]any{
-			{"name": "Locals", "variablesReference": 1},
-			{"name": "Globals", "variablesReference": 2, "expensive": true},
+			locals,
+			{"name": "Globals", "variablesReference": 2, "expensive": !a.opts.CheapGlobals},
 		}})
 	case "variables":
 		var vargs struct {
@@ -904,8 +914,9 @@ func (a *adapter) next(reason string) {
 }
 
 // variables は、参照 ref の子の変数を返す。stateMu を持って呼ぶ。
-//   - 1（先頭のフレームの Locals）: x（止まった回数。書き換えればその値）、big（3000 の要素の列）、s（長い文字列）、nested（深い入れ子）
-//   - 2（Globals）: g
+//   - 1（先頭のフレームの Locals）: x（止まった回数。書き換えればその値）、big（3000 の要素の列）、s（長い文字列）、nested（深い入れ子）、
+//     ExtraVars
+//   - 2（Globals）: g、x（Locals と同じ名前）
 //   - 3: big の要素。11（呼んだ側のフレームの Locals）: y。20 から: nested の子
 func (a *adapter) variables(ref int) ([]map[string]any, bool) {
 	val := func(name, def string) string {
@@ -916,14 +927,17 @@ func (a *adapter) variables(ref int) ([]map[string]any, bool) {
 	}
 	switch {
 	case ref == 1:
-		return []map[string]any{
+		return append([]map[string]any{
 			{"name": "x", "value": val("x", strconv.Itoa(a.nstop)), "type": "int", "evaluateName": "x", "variablesReference": 0},
 			{"name": "big", "value": "[]int len: 3000", "type": "[]int", "evaluateName": "big", "variablesReference": 3, "indexedVariables": 3000},
 			{"name": "s", "value": strings.Repeat("long ", 400), "type": "string", "variablesReference": 0},
 			{"name": "nested", "value": "{...}", "type": "T", "variablesReference": 20},
-		}, true
+		}, a.opts.ExtraVars...), true
 	case ref == 2:
-		return []map[string]any{{"name": "g", "value": "1", "type": "int", "variablesReference": 0}}, true
+		return []map[string]any{
+			{"name": "g", "value": "1", "type": "int", "variablesReference": 0},
+			{"name": "x", "value": "global x", "type": "int", "variablesReference": 0},
+		}, true
 	case ref == 3:
 		out := make([]map[string]any, 3000)
 		for i := range out {

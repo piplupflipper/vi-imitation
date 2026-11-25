@@ -211,6 +211,8 @@ type pane struct {
 	replDone    chan struct{}
 	// holdTimer は、動き出したばかりの間に作り直しを待たせ、後で run を起こす予定があることを表す（holdOnce）。
 	holdTimer bool
+	// vt は、行末の変数の値（FR-296。virtualtext.go）の状態である。ペインを閉じていても出す。
+	vt vtState
 
 	// repl は、REPL の区画の出力の写しである。作った後は変えない。どの goroutine からも書き足せる（server.TextLog）。
 	repl *server.TextLog
@@ -224,6 +226,8 @@ func newPane(d *debugger) *pane {
 	p.threads.expanded = map[string]bool{}
 	p.scopes.expanded = map[string]bool{}
 	p.watches.expanded = map[string]bool{}
+	p.vt.shown = map[ext.BufferID]vtSent{}
+	p.vt.comments = map[ext.BufferID]string{}
 	return p
 }
 
@@ -245,10 +249,16 @@ func (p *pane) signal() {
 // markDirty は、区画 secs の中身の作り直しが要る印を付ける。待たない。debugger.mu を持ったまま呼んでよい（pane.mu だけを取る）。
 // 止まった、続けた、続行とステップ実行と一時停止の送信、セッションの増減、選び直し、ブレークポイントの変化で呼ぶ
 // （PR #414 の未確認事項に並べた、表示のための変わり目の知らせ）。
+//
+// スコープの区画の印を付けるときは、行末の変数の値（vtKey。virtualtext.go）にも印を付ける。どちらも選んでいるフレームの変数を出すので、
+// 変わり目が同じである。
 func (p *pane) markDirty(secs ...string) {
 	p.mu.Lock()
 	for _, s := range secs {
 		p.dirty[s] = true
+		if s == secScopes {
+			p.dirty[vtKey] = true
+		}
 	}
 	p.mu.Unlock()
 	p.signal()
@@ -503,7 +513,9 @@ func leafTree(label string) ext.ViewComponent {
 // refresh は、ペインを開いていれば、作り直しの印の付いた区画のうち、選んでいる区画だけを作り直し、出力の区画に出す写しを今のセッションに合わせる（基本設計 6.4 の「表示の更新」）。見えていないスレッド、スコープ、ウォッチ式の区画は
 // 印を残し、アダプターへ request を送らない（#424 の裁定。ウォッチ式を 10 個置いても、見えていなければステップ実行を遅らせない）。
 // スレッド、スコープ、ウォッチ式の区画は、止まった位置を出し終えるまで読まない（PR #423 のレビューの必須 1）。
+// 行末の変数の値は、ペインを閉じていても、区画より先に出し直す（refreshVirtualText。同じ待ちの規則に従う）。
 func (p *pane) refresh() {
+	p.refreshVirtualText()
 	view := ext.ViewID(p.view.Load())
 	if view == 0 {
 		return

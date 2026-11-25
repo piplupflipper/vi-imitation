@@ -558,15 +558,15 @@ func (d *debugger) selectSession(s *session) bool {
 //
 // req: FR-287
 func (d *debugger) selectThread(s *session, thread int) bool {
-	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, 0, false })
+	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame, s.frameAt = thread, true, 0, false, nil })
 }
 
-// selectThreadFrame は、selectThread と同じく s のスレッド thread を選び、フレーム frame も選ぶ（スレッドの区画の s で、
+// selectThreadFrame は、selectThread と同じく s のスレッド thread を選び、フレーム f も選ぶ（スレッドの区画の s で、
 // スレッドかフレームを選んだとき。スコープの区画がそのフレームを出す）。
 //
 // req: FR-287
-func (d *debugger) selectThreadFrame(s *session, thread, frame int) bool {
-	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, frame, true })
+func (d *debugger) selectThreadFrame(s *session, thread int, f stackFrame) bool {
+	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame, s.frameAt = thread, true, f.ID, true, frameLocOf(f) })
 }
 
 // selectFrame は、s を今のセッションにし、フレーム frame を選ぶ（スレッドの区画でフレームを <CR> で選んだとき）。
@@ -576,8 +576,8 @@ func (d *debugger) selectThreadFrame(s *session, thread, frame int) bool {
 // s の世代を進める（FR-287）。s が動いていなければ false を返す。
 //
 // req: FR-287
-func (d *debugger) selectFrame(s *session, frame int) bool {
-	return d.choose(s, func() { s.frame, s.hasFrame = frame, true })
+func (d *debugger) selectFrame(s *session, f stackFrame) bool {
+	return d.choose(s, func() { s.frame, s.hasFrame, s.frameAt = f.ID, true, frameLocOf(f) })
 }
 
 // choose は、s を今のセッションにし、mu を持って set を呼び、s の世代を進めて、選択が変わったことを知らせる。
@@ -611,7 +611,7 @@ func (d *debugger) choose(s *session, set func()) bool {
 func (d *debugger) markStopped(s *session, tid *int) (gen uint64, focus bool) {
 	d.mu.Lock()
 	s.halted = true
-	s.thread, s.hasThread, s.frame, s.hasFrame = 0, tid != nil, 0, false
+	s.thread, s.hasThread, s.frame, s.hasFrame, s.frameAt = 0, tid != nil, 0, false, nil
 	if tid != nil {
 		s.thread = *tid
 	}
@@ -735,6 +735,9 @@ func (d *debugger) onBufferOpen(_ context.Context, e *server.BufferOpenEvent) {
 	if len(d.bps[path]) > 0 || slices.ContainsFunc(d.sessions, func(s *session) bool { return s.exec != nil && s.exec.path == path }) {
 		d.publishLocked(path)
 	}
+	// 選んでいるフレームのファイルを後から開いたとき（開いていないファイルのフレーム）と、ファイルの種類が変わったとき（コメントの記号）に、
+	// 行末の変数の値を出し直す（FR-296）。
+	d.pane.bufferOpened(e.Buffer.ID(), d.settings.vt.enabled)
 }
 
 // onBufferChange は、編集に合わせて、ブレークポイントと実行位置の行をずらす（基本設計 6.4 のブレークポイントの位置の追従）。
@@ -758,6 +761,13 @@ func (d *debugger) onBufferChange(_ context.Context, e *server.BufferChangeEvent
 				s.exec.line = shiftLine(s.exec.line, ed)
 			}
 		}
+		if s.frameAt != nil && s.frameAt.path == path {
+			at := *s.frameAt
+			for _, ed := range e.Edits {
+				at.line = shiftLine(at.line, ed)
+			}
+			s.frameAt = &at
+		}
 	}
 }
 
@@ -768,6 +778,8 @@ func (d *debugger) onBufferClose(_ context.Context, e *server.BufferCloseEvent) 
 		delete(d.paths, e.Buffer)
 		delete(d.buffers, path)
 	}
+	// 本体はバッファごと仮想テキストを消すので、送らずに覚えたものを捨てる。
+	d.pane.bufferClosed(e.Buffer, d.settings.vt.enabled)
 }
 
 // onBufferDidSave は、デバッグ中なら、保存したファイルのブレークポイントを setBreakpoints で送り直す（基本設計 6.4）。
@@ -1425,7 +1437,8 @@ func (d *debugger) mergeBreakpointsLocked(path string) {
 	d.publishLocked(path)
 }
 
-// showStopped は、デバッグ対象が path の line 行（DAP の列は column）で止まったことを表示する（基本設計 6.4）。
+// showStopped は、デバッグ対象が先頭のフレーム f（ソースのパスを持つもの）の line 行（本体の行。DAP の列は f の列）で止まったことを
+// 表示する（基本設計 6.4）。
 // editor/open でカーソルを移し、sign/set で実行位置の印を付け、message/show で止まった理由を知らせる。
 // session の event の goroutine から呼ぶ。
 //
@@ -1433,13 +1446,14 @@ func (d *debugger) mergeBreakpointsLocked(path string) {
 // 本体は応答を待つ間も editor/open を処理するが、送ると待つ間にカーソルが移り、本体が再生の続きで操作を実行し直すときに
 // カーソルが変わったとみなして再生を止める（基本設計 5.4、6 章の冒頭、6.4）。
 //
-// 実行位置の印はセッションごとに持ち（FR-285）、選んでいるフレームを先頭のフレーム frame にする。
+// 実行位置の印はセッションごとに持ち（FR-285）、選んでいるフレームを先頭のフレーム f にする。
 // gen は、止まったときの s の世代で、ここまでに世代が進んでいれば（続けた、選び直した）、何も表示しない（FR-287）。
 // 再生中の操作は、待っているセッション（とその子孫）の停止でだけ応答する（waitStopLocked）。
 // focus が false（今のセッションにしなかった。markStopped）で、再生中の操作も待っていなければ、印とメッセージだけにし、カーソルを移さない。
 //
 // req: FR-31, FR-19, FR-285, FR-287
-func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focus bool, frame int, path string, line, column int, reason string) {
+func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focus bool, f stackFrame, line int, reason string) {
+	path, column := f.Source.Path, f.Column
 	d.mu.Lock()
 	if s.gen.Load() != gen || !slices.Contains(d.sessions, s) {
 		d.mu.Unlock()
@@ -1447,7 +1461,8 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focu
 		return
 	}
 	s.exec = &execPoint{path: path, line: line}
-	s.frame, s.hasFrame = frame, true
+	s.frame, s.hasFrame = f.ID, true
+	s.frameAt = &frameLoc{path: path, line: line, name: f.Name}
 	s.stopGen = 0
 	s.shownAt = time.Now()
 	// ペインの区画は、止まった位置への移動（editor/open か再生の応答）を済ませた後に作り直す（markStopped の doc）。

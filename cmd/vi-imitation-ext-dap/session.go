@@ -142,6 +142,9 @@ type session struct {
 	// hasFrame が false なら未知。
 	frame    int
 	hasFrame bool
+	// frameAt は、選んでいるフレームのソースの位置と関数の名前である（行末の変数の値を出す行を決める。FR-296。virtualtext.go）。
+	// ソースのパスが無いフレームか、フレームを選んでいなければ nil。編集に合わせて行をずらす（onBufferChange）。
+	frameAt *frameLoc
 	// resumedAt は、最後に動き出した（続行、ステップ実行、restart を送った、continued の event を受けた）時刻である。
 	// ペインは、動き出してから runningShowDelay の間は、区画を「動いている」に作り直さない（pane.refresh）。
 	resumedAt time.Time
@@ -1208,7 +1211,7 @@ func (s *session) stopped(body *stoppedEvent) {
 	} else {
 		f := st.StackFrames[0]
 		line := fromDAPLine(f.Line, linesStartAt1)
-		s.d.showStopped(ctx, s, gen, focus, f.ID, f.Source.Path, line, f.Column, body.Reason)
+		s.d.showStopped(ctx, s, gen, focus, f, line, body.Reason)
 	}
 	if body.Reason == "exception" {
 		// 例外の中身は、止まった位置を出し終えた後に読む（止まった位置の stackTrace を先に送る取り決め。PR #423）。

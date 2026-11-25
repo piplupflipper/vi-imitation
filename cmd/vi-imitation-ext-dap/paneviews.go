@@ -46,6 +46,10 @@ type sessionSnap struct {
 	supportsSetVariable   bool
 	supportsSetExpression bool
 	supportsClipboard     bool
+	// at は、選んでいるフレームのソースの位置である（session.frameAt。nil なら無い）。shownAt は、止まった位置を出し始めた時刻
+	// （止まるたびに替わる。行末の変数の値で、前の停止からの値の変化を見るのに使う）。
+	at      *frameLoc
+	shownAt time.Time
 }
 
 // snapshot は、動いているセッションの状態を始めた順に、今のセッションと、デバッグを一度でも始めたか（出力の写しがあるか）と一緒に返す。
@@ -61,6 +65,8 @@ func (d *debugger) snapshot() (ss []sessionSnap, cur *session, started bool) {
 			supportsSetVariable:   s.supports(func(c *capabilities) bool { return c.SupportsSetVariable }),
 			supportsSetExpression: s.supports(func(c *capabilities) bool { return c.SupportsSetExpression }),
 			supportsClipboard:     s.supports(func(c *capabilities) bool { return c.SupportsClipboardContext }),
+			at:                    s.frameAt,
+			shownAt:               s.shownAt,
 		})
 	}
 	return ss, d.cur, len(d.outLogs) > 0
@@ -497,7 +503,7 @@ func (p *pane) selectFrameItem(item string) {
 		return
 	}
 	prev := p.d.currentSelection().session
-	if !p.d.selectFrame(ref.s, ref.frame.ID) {
+	if !p.d.selectFrame(ref.s, ref.frame) {
 		return
 	}
 	if prev != ref.s {
@@ -526,7 +532,7 @@ func (p *pane) selectFrameItem(item string) {
 // req: FR-303
 func (p *pane) selectItem(item string) {
 	if ref, ok := p.threads.frames[item]; ok {
-		if p.d.selectThreadFrame(ref.s, ref.tid, ref.frame.ID) {
+		if p.d.selectThreadFrame(ref.s, ref.tid, ref.frame) {
 			p.d.showInfo(fmt.Sprintf("送り先を %s のスレッド %s にした", ref.s.label(), p.threadName(ref.s, ref.tid)))
 		}
 		return
@@ -542,7 +548,7 @@ func (p *pane) selectItem(item string) {
 		c := s.getConn()
 		done := false
 		if c != nil && c.call(ctx, "stackTrace", stackTraceArguments{ThreadID: tid, Levels: 1}, &st) == nil && len(st.StackFrames) > 0 {
-			done = p.d.selectThreadFrame(s, tid, st.StackFrames[0].ID)
+			done = p.d.selectThreadFrame(s, tid, st.StackFrames[0])
 		} else {
 			done = p.d.selectThread(s, tid)
 		}
@@ -727,27 +733,12 @@ func (p *pane) buildScopes() (ext.ViewComponent, error) {
 		return c, nil
 	}
 	sv.info = map[string]varInfo{}
-	if sv.fresh(x) {
-		sv.scopes = nil
-		if x.s.gen.Load() != x.gen {
-			sv.vars = nil
-			return ext.ViewComponent{}, errStale
-		}
-		ctx, cancel := p.ctx()
-		var res scopesResponse
-		err := x.s.callGen(ctx, x.gen, "scopes", scopesArguments{FrameID: x.frame}, &res)
-		cancel()
-		if errors.Is(err, errStale) {
-			sv.vars = nil
-			return ext.ViewComponent{}, err
-		}
-		if err != nil {
-			sv.vars = nil
-			c = leafTree("scopes に失敗した: " + oneLine(err.Error()))
-			sv.last = c
-			return c, nil
-		}
-		sv.scopes = res.Scopes
+	if err := p.loadScopes(x); errors.Is(err, errStale) {
+		return ext.ViewComponent{}, err
+	} else if err != nil {
+		c = leafTree("scopes に失敗した: " + oneLine(err.Error()))
+		sv.last = c
+		return c, nil
 	}
 	if len(sv.scopes) == 0 {
 		c = leafTree("スコープが無い")
@@ -777,6 +768,30 @@ func (p *pane) buildScopes() (ext.ViewComponent, error) {
 	c = ext.ViewComponent{Kind: ext.ViewTree, Items: items}
 	sv.last, sv.lastReal, sv.lastFor = c, c, x.s
 	return c, nil
+}
+
+// loadScopes は、止まっているセッション x の選んでいるフレームのスコープ（scopes）を p.scopes.scopes に読む。同じセッションと世代で
+// 読んだものがあれば読み直さない（スコープの区画と行末の変数の値が同じものを使い、同じ request を 2 回送らない。FR-296）。
+// 読む前と読んでいる間に世代が進んだら errStale を返す。失敗したら、次に呼んだときに読み直す。
+func (p *pane) loadScopes(x sessionSnap) error {
+	sv := &p.scopes
+	if !sv.fresh(x) {
+		return nil
+	}
+	sv.scopes = nil
+	if x.s.gen.Load() != x.gen {
+		sv.vars = nil
+		return errStale
+	}
+	ctx, cancel := p.ctx()
+	defer cancel()
+	var res scopesResponse
+	if err := x.s.callGen(ctx, x.gen, "scopes", scopesArguments{FrameID: x.frame}, &res); err != nil {
+		sv.vars = nil
+		return err
+	}
+	sv.scopes = res.Scopes
+	return nil
 }
 
 // open は、項目 id を開いて出すかを返す。利用者が開閉していなければ def である。

@@ -31,6 +31,7 @@ import (
 // 今までの 1 組の設定（adapter、adapterID、launch）も読み続ける（legacySettings）。
 // ${input:ID} の問いの表 inputs（FR-298）は、.vscode/launch.json の inputs と同じ形で読む（inputs.go）。
 // ペインと区画の項目 ui（FR-108、FR-277、FR-278）は uiSettings で読む（pane.go）。
+// 行末の変数の値の項目 virtualText（FR-296）は vtSettings で読む（virtualtext.go）。
 
 // トランスポート（アダプターのつなぎ方。FR-279）の名前である。
 const (
@@ -77,6 +78,8 @@ type settings struct {
 	legacy *legacySettings
 	// ui は、ペインと区画の設定である（FR-108、FR-277、FR-278）。
 	ui uiSettings
+	// vt は、行末の変数の値の設定である（FR-296。virtualtext.go）。
+	vt vtSettings
 }
 
 // legacySettings は、今までの 1 組の設定（adapter、adapterID、launch）である。
@@ -118,7 +121,7 @@ func defaultLegacy() *legacySettings {
 func defaultSettings() settings {
 	return settings{
 		adapters: map[string]*adapterDef{}, configurations: map[string][]map[string]any{}, written: map[string][][]expand.Var{},
-		legacy: defaultLegacy(), ui: defaultUISettings(),
+		legacy: defaultLegacy(), ui: defaultUISettings(), vt: defaultVTSettings(),
 	}
 }
 
@@ -216,6 +219,13 @@ func parseSettings(data []byte) (settings, error) {
 			return s, err
 		}
 		s.ui = ui
+	}
+	if raw, ok := top["virtualText"]; ok && raw != nil {
+		vt, err := parseVTSettings(raw)
+		if err != nil {
+			return s, err
+		}
+		s.vt = vt
 	}
 	var raws struct {
 		Configurations map[string][]json.RawMessage `json:"configurations"`
