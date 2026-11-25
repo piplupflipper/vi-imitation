@@ -1,6 +1,7 @@
 package ext
 
 import (
+	"bytes"
 	"fmt"
 	"slices"
 	"strings"
@@ -120,6 +121,11 @@ type ViewComponent struct {
 	// 項目が後から届く部品（ファインダー）は、開いたときから true にしておくと、最初の項目が届いたときに窓の幅が変わらない。
 	// 欄を持つ部品の窓は、幅が設定の境目を超えるときだけ広げて右にプレビューを出す（基本設計 1.4 の「#288 のプレビュー」）。
 	Preview bool `json:"preview,omitempty"`
+	// Tail は、ViewText で、開いたとき（popup/open、pane/open）と view/update で、カーソルを最後の行に置くことを表す
+	// （API 0.20.0 で足した）。末尾に追従する表示（view/append で書き足す出力。FR-272）を、末尾から見せて追従させて始めるのに使う。
+	// ext/server の TextLog は、開き直す部品と付け替える部品に立てる。省くと、開いたときは先頭の行に置き、
+	// view/update では今までの規則（カーソルが最後の行にあれば最後の行）にする。他の種類では読まない。古い本体は読まずに捨てる。
+	Tail bool `json:"tail,omitempty"`
 }
 
 // ViewPreview は、一覧、木、ファインダーの項目 1 つの、プレビューに出すものである（FR-149。API 0.11.0 で足した）。
@@ -467,21 +473,42 @@ func (p *ViewAppendParams) Validate() error {
 	return nil
 }
 
-// Merge は、同じ部品（View と Child の組）への後の書き足し q を、p の後ろへつないで 1 件にする。
-// q の Highlights は p の Text の長さだけずらして足す。
-// つないだ Text が、それだけで ViewTextMaxLines を超える行を持つなら、古い行を捨てる。捨てた後の Text は改行で始め、
-// 本体の中身に当てたときに、書き足す前の中身の行（と最後の行に続けた行）も捨てられるようにする。
-// このため、つないで捨てた 1 件を当てた結果は、つながずに順に当てた結果と同じになる（本体が拡張機能の応答を待つ間に
-// 取っておく列で使う。基本設計 1.4 の「待ちの間」）。
-func (p *ViewAppendParams) Merge(q ViewAppendParams) {
-	shift := len(p.Text)
-	p.Text += q.Text
-	p.Highlights = slices.Clip(p.Highlights) // 呼び出し側の列の後ろへ書き込まない
-	for _, s := range q.Highlights {
-		p.Highlights = append(p.Highlights, ViewSpan{Start: s.Start + shift, End: s.End + shift, Style: s.Style})
+// ViewAppendJoin は、同じ部品（View と Child の組）への続く書き足しを、1 件につなぐ途中の状態である（ゼロ値は空）。
+// 本体が拡張機能の応答を待つ間に取っておく列と、拡張機能ごとの列と、ext/server の TextLog の開いている間の書き足しで使う
+// （基本設計 1.4 の「待ちの間」）。
+//
+// Add は足したテキストの長さに比例する手間で済む（つないだテキストの全体を写し直さない）。
+// つないだテキストの行数が上限の 2 倍を超えたときだけ古い行を捨てるので、捨てる手間も足した量にならして比例する。
+// Params は、つないだ 1 件を返す。つないだテキストが、それだけで ViewTextMaxLines を超える行を持つなら、古い行を捨てる。
+// 捨てた後のテキストは改行で始め、本体の中身に当てたときに、書き足す前の中身の行（と最後の行に続けた行）も捨てられるようにする。
+// このため、つないで捨てた 1 件を当てた結果は、つながずに順に当てた結果と同じになる。
+type ViewAppendJoin struct {
+	text []byte
+	hs   []ViewSpan
+	// newlines は、text の中の改行の数である。
+	newlines int
+}
+
+// Add は、書き足し 1 件（text と、その中の色の範囲 hs）を後ろへつなぐ。hs は text の長さだけずらして写すので、呼び出し側の列は変えない。
+func (j *ViewAppendJoin) Add(text string, hs []ViewSpan) {
+	shift := len(j.text)
+	j.text = append(j.text, text...)
+	for _, s := range hs {
+		j.hs = append(j.hs, ViewSpan{Start: s.Start + shift, End: s.End + shift, Style: s.Style})
 	}
-	n := strings.Count(p.Text, "\n") + 1
-	if strings.HasSuffix(p.Text, "\n") {
+	j.newlines += strings.Count(text, "\n")
+	if j.newlines > 2*ViewTextMaxLines {
+		j.trim()
+	}
+}
+
+// Len は、つないだテキストのバイト数を返す。
+func (j *ViewAppendJoin) Len() int { return len(j.text) }
+
+// trim は、つないだテキストの行数が ViewTextMaxLines を超えていれば、古い行を捨てて ViewTextMaxLines 行を残す。
+func (j *ViewAppendJoin) trim() {
+	n := j.newlines + 1
+	if len(j.text) > 0 && j.text[len(j.text)-1] == '\n' {
 		n--
 	}
 	d := ViewTextOverflow(n)
@@ -491,17 +518,24 @@ func (p *ViewAppendParams) Merge(q ViewAppendParams) {
 	// 捨てる d 行の最後の行の終わりの改行の位置から残す。
 	pos := -1
 	for range d {
-		pos += 1 + strings.IndexByte(p.Text[pos+1:], '\n')
+		pos += 1 + bytes.IndexByte(j.text[pos+1:], '\n')
 	}
-	p.Text = p.Text[pos:]
+	j.text = append([]byte(nil), j.text[pos:]...)
+	j.newlines -= d - 1 // 残した先頭の改行は数えたまま
 	var hs []ViewSpan
-	for _, s := range p.Highlights {
+	for _, s := range j.hs {
 		if s.End <= pos {
 			continue
 		}
 		hs = append(hs, ViewSpan{Start: max(s.Start-pos, 0), End: s.End - pos, Style: s.Style})
 	}
-	p.Highlights = hs
+	j.hs = hs
+}
+
+// Params は、つないだ書き足しを、部品 view と子 child への 1 件の params にして返す。
+func (j *ViewAppendJoin) Params(view ViewID, child string) ViewAppendParams {
+	j.trim()
+	return ViewAppendParams{View: view, Child: child, Text: string(j.text), Highlights: slices.Clone(j.hs)}
 }
 
 // ViewCloseParams は、view/close の params である。

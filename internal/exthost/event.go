@@ -373,16 +373,72 @@ type ViewClose struct {
 }
 
 // ViewAppend は、拡張機能からの view/append の通知である（FR-272）。読めないもの（ext.ViewAppendParams.Validate の誤り）は Host が捨てる。
-// Host は、同じ拡張機能の同じ部品（View と Child の組）への書き足しが、イベントループへ渡す前の列の末尾で続けば、
-// ext.ViewAppendParams.Merge で 1 件につなぐ（拡張機能ごとの列の上限に、出力の行の数で当たらないようにする）。
+// Host は、イベントループへ渡す前の列に、同じ拡張機能の同じ部品（View と Child の組）への書き足しがあり、その後に同じ部品への
+// view/update と view/close が無ければ、届いた書き足しをそれにつなぐ（Merge。拡張機能ごとの列の上限に、出力の行の数で当たらないようにする）。
+//
+// つないだ件の Params は、Flush を呼ぶまで古い。Host はイベントループへ渡す前に Flush を呼ぶ。
+// イベントループが取っておく列でさらにつないだときは、当てる前に Flush を呼ぶ。
 type ViewAppend struct {
 	Extension string
 	Params    ext.ViewAppendParams
+	// join は、Merge でつないだ途中の状態である。nil なら Params が中身である。
+	join *ext.ViewAppendJoin
 }
 
 // SameView は、a と b が同じ拡張機能の同じ部品（View と Child の組）への書き足しかを返す。
 func (a *ViewAppend) SameView(b *ViewAppend) bool {
 	return a.Extension == b.Extension && a.Params.View == b.Params.View && a.Params.Child == b.Params.Child
+}
+
+// Merge は、同じ部品への後の書き足し b を、a の後ろへつなぐ（ext.ViewAppendJoin）。手間は b の大きさに比例する。
+func (a *ViewAppend) Merge(b *ViewAppend) {
+	if a.join == nil {
+		a.join = &ext.ViewAppendJoin{}
+		a.join.Add(a.Params.Text, a.Params.Highlights)
+	}
+	b.Flush()
+	a.join.Add(b.Params.Text, b.Params.Highlights)
+}
+
+// Flush は、Merge でつないだ中身を Params に入れる。つないでいなければ何もしない。
+func (a *ViewAppend) Flush() {
+	if a.join == nil {
+		return
+	}
+	a.Params = a.join.Params(a.Params.View, a.Params.Child)
+	a.join = nil
+}
+
+// closesView は、ev が拡張機能 extID の部品 view の中身を置き換えるか閉じる通知（view/update か view/close）かを返す。
+// 同じ部品への書き足しを、それより前の書き足しにつながない境目である。
+func closesView(ev Event, extID string, view ext.ViewID) bool {
+	switch v := ev.(type) {
+	case *ViewUpdate:
+		return v.Extension == extID && v.Params.View == view
+	case *ViewClose:
+		return v.Extension == extID && v.Params.View == view
+	}
+	return false
+}
+
+// MergeInto は、列 events に、a と同じ部品への書き足しがあり、それより後に同じ部品への view/update と view/close が無ければ、
+// a をそれにつないで true を返す。列の中で隣り合っていなくてよい。accept が nil でなければ、accept が true を返す件だけを見る
+// （Host は、同じプロセスから届いた件だけを見る）。本体が取っておく列（internal/editor）も同じ規則でつなぐ（基本設計 1.4 の「待ちの間」）。
+func MergeInto[T any](events []T, ev func(T) Event, accept func(T) bool, a *ViewAppend) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		if accept != nil && !accept(events[i]) {
+			continue
+		}
+		e := ev(events[i])
+		if h, ok := e.(*ViewAppend); ok && h.SameView(a) {
+			h.Merge(a)
+			return true
+		}
+		if closesView(e, a.Extension, a.Params.View) {
+			return false
+		}
+	}
+	return false
 }
 
 // StateChange は、拡張機能の状態が変わったことを知らせる。
@@ -477,20 +533,12 @@ func (h *Host) pushLocked(ev Event, r *run) error {
 	return nil
 }
 
-// mergeAppendLocked は、列の末尾が、同じプロセス r から届いた同じ部品への書き足しなら、a をそれにつないで true を返す。
+// mergeAppendLocked は、列に、同じプロセス r から届いた同じ部品への書き足しがあり、それより後に同じ部品への view/update と
+// view/close が無ければ、a をそれにつないで true を返す（MergeInto）。列の中で隣り合っていなくてよいので、2 つの部品へ交互に
+// 書き足しても、列の件数は部品の数を超えて増えない。部品をまたいだ書き足しの順は変わるが、部品ごとの順は変わらない。
 // つないだ件はまだイベントループへ渡していない（pump は列から取り出してから渡す）ので、書き換えてよい。
-// 末尾でなければ（間に別のイベントがあれば）つながず、届いた順を変えない。
 func (h *Host) mergeAppendLocked(a *ViewAppend, r *run) bool {
-	n := len(h.queue)
-	if n == 0 || h.queue[n-1].r != r {
-		return false
-	}
-	last, ok := h.queue[n-1].ev.(*ViewAppend)
-	if !ok || !last.SameView(a) {
-		return false
-	}
-	last.Params.Merge(a.Params)
-	return true
+	return MergeInto(h.queue, func(q queued) Event { return q.ev }, func(q queued) bool { return q.r == r }, a)
 }
 
 // purgeLocked は、プロセス r から届いたイベントのうち、まだ渡していないものを捨てる。
@@ -530,6 +578,9 @@ func (h *Host) pump() {
 			q.r.queued--
 		}
 		h.mu.Unlock()
+		if a, ok := q.ev.(*ViewAppend); ok {
+			a.Flush() // 列から取り出したので、もうつながれない
+		}
 		select {
 		case h.events <- q.ev:
 		case <-h.ctx.Done():

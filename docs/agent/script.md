@@ -373,6 +373,8 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
 - `func (t *TextLog) Attached() (view ext.ViewID, child string, ok bool)`: 結びついた部品と子を返す。結びついていなければ ok が false である。
   部品が閉じた（view/closed を受けた）後と、別の写しが同じ部品に付け替えた後は、結びついていない。
 - `func (t *TextLog) Detach()`: 結びつきを外す。その後の Append は写しにだけ足す。
+  開き直している最中（Open が open を呼んでいる間）に呼ぶと、Open は open が戻っても結びつけず、その間の書き足しも送らない
+  （開いた部品は、拡張機能の側で閉じる）。
 - `func (t *TextLog) Open(open func(ext.ViewComponent) (ext.ViewID, error), child string) error`: 写しの中身を部品にして開き直し、開いた部品に結びつける。
 - `func (t *TextLog) Rebind(view ext.ViewID, child string) error`: 開いている部品 view に結びつけ直し、写しの中身で部品の中身を置き換える。
   錠の中で、前の結びつきと、同じ部品に結びついていた別の写しを外し、写しの中身を部品にした view/update を送り、結びつける。

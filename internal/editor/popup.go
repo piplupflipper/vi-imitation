@@ -154,6 +154,9 @@ type floatState struct {
 	// バッファの行は末尾の改行の後の空の行を持たないので、次の view/append を最後の行に続けるか、新しい行から始めるかをここで覚える
 	// （viewappend.go。FR-272）。開いたときと view/update のたびに決め直す。
 	textEOL bool
+	// decsOwned は、部品のバッファの色の範囲の一覧（popupDecorationOwner）が、view/append で写し取った自分の列であることを表す。
+	// 自分の列なら、書き足した範囲をその後ろへ足す（viewappend.go）。開いたときと view/update のたびに false に戻す。
+	decsOwned bool
 }
 
 // popupDecorationOwner は、ポップアップの部品の色を付ける範囲を、バッファの構文の色に入れるときの持ち主の名前である。
@@ -1006,7 +1009,8 @@ func (e *Editor) drawFloatContent(f *floatState, c ext.ViewComponent) {
 	}
 	// テキストで、カーソルが最後の行にあれば（末尾を見ていれば）、書き足した後も最後の行へ置き、表示が末尾を追うようにする
 	// （デバッグ対象の出力と ACP の返答のペイン。FR-108、FR-111。PR #248 のレビューの推奨 2）。
-	follow := f.kind == floatText && cursor.Line >= f.bs.buf.LineCount()-1
+	// ext.ViewComponent.Tail なら、カーソルの位置に依らず最後の行へ置く（写しの付け替え。FR-272）。
+	follow := f.kind == floatText && (cursor.Line >= f.bs.buf.LineCount()-1 || c.Tail)
 	lines, rows, decs := floatLines(c, f.expanded, e.itemIcons(f.iconColumnFor(c.Items)))
 	f.rows = rows
 	e.reload(f.bs, buffer.New(floatBufferText(lines)))
@@ -1029,6 +1033,7 @@ func (e *Editor) drawFloatContent(f *floatState, c ext.ViewComponent) {
 	if c.Kind == ext.ViewText {
 		f.textEOL = strings.HasSuffix(c.Text, "\n")
 	}
+	f.decsOwned = false
 	e.setPopupDecorations(f.bs, decs)
 }
 
@@ -1072,6 +1077,11 @@ func (e *Editor) newComponentFloat(c ext.ViewComponent, extID string) *floatStat
 	}
 	if i := cursorRow(c, rows); i >= 0 {
 		f.bs.state.SetCursor(buffer.Position{Line: i})
+	}
+	if c.Kind == ext.ViewText && c.Tail {
+		// 末尾から見せて追従させて始める（写しから開き直した出力。FR-272、FR-273）。
+		// req: FR-273
+		f.bs.state.SetCursor(buffer.Position{Line: f.bs.buf.LineCount() - 1})
 	}
 	return f
 }

@@ -18,6 +18,10 @@ import (
 type decorationSet struct {
 	version     ext.Version
 	decorations []ext.Decoration
+	// shift は、decorations の行の番号から差し引く行数である。テキストの部品の先頭の行を捨てたとき（view/append。FR-272）に、
+	// 一覧の全体を作り直さずに位置をずらすのに使う（viewappend.go）。差し引いて負になる範囲は、表を作るときに捨てるか切り詰める。
+	// 拡張機能の decoration/set では 0 である。
+	shift int
 }
 
 // outputKey は、出力の欄を見分ける、拡張機能と欄の名前の組である（output/append）。
@@ -264,6 +268,8 @@ func (bs *bufferState) removeDecorations(extID string) {
 type decoSource struct {
 	ext  string
 	decs []ext.Decoration
+	// shift は、decorationSet.shift である。
+	shift int
 	// gen は、作り始めたときの、この拡張機能の一覧の世代の番号（bufferState.decoGen）である。
 	gen uint64
 }
@@ -282,7 +288,7 @@ type decoBuilt struct {
 func (bs *bufferState) decoSources() []decoSource {
 	src := make([]decoSource, 0, len(bs.decorations))
 	for id, ds := range bs.decorations {
-		src = append(src, decoSource{ext: id, decs: ds.decorations, gen: bs.decoGen[id]})
+		src = append(src, decoSource{ext: id, decs: ds.decorations, shift: ds.shift, gen: bs.decoGen[id]})
 	}
 	sort.Slice(src, func(i, j int) bool { return src[i].ext < src[j].ext })
 	return src
@@ -292,7 +298,7 @@ func (bs *bufferState) decoSources() []decoSource {
 // 一覧は受け取った後に変えないので、スライスの先頭の位置と長さで比べれば足りる。
 func sameSources(a, b []decoSource) bool {
 	return slices.EqualFunc(a, b, func(x, y decoSource) bool {
-		return x.ext == y.ext && x.gen == y.gen && len(x.decs) == len(y.decs) && (len(x.decs) == 0 || &x.decs[0] == &y.decs[0])
+		return x.ext == y.ext && x.gen == y.gen && x.shift == y.shift && len(x.decs) == len(y.decs) && (len(x.decs) == 0 || &x.decs[0] == &y.decs[0])
 	})
 }
 
@@ -335,6 +341,16 @@ func buildDecorations(src []decoSource, lines int) *ui.Decorations {
 	return ui.NewDecorationsSeq(func(yield func(ui.Highlight) bool) {
 		for _, s := range src {
 			for _, d := range s.decs {
+				if s.shift > 0 {
+					if d.Range.End.Line < s.shift {
+						continue
+					}
+					if d.Range.Start.Line < s.shift {
+						d.Range.Start = ext.Position{Line: s.shift}
+					}
+					d.Range.Start.Line -= s.shift
+					d.Range.End.Line -= s.shift
+				}
 				h := ui.Highlight{Range: fromExtRange(d.Range), Style: d.Style}
 				if d.Attr != nil {
 					h.Attr = cachedAttr(attrs, d.Attr)

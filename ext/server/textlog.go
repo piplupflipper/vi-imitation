@@ -88,7 +88,9 @@ type TextLog struct {
 	child string
 	// opening は、Open が open を呼んでいる間であることを表す。pending は、その間に書き足した分を 1 件につないだものである。
 	opening bool
-	pending *ext.ViewAppendParams
+	pending *ext.ViewAppendJoin
+	// detached は、Open が open を呼んでいる間に Detach を呼んだことを表す。Open は、open が戻っても結びつけない。
+	detached bool
 }
 
 // NewTextLog は、s の上の空の写しを作る。行数の上限は本体と同じ値（ext.ViewTextMaxLines）である。
@@ -118,10 +120,9 @@ func (t *TextLog) Append(text, style string) error {
 	t.add(p.Text, p.Highlights)
 	if t.opening {
 		if t.pending == nil {
-			t.pending = &p
-		} else {
-			t.pending.Merge(p)
+			t.pending = &ext.ViewAppendJoin{}
 		}
+		t.pending.Add(p.Text, p.Highlights)
 		return nil
 	}
 	return t.sendLocked(p)
@@ -163,7 +164,7 @@ func (t *TextLog) sendLocked(p ext.ViewAppendParams) error {
 
 // component は、写しの中身をテキストの部品にする。t.mu を持って呼ぶ。
 func (t *TextLog) component() ext.ViewComponent {
-	c := ext.ViewComponent{Kind: ext.ViewText, Text: ext.JoinViewText(t.lines, t.eol)}
+	c := ext.ViewComponent{Kind: ext.ViewText, Text: ext.JoinViewText(t.lines, t.eol), Tail: true}
 	for i, ss := range t.spans {
 		for _, s := range ss {
 			c.Highlights = append(c.Highlights, ext.Decoration{
@@ -214,7 +215,8 @@ func (t *TextLog) bindLocked(view ext.ViewID, child string) bool {
 // view/append で送ってから印を下ろす。部品の中身は open に渡した時点の写しなので、積んだ書き足しを送ると、抜けも重なりも無い。
 //
 // open が誤りを返したら、結びつけずに印を下ろしてその誤りを返す（積んだ書き足しは写しに入っているので捨てない）。
-// open が戻る前に部品が閉じていたら（view/closed が先に届いたら）、結びつけない。
+// open が戻る前に部品が閉じていたら（view/closed が先に届いたら）、結びつけない。open の間に Detach を呼んでいても結びつけない。
+// 渡す部品は、末尾から見せて追従する印（ext.ViewComponent.Tail）を立てる。開き直した表示は、閉じる前と同じく末尾に追従する。
 // 開き直している最中に Open か Rebind を呼ぶと ErrOpening を返す。
 // open の中で Server のハンドラーの ctx で OpenPane を呼ぶと ErrEditInHandler になるので、Open はフックの外から呼ぶ。
 //
@@ -227,7 +229,7 @@ func (t *TextLog) Open(open func(ext.ViewComponent) (ext.ViewID, error), child s
 	}
 	t.unbindLocked()
 	c := t.component()
-	t.opening = true
+	t.opening, t.detached = true, false
 	t.mu.Unlock()
 
 	id, err := open(c)
@@ -240,14 +242,17 @@ func (t *TextLog) Open(open func(ext.ViewComponent) (ext.ViewID, error), child s
 	if err != nil {
 		return err
 	}
+	if t.detached {
+		t.detached = false
+		return nil
+	}
 	l := &t.s.textLogs
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if !t.bindLocked(id, child) || pending == nil {
 		return nil
 	}
-	pending.View, pending.Child = id, child
-	return t.s.notify(ext.MethodViewAppend, *pending)
+	return t.s.notify(ext.MethodViewAppend, pending.Params(id, child))
 }
 
 // Rebind は、開いている部品 view に結びつけ直し、写しの中身で部品の中身を置き換える。
@@ -277,9 +282,14 @@ func (t *TextLog) Rebind(view ext.ViewID, child string) error {
 }
 
 // Detach は、結びつきを外す。その後の Append は写しにだけ足す。
+// 開き直している最中（Open が open を呼んでいる間）に呼ぶと、Open は open が戻っても結びつけず、その間の書き足しも送らない
+// （開いた部品は、拡張機能の側で閉じる）。
 func (t *TextLog) Detach() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.opening {
+		t.detached = true
+	}
 	t.unbindLocked()
 }
 

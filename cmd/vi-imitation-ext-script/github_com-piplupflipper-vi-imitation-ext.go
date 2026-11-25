@@ -270,6 +270,7 @@ func init() {
 		"TextObjectResolveResult": reflect.ValueOf((*ext.TextObjectResolveResult)(nil)),
 		"Transaction":             reflect.ValueOf((*ext.Transaction)(nil)),
 		"Version":                 reflect.ValueOf((*ext.Version)(nil)),
+		"ViewAppendJoin":          reflect.ValueOf((*ext.ViewAppendJoin)(nil)),
 		"ViewAppendParams":        reflect.ValueOf((*ext.ViewAppendParams)(nil)),
 		"ViewCloseParams":         reflect.ValueOf((*ext.ViewCloseParams)(nil)),
 		"ViewClosedParams":        reflect.ValueOf((*ext.ViewClosedParams)(nil)),

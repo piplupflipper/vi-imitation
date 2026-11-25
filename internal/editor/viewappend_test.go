@@ -9,6 +9,8 @@ import (
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
+	"github.com/piplupflipper/vi-imitation/internal/command"
+	"github.com/piplupflipper/vi-imitation/internal/editcmd"
 	"github.com/piplupflipper/vi-imitation/internal/exthost"
 )
 
@@ -27,7 +29,8 @@ func appendTo(e *Editor, f *floatState, text string, hs ...ext.ViewSpan) {
 // popupDecs は、部品のバッファの色の範囲を "行:始め-終わり:色" の列にする。
 func popupDecs(f *floatState) []string {
 	var out []string
-	for _, d := range f.bs.decorations[popupDecorationOwner].decorations {
+	ds := f.bs.decorations[popupDecorationOwner]
+	for _, d := range unshiftDecorations(ds.decorations, ds.shift) {
 		out = append(out, fmt.Sprintf("%d:%d-%d:%s", d.Range.Start.Line, d.Range.Start.Byte, d.Range.End.Byte, d.Style))
 	}
 	return out
@@ -93,6 +96,81 @@ func TestViewAppend(t *testing.T) {
 		appendTo(e, g, "b")
 		if got := g.bs.buf.Text(); got != "a\n\nb" {
 			t.Errorf("append after an empty line: %q", got)
+		}
+		e.closeFloat(false)
+	})
+}
+
+// 写しから開き直した部品（ext.ViewComponent.Tail）は、カーソルを最後の行に置いて始め、書き足すたびに末尾に追従する
+// （PR #405 のレビューの必須 2）。view/update でも Tail なら最後の行へ置く。
+//
+// req: FR-272, FR-273
+func TestViewAppendTail(t *testing.T) {
+	h := start(t, Config{})
+	h.e.do(func() {
+		e := h.e
+		f := e.newComponentFloat(ext.ViewComponent{Kind: ext.ViewText, Text: "a\nb\nc\n", Tail: true}, "fake")
+		f.center = true
+		e.openFloat(f)
+		if c := f.bs.state.Cursor(); c.Line != 2 {
+			t.Fatalf("cursor after opening with Tail = %v", c)
+		}
+		appendTo(e, f, "d\n")
+		if c := f.bs.state.Cursor(); c.Line != 3 {
+			t.Errorf("cursor did not follow after opening with Tail: %v", c)
+		}
+		f.bs.state.SetCursor(buffer.Position{})
+		e.setFloatContent(f, ext.ViewComponent{Kind: ext.ViewText, Text: "x\ny\nz", Tail: true})
+		if c := f.bs.state.Cursor(); c.Line != 2 {
+			t.Errorf("cursor after view/update with Tail = %v", c)
+		}
+		// Tail の無いテキストの部品は、今までどおり先頭の行から始める。
+		e.closeFloat(false)
+		g := openTestText(e, "a\nb\nc", nil)
+		if c := g.bs.state.Cursor(); c.Line != 0 {
+			t.Errorf("cursor without Tail = %v", c)
+		}
+		e.closeFloat(false)
+	})
+}
+
+// ビジュアルモードの間と、キーの列の途中（オペレーターの後のモーションを待つ間）は、最後の行にあっても追従しない。
+// 選択とオペレーターの範囲が、書き足した分だけ広がらないようにするためである（PR #405 のレビューの推奨 2）。
+//
+// req: FR-272
+func TestViewAppendNoFollowWhileSelecting(t *testing.T) {
+	h := start(t, Config{})
+	h.e.do(func() {
+		e := h.e
+		f := openTestText(e, "a\nb", nil)
+		f.bs.state.SetCursor(buffer.Position{Line: 1})
+		f.bs.state.FeedUnrecorded(editcmd.Rune('V'))
+		if m := f.bs.state.Mode(); m != command.ModeVisualLine {
+			t.Fatalf("mode = %v", m)
+		}
+		appendTo(e, f, "\nc\nd")
+		if c := f.bs.state.Cursor(); c.Line != 1 {
+			t.Errorf("cursor followed in visual mode: %v", c)
+		}
+		f.bs.state.FeedUnrecorded(editcmd.Esc)
+		f.bs.state.FeedUnrecorded(editcmd.Rune('G'))
+		f.bs.state.FeedUnrecorded(editcmd.Rune('y'))
+		if !f.bs.state.Pending() {
+			t.Fatalf("y is not pending")
+		}
+		appendTo(e, f, "\ne")
+		if c := f.bs.state.Cursor(); c.Line != 3 {
+			t.Errorf("cursor followed while an operator is pending: %v", c)
+		}
+		f.bs.state.FeedUnrecorded(editcmd.Esc)
+		appendTo(e, f, "\nf")
+		if c := f.bs.state.Cursor(); c.Line != 3 {
+			t.Errorf("cursor moved after leaving the operator: %v", c)
+		}
+		f.bs.state.FeedUnrecorded(editcmd.Rune('G'))
+		appendTo(e, f, "\ng")
+		if c := f.bs.state.Cursor(); c.Line != 6 {
+			t.Errorf("cursor did not follow after G: %v", c)
 		}
 		e.closeFloat(false)
 	})
@@ -187,8 +265,7 @@ func TestViewAppendMatchesModel(t *testing.T) {
 // 待ちの間に取っておく view/append は、上限で捨てる通知に数えず、同じ部品への続く書き足しを 1 件につなぐ。
 // 間に同じ部品への view/update か view/close があれば、その後ろに新しい件を置く。
 // つなげない書き足しだけで上限を超えたら、届いた書き足しを捨て、処理し終えたときに、その部品の末尾に捨てたことを表す行を足す。
-//
-// req: FR-272
+// 基本設計 1.4 の「待ちの間」の取り決めで、FR-272 の文の振る舞いではないので、req の注釈は付けない。
 func TestHoldViewAppend(t *testing.T) {
 	h := start(t, Config{Host: exthost.Config{MaxQueuedEvents: 4}})
 	h.e.do(func() {
@@ -206,6 +283,7 @@ func TestHoldViewAppend(t *testing.T) {
 		for _, ev := range e.held {
 			switch v := ev.(type) {
 			case *exthost.ViewAppend:
+				v.Flush()
 				got = append(got, fmt.Sprintf("append %d %q %v", v.Params.View, v.Params.Text, v.Params.Highlights))
 			default:
 				got = append(got, fmt.Sprintf("%T", ev))

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // textModel は、テストで書き足しを当てる中身である。本体（internal/editor）と写し（ext/server の TextLog）と同じ手順で当てる。
@@ -160,26 +161,29 @@ func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
 // 取っておく列で同じ部品への書き足しをつないだ 1 件を当てた結果は、つながずに順に当てた結果と同じである。
 // つないだテキストが行数の上限を超えて古い行を捨てても同じになる（PR #401 のレビューの必須 4）。
-//
-// req: FR-272
+// 取っておく列でつなぐのは基本設計 1.4 と 5.3 の取り決めで、FR-272 の文の振る舞いではないので、req の注釈は付けない。
 func TestViewAppendMerge(t *testing.T) {
 	r := rand.New(rand.NewPCG(3, 4)) //nolint:gosec // 再現できる試験の入力を作る
 	lines := func(n int, tag string) string {
 		var sb strings.Builder
 		for i := range n {
 			sb.WriteString(tag)
-			if i%7 == 0 {
+			if i%7 == 0 && n > 1 {
 				sb.WriteString(strings.Repeat("y", 5000))
 			}
 			sb.WriteByte('\n')
 		}
 		return sb.String()
 	}
-	for _, sizes := range [][]int{{1, 2}, {6000, 6000}, {12000, 3}, {3, 12000}, {5000, 5000, 5000}} {
+	many := make([]int, 21000) // 1 行ずつ 21000 回つなぐ（上限の 2 倍を超えたところで途中の切り詰めが起きる）
+	for i := range many {
+		many[i] = 1
+	}
+	for _, sizes := range [][]int{{1, 2}, {6000, 6000}, {12000, 3}, {3, 12000}, {5000, 5000, 5000}, {11000, 11000}, many} {
 		for _, start := range []string{"", "open", "done\n"} {
 			var parts []ViewAppendParams
 			for i, n := range sizes {
-				text := lines(n, string(rune('a'+i)))
+				text := lines(n, string(rune('a'+i%26)))
 				if r.IntN(2) == 0 {
 					text = strings.TrimSuffix(text, "\n") // 改行で終わらない書き足しも混ぜる
 				}
@@ -189,10 +193,11 @@ func TestViewAppendMerge(t *testing.T) {
 			for _, p := range parts {
 				seq.append(p.Text, p.Highlights)
 			}
-			merged := parts[0]
-			for _, p := range parts[1:] {
-				merged.Merge(p)
+			var j ViewAppendJoin
+			for _, p := range parts {
+				j.Add(p.Text, p.Highlights)
 			}
+			merged := j.Params(1, "")
 			if err := merged.Validate(); err != nil {
 				t.Fatalf("merged: %v", err)
 			}
@@ -206,13 +211,38 @@ func TestViewAppendMerge(t *testing.T) {
 			}
 		}
 	}
-	// Merge は、元の Highlights の列の後ろへ書き込まない。
+	// つないだ件は、呼び出し側の列の後ろへ書き込まない。
 	base := make([]ViewSpan, 1, 4)
 	base[0] = ViewSpan{Start: 0, End: 1, Style: "a"}
-	p := ViewAppendParams{Text: "x", Highlights: base[:1]}
-	p.Merge(ViewAppendParams{Text: "y", Highlights: []ViewSpan{{Start: 0, End: 1, Style: "b"}}})
+	var j ViewAppendJoin
+	j.Add("x", base[:1])
+	j.Add("y", []ViewSpan{{Start: 0, End: 1, Style: "b"}})
 	if got := base[:2][1]; got != (ViewSpan{}) {
-		t.Errorf("Merge wrote into the caller's array: %v", got)
+		t.Errorf("Add wrote into the caller's array: %v", got)
+	}
+	if p := j.Params(3, "c"); p.Text != "xy" || p.View != 3 || p.Child != "c" || len(p.Highlights) != 2 || p.Highlights[1].Start != 1 {
+		t.Errorf("Params = %+v", p)
+	}
+}
+
+// つなぐ手間は、つないだ全体でなく、足した量に比例する（PR #405 のレビューの推奨 4）。
+// 1 行ずつ 3 万回つなぐ間の 1 回あたりの時間が、最初の 1 万回と最後の 1 万回で大きく変わらないことで確かめる。
+func TestViewAppendJoinLinear(t *testing.T) {
+	line := strings.Repeat("x", 999) + "\n"
+	hs := []ViewSpan{{Start: 0, End: 3, Style: "s"}}
+	var j ViewAppendJoin
+	measure := func(n int) time.Duration {
+		start := time.Now()
+		for range n {
+			j.Add(line, hs)
+		}
+		return time.Since(start)
+	}
+	first := measure(10000)
+	_ = measure(10000)
+	last := measure(10000)
+	if last > 10*first+50*time.Millisecond {
+		t.Errorf("join slows down: first 10000 adds %v, last 10000 adds %v", first, last)
 	}
 }
 

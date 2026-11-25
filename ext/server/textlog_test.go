@@ -316,6 +316,36 @@ func TestTextLog(t *testing.T) {
 	if got := vh.text(view3); !strings.HasSuffix(got, "hidden\ndetached\nduring\nopening\n") {
 		t.Errorf("after Open: %q", got)
 	}
+
+	// 開き直している最中に Detach を呼ぶと、open が戻っても結びつけない（PR #405 のレビューの推奨 1）。
+	var tail bool
+	if err := log.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
+		tail = c.Tail
+		log.Detach()
+		_ = log.Append("while detaching\n", "")
+		return openPane(s)(c)
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !tail {
+		t.Errorf("Open did not ask to start at the tail")
+	}
+	if v, _, ok := log.Attached(); ok {
+		t.Errorf("attached to %d after Detach during Open", v)
+	}
+	sent = vh.count()
+	_ = log.Append("after detach\n", "")
+	vh.sync(t)
+	if vh.count() != sent {
+		t.Errorf("sent a view/append after Detach during Open: %s", vh.last().Params)
+	}
+	// その後の Open は、また結びつける。
+	if err := log.Open(openPane(s), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := log.Attached(); !ok {
+		t.Errorf("not attached after the next Open")
+	}
 }
 
 // 写しは本体と同じ上限で古い行を捨てるので、開き直した中身は、本体が閉じる前に出していた中身と同じである。

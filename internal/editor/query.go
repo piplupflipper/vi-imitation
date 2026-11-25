@@ -286,28 +286,10 @@ func (e *Editor) hold(ev exthost.Event) (redraw bool) {
 // view/update と view/close が無ければ、a をその書き足しにつないで true を返す（基本設計 1.4 の「待ちの間」。PR #401 のレビューの必須 4）。
 // 列の中で隣り合っていなくてよく、間にほかの部品やほかの通知があってもつなぐ。
 // 書き足しは差分なので、1 件でも捨てると本体の中身が欠ける。つなぐので、列の書き足しの件数は出力の行の数に比例しない。
-// つないだテキストが行数の上限を超えたら、ext.ViewAppendParams.Merge が古い行を捨てる（当てた結果は、つながずに当てたときと同じ）。
-//
-// req: FR-272
+// つないだテキストが行数の上限を超えたら、ext.ViewAppendJoin が古い行を捨てる（当てた結果は、つながずに当てたときと同じ）。
+// つないだ件は、当てる前に exthost.ViewAppend.Flush で中身を params に入れる（viewAppend）。
 func (e *Editor) mergeHeldAppend(a *exthost.ViewAppend) bool {
-	for i := len(e.held) - 1; i >= 0; i-- {
-		switch h := e.held[i].(type) {
-		case *exthost.ViewAppend:
-			if h.SameView(a) {
-				h.Params.Merge(a.Params)
-				return true
-			}
-		case *exthost.ViewUpdate:
-			if h.Extension == a.Extension && h.Params.View == a.Params.View {
-				return false
-			}
-		case *exthost.ViewClose:
-			if h.Extension == a.Extension && h.Params.View == a.Params.View {
-				return false
-			}
-		}
-	}
-	return false
+	return exthost.MergeInto(e.held, func(ev exthost.Event) exthost.Event { return ev }, nil, a)
 }
 
 // trackDeferred は、Feed などが保留した操作 d を、送った問い合わせと結びつける。

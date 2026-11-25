@@ -65,7 +65,7 @@ const (
 	methodNotify      = "test/notify"      // decoration/set、message/show、progress/report を送る
 	methodGarbage     = "test/garbage"     // JSON-RPC として解釈できないメッセージを標準出力へ書く
 	methodFlood       = "test/flood"       // message/show を params の数だけ送る
-	methodAppendFlood = "test/appendFlood" // 部品 1 への view/append を params の数だけ送る（"0\n"、"1\n" ...）
+	methodAppendFlood = "test/appendFlood" // 部品 1 と 2 へ交互に view/append を params の数だけ送る（"0\n"、"1\n" ...）。100 件ごとに message/show を挟む
 	methodEnv         = "test/env"         // 環境変数 ext.EnvExtensionDir と ext.EnvMCPSocket の値と作業ディレクトリを返す
 )
 
@@ -302,7 +302,11 @@ func (f *fakeExt) request(ctx context.Context, req *rpc.Request, reply rpc.Repli
 		var n int
 		_ = json.Unmarshal(req.Params, &n)
 		for i := range n {
-			_ = f.conn.Notify(ext.MethodViewAppend, ext.ViewAppendParams{View: 1, Text: fmt.Sprintf("%d\n", i)})
+			_ = f.conn.Notify(ext.MethodViewAppend, ext.ViewAppendParams{View: ext.ViewID(1 + i%2), Text: fmt.Sprintf("%d\n", i)})
+			if i%100 == 0 {
+				// 間にほかの通知を挟んでも、同じ部品への書き足しはつなぐ。
+				_ = f.conn.Notify(ext.MethodMessageShow, ext.MessageShowParams{Level: ext.MessageInfo, Text: fmt.Sprint(i)})
+			}
 		}
 		_ = reply(nil, nil)
 	default:

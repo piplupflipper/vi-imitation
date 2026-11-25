@@ -6,6 +6,7 @@ import (
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
+	"github.com/piplupflipper/vi-imitation/internal/command"
 	"github.com/piplupflipper/vi-imitation/internal/exthost"
 )
 
@@ -19,6 +20,7 @@ const appendLostNote = "（書き足しの一部を捨てました）"
 // 知らない部品、閉じた部品、テキストでない部品への書き足しと、切り替えの部品の子（Child）を指す書き足しは捨てる
 // （切り替えの部品はまだ無いので、子はどれも知らない子である）。
 func (e *Editor) viewAppend(ev *exthost.ViewAppend) {
+	ev.Flush() // 取っておく列でつないだ中身を params に入れる
 	if ev.Params.Child != "" {
 		return
 	}
@@ -37,6 +39,11 @@ func (e *Editor) viewAppend(ev *exthost.ViewAppend) {
 // 書き足す前にカーソルが最後の行にあれば、書き足した後の最後の行へカーソルを動かす（末尾に追従する）。
 // 最後の行より上にあれば、カーソルと見ている行を動かさない。古い行を捨てたときは、カーソルの行と窓の最初の行を捨てた行数だけずらし、
 // カーソルの行が捨てた範囲にあれば最初の行に置く。
+// ビジュアルモードの間と、キーの列の途中（オペレーターの後のモーションを待つ間など）は、最後の行にあっても追従しない。
+// 選択とオペレーターの範囲が、書き足した分だけ広がらないようにするためである（PR #405 のレビューの推奨 2）。
+//
+// 色の範囲は、部品の一覧（decorationSet）の後ろへ足し、先頭の行を捨てたときは一覧を作り直さずに shift を増やす。
+// 1 件の手間が、部品の色の範囲の数でなく、書き足した量と捨てた範囲の数に比例するようにするためである（同じレビューの推奨 3）。
 //
 // req: FR-272
 func (e *Editor) appendFloatText(f *floatState, text string, spans []ext.ViewSpan) {
@@ -45,16 +52,24 @@ func (e *Editor) appendFloatText(f *floatState, text string, spans []ext.ViewSpa
 	lastIdx := b.LineCount() - 1
 	last := b.Line(lastIdx)
 	cursor := bs.state.Cursor()
-	follow := cursor.Line >= lastIdx
-	// 持っている列は描き方の表を作る側も読むので、後ろへ書き込まない。
-	decs := slices.Clip(bs.decorations[popupDecorationOwner].decorations)
+	mode := bs.state.Mode()
+	follow := cursor.Line >= lastIdx && mode != command.ModeVisual && mode != command.ModeVisualLine && !bs.state.Pending()
+	ds := bs.decorations[popupDecorationOwner]
+	decs, shift := ds.decorations, ds.shift
+	if !f.decsOwned {
+		// 開いたときと view/update の一覧は、ほかと共有しうる列なので、最初に足すときに写す。以後は自分の列の後ろへ足す。
+		// 後ろへ足しても、描き方の表を作る側が持つ前の一覧（長さが短い）の中は書き換えない。
+		decs = slices.Clip(decs)
+		f.decsOwned = true
+	}
 	changedDecs := false
 
 	// 最後の行が 1 行の上限より長い（開いたときの中身のまま）ときだけ、続けた行を分ける位置が最後の行の中に来るので、
 	// 最後の行の色の範囲も分け直す。上限以下なら、分ける位置は書き足したテキストの中に来て、最後の行の色の位置は変わらない。
 	var lastSpans []ext.ViewSpan
 	if !f.textEOL && len(last) > ext.ViewTextMaxLineBytes && len(decs) > 0 {
-		decs, lastSpans = splitLastLineDecorations(decs, b, lastIdx)
+		decs, lastSpans = splitLastLineDecorations(unshiftDecorations(decs, shift), b, lastIdx)
+		shift = 0
 		changedDecs = true
 	}
 	lines, lineSpans, eolAfter := ext.AppendViewText(last, lastSpans, f.textEOL, text, spans)
@@ -81,20 +96,31 @@ func (e *Editor) appendFloatText(f *floatState, text string, spans []ext.ViewSpa
 	f.textEOL = eolAfter
 
 	for i, ss := range lineSpans {
+		line := first + i + shift // 一覧の行の番号は、shift を足した番号で持つ
 		for _, s := range ss {
 			decs = append(decs, ext.Decoration{
-				Range: ext.Range{Start: ext.Position{Line: first + i, Byte: s.Start}, End: ext.Position{Line: first + i, Byte: s.End}},
+				Range: ext.Range{Start: ext.Position{Line: line, Byte: s.Start}, End: ext.Position{Line: line, Byte: s.End}},
 				Style: s.Style,
 			})
 			changedDecs = true
 		}
 	}
 	if drop > 0 && len(decs) > 0 {
-		decs = dropDecorationLines(decs, drop)
+		// 捨てた行の中だけの範囲を先頭から外す。書き足した範囲は行の順に並ぶので、外す手間は捨てた範囲の数に比例する。
+		// 開いたときの一覧の中で順に並ばない範囲が残っても、表を作るときに捨てる（buildDecorations）。
+		shift += drop
+		for len(decs) > 0 && decs[0].Range.End.Line < shift {
+			decs = decs[1:]
+		}
 		changedDecs = true
 	}
 	if changedDecs {
-		e.setPopupDecorations(bs, decs)
+		if len(decs) == 0 {
+			bs.removeDecorations(popupDecorationOwner)
+		} else {
+			bs.decorations[popupDecorationOwner] = decorationSet{version: ext.Version(b.Version()), decorations: decs, shift: shift}
+		}
+		e.rebuildDecorations(bs)
 	}
 
 	n := b.LineCount()
@@ -142,9 +168,9 @@ func splitLastLineDecorations(decs []ext.Decoration, b *buffer.Buffer, lastIdx i
 	return before, last
 }
 
-// dropDecorationLines は、先頭の drop 行を捨てた後の行の位置へ、色を付ける範囲 decs をずらした新しい列を返す。
-// 捨てた行の中だけの範囲は捨て、捨てた行から続く範囲は残った最初の行の先頭から始める。
-func dropDecorationLines(decs []ext.Decoration, drop int) []ext.Decoration {
+// unshiftDecorations は、行の番号に drop を足して持つ色の範囲 decs（decorationSet.shift）を、バッファの行の番号にした新しい列を返す。
+// 負になる行の中だけの範囲は捨て、負の行から続く範囲は最初の行の先頭から始める（buildDecorations と同じ規則）。
+func unshiftDecorations(decs []ext.Decoration, drop int) []ext.Decoration {
 	out := make([]ext.Decoration, 0, len(decs))
 	for _, d := range decs {
 		if d.Range.End.Line < drop {
