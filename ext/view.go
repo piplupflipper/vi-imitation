@@ -616,6 +616,8 @@ type PaneOpenResult struct {
 // 子の部品の種類が開いたときと違うか、知らない子なら捨てる。Child が無ければ部品の全体を置き換え、同じ ID の子は状態を保ったまま
 // 中身を置き換え、無くなった ID の子は捨て、新しい ID の子は作る。Selected を書けばその子を選び（view/childSelect は送らない）、
 // 書かなければ選んでいる子を保つ。子を並べ直したときは、見出しの行の並びも替える。
+// Component を children の無い switcher にして Selected だけを書くと、子の中身を変えずに選ぶ子だけを替える（SelectsOnly）。
+// 全体の置き換えは、テキストと console の子の中身（書き足した出力）も送った中身で置き換えるので、選ぶ子だけを替えるときはこの形を使う。
 type ViewUpdateParams struct {
 	View      ViewID        `json:"view"`
 	Component ViewComponent `json:"component"`
@@ -625,11 +627,29 @@ type ViewUpdateParams struct {
 }
 
 // Validate は、Component を検査する。Child があれば、Component が切り替えの部品の子にできる種類であることも検査する。
+// 選ぶ子だけを替える形（SelectsOnly）は、Selected のほかを持たないことを検査する。
 func (p *ViewUpdateParams) Validate() error {
 	if p.Child != "" && !p.Component.Kind.ChildKind() {
 		return fmt.Errorf("child のある view/update の component.kind %q は switcher の子にできない", p.Component.Kind)
 	}
+	if p.Child == "" && p.Component.Kind == ViewSwitcher && len(p.Component.Children) == 0 {
+		c := p.Component
+		switch {
+		case c.Selected == "":
+			return fmt.Errorf("children の無い switcher の view/update は selected が要る")
+		case c.Title != "" || c.Text != "" || len(c.Highlights) > 0 || len(c.Items) > 0 || c.Input != "" || c.Prompt != "" || len(c.History) > 0:
+			return fmt.Errorf("children の無い switcher の view/update は selected のほかを持てない")
+		}
+		return nil
+	}
 	return p.Component.Validate()
+}
+
+// SelectsOnly は、p が切り替えの部品の選ぶ子だけを替える view/update（Child が無く、Component が children の無い switcher で
+// Selected だけを持つ）かを返す（FR-270。API 0.23.0）。本体は子の中身（出力、書き足した中身、打ちかけの入力）を変えずに、
+// Selected の子を選ぶ（view/childSelect は送らない）。知らない子なら捨てる。
+func (p *ViewUpdateParams) SelectsOnly() bool {
+	return p.Child == "" && p.Component.Kind == ViewSwitcher && len(p.Component.Children) == 0
 }
 
 // ViewAppendParams は、view/append の params である（基本設計 1.4 の「末尾への書き足し」。FR-272。API 0.20.0 で足した）。

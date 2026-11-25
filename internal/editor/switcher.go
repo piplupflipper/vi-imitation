@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
@@ -27,10 +28,10 @@ import (
 //
 // # フォーカスとモード
 //
-// モードはバッファの State が持つので、子を切り替えてもそれぞれの子のバッファのモードは残る。最後にフォーカスのあったバッファ
-// （書き足すテキストと入力の行の組では出力か入力の行）は consoleState.outFocus が持つ。子へ切り替えると、キーを受けるバッファを
-// その子のフォーカスのあったバッファへ移す（switchFocus）。書き足すテキストと入力の行の組の子を初めて出したときは、
-// 入力の行のインサートモードにする（FR-301）。ほかの子は、作ったときのノーマルモードのまま出す。
+// 最後にフォーカスのあったバッファ（書き足すテキストと入力の行の組では出力か入力の行）は consoleState.outFocus が持つ。
+// 子へ切り替えると、キーを受けるバッファをその子のフォーカスのあったバッファへ移す（switchFocus）。
+// 子はどれもノーマルモードで出す。書き足すテキストと入力の行の組の子も、入力の行のノーマルモードで始め（組を単体で出したときと違う）、
+// 子を離れるときにインサートモードとビジュアルモードを終える（FR-301。<Tab> で区画を回すたびに組の子で止まらないため）。
 
 // floatSwitcher は、切り替えの部品の子の並びである（floatState.sw）。
 type floatSwitcher struct {
@@ -48,8 +49,6 @@ type switchChild struct {
 	key     editcmd.Key
 	hasKey  bool
 	content *floatContent
-	// shown は、この子を一度でも出したことを表す。書き足すテキストと入力の行の組の子を初めて出すときに、入力の行のインサートモードにする（FR-301）。
-	shown bool
 }
 
 // cur は、選んでいる子を返す。
@@ -169,7 +168,6 @@ func (e *Editor) newSwitcherFloat(c ext.ViewComponent, extID string) *floatState
 		sw.children = append(sw.children, sc)
 	}
 	sw.sel = max(c.ChildIndex(c.Selected), 0)
-	sw.cur().shown = true
 	return &floatState{floatContent: sw.cur().content, sw: sw, ext: extID, title: c.Title, scratch: true}
 }
 
@@ -208,8 +206,9 @@ func (f *floatState) childRenderers(r *ui.Renderer, ct *floatContent) (text, lis
 
 // selectChild は、切り替えの部品 f の i 番目の子を選んで出す（FR-269、FR-301）。前の子の中身は捨てない。
 // f にフォーカスがあれば（中央のポップアップか、キーを処理している間のペイン）、キーを受けるバッファを、選んだ子の最後にフォーカスの
-// あったバッファへ移す（モードはそのバッファの State に残っている）。選んだ子を初めて出し、それが書き足すテキストと入力の行の組なら、
-// 入力の行のインサートモードにする（FR-301）。前の子のプレビューは閉じる（見えていない子のプレビューは開かない）。
+// あったバッファ（組なら出力か入力の行）へ移す。前の子のバッファのインサートモードとビジュアルモードは、離れるときに終えて
+// ノーマルモードにする（FR-301。<Tab> で区画を回すたびに組の子のインサートモードで止まらないため。nvim-dap-view の REPL と同じく、
+// 組の子は入力の行のノーマルモードで始まり、i などで打ち始める）。前の子のプレビューは閉じる（見えていない子のプレビューは開かない）。
 // user なら、利用者の操作で替えたので、持ち主の拡張機能へ view/childSelect を送る。同じ子なら何もしない。
 //
 // req: FR-269, FR-270, FR-301
@@ -220,18 +219,19 @@ func (e *Editor) selectChild(f *floatState, i int, user bool) {
 	}
 	old := f.floatContent
 	sw.sel = i
-	f.pending = nil
+	f.pending, f.count = nil, nil
 	ch := sw.cur()
 	f.floatContent = ch.content
 	if f.focused && (old == nil || slices.Contains(old.buffers(), e.cur) || (old.preview.bs != nil && e.cur == old.preview.bs)) {
 		e.switchFocus(e.focusBuffer(f.floatContent))
 	}
 	if old != nil {
+		for _, bs := range old.buffers() {
+			if m := bs.state.Mode(); m == command.ModeInsert || m == command.ModeVisual || m == command.ModeVisualLine {
+				bs.state.SuspendMode()
+			}
+		}
 		f.withContent(old, func() { e.closePreview(f) })
-	}
-	if !ch.shown {
-		ch.shown = true
-		e.startConsoleInsert(f)
 	}
 	if user {
 		e.notifyView(f, ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: ext.ViewID(f.id), Child: ch.id})
@@ -335,6 +335,13 @@ func (e *Editor) childUpdate(f *floatState, id string, c ext.ViewComponent) {
 //
 // req: FR-270
 func (e *Editor) switcherUpdate(f *floatState, c ext.ViewComponent) {
+	if len(c.Children) == 0 {
+		// 選ぶ子だけを替える（ext.ViewUpdateParams.SelectsOnly）。子の中身は変えない。知らない子なら捨てる。
+		if i := f.sw.index(c.Selected); i >= 0 {
+			e.selectChild(f, i, false)
+		}
+		return
+	}
 	keys, has, err := childKeys(c)
 	if err != nil {
 		e.log.Warn("switcher の view/update を捨てた", "extension", f.ext, "err", err)
@@ -356,6 +363,10 @@ func (e *Editor) switcherUpdate(f *floatState, c ext.ViewComponent) {
 			delete(old, ch.ID)
 			cc := ch.Component
 			f.withContent(sc.content, func() { e.setFloatContent(f, cc) })
+			if sc.content.kind != floatConsole {
+				// 子の名前を替えたら、ステータス行に出るバッファの名前も付け直す（組は決まった名前）。
+				sc.content.bs.title = cmp.Or(ch.Title, "[ポップアップ]")
+			}
 		} else {
 			sc = &switchChild{id: ch.ID, content: e.newChildContent(ch, f.ext)}
 		}

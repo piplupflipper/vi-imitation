@@ -143,6 +143,22 @@ func TestViewSwitcherValidate(t *testing.T) {
 	if p := (ViewUpdateParams{Child: "a", Component: list("x")}); p.Validate() != nil {
 		t.Errorf("子を指す view/update の一覧: %v", p.Validate())
 	}
+	// 選ぶ子だけを替える view/update は、selected だけを持つ。
+	selOnly := ViewUpdateParams{Component: ViewComponent{Kind: ViewSwitcher, Selected: "a"}}
+	if err := selOnly.Validate(); err != nil || !selOnly.SelectsOnly() {
+		t.Errorf("選ぶ子だけを替える view/update: %v %v", err, selOnly.SelectsOnly())
+	}
+	for _, bad := range []ViewComponent{{Kind: ViewSwitcher}, {Kind: ViewSwitcher, Selected: "a", Title: "t"}} {
+		if p := (ViewUpdateParams{Component: bad}); p.Validate() == nil {
+			t.Errorf("選ぶ子だけを替える view/update の誤りを通した: %+v", bad)
+		}
+	}
+	if p := (PaneOpenParams{Component: selOnly.Component}); p.Validate() == nil {
+		t.Error("children の無い switcher の pane/open を通した")
+	}
+	if p := (ViewUpdateParams{Component: ok}); p.SelectsOnly() {
+		t.Error("部品の全体の置き換えを選ぶ子だけの更新とした")
+	}
 	if ok.ChildIndex("a") != 0 || ok.ChildIndex("z") != -1 {
 		t.Error("ChildIndex")
 	}

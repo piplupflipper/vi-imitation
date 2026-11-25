@@ -324,6 +324,9 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
   拡張機能の main から呼ぶ。
 - `func (s *Server) SaveBuffer(ctx context.Context, p ext.BufferSaveParams) (ext.BufferSaveResult, error)`: 本体へ buffer/save を送り、バッファをファイルへ書き出させる。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
+- `func (s *Server) SelectViewChild(view ext.ViewID, child string) error`: 本体へ選ぶ子だけを替える view/update（ext.ViewUpdateParams.SelectsOnly）を送り、開いた切り替えの部品
+  （ext.ViewSwitcher（switcher））の子 child を選ばせる（API 0.23.0 から）。子の中身（書き足した出力、打ちかけの入力）は変わらない。
+  本体は view/childSelect を送らない。応答は待たない。どこから呼んでもよい。
 - `func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error`: r から本体のメッセージを読み、w へ書き、接続が終わるまでメッセージを処理する。
   r と w が io.Closer を実装していれば、終わるときに閉じる。
 - `func (s *Server) SetBand(p ext.BandSetParams) error`: 本体へ band/set を送り、窓の上端に行を重ねて描く帯を置く。

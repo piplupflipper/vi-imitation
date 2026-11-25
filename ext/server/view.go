@@ -41,6 +41,13 @@ func (s *Server) UpdateView(p ext.ViewUpdateParams) error {
 	return s.notify(ext.MethodViewUpdate, p)
 }
 
+// SelectViewChild は、本体へ選ぶ子だけを替える view/update（ext.ViewUpdateParams.SelectsOnly）を送り、開いた切り替えの部品
+// （ext.ViewSwitcher）の子 child を選ばせる（API 0.23.0 から。FR-270）。子の中身（書き足した出力、打ちかけの入力）は変わらない。
+// 本体は view/childSelect を送らない。応答は待たない。どこから呼んでもよい。
+func (s *Server) SelectViewChild(view ext.ViewID, child string) error {
+	return s.UpdateView(ext.ViewUpdateParams{View: view, Component: ext.ViewComponent{Kind: ext.ViewSwitcher, Selected: child}})
+}
+
 // CloseView は、本体へ view/close を送り、開いたポップアップを閉じさせる。応答は待たない。どこから呼んでもよい。
 // 本体は、この知らせで閉じたポップアップについて view/closed を送らない。
 func (s *Server) CloseView(id ext.ViewID) error {

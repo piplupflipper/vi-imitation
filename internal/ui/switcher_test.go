@@ -84,6 +84,38 @@ func TestSwitcherBar(t *testing.T) {
 	}
 }
 
+// 狭い見出しの行（40 桁と 60 桁のペイン）では、選んでいる子の見出しを " 名前 [キー] " のまま出し、ほかの子のキーの添え字を省き、
+// それでも収まらなければほかの子の名前を切り詰めて "…" を置き、7 つの子をすべて並べる。
+//
+// req: FR-269
+func TestSwitcherBarNarrow(t *testing.T) {
+	names := []string{"Watches", "Scopes", "Exceptions", "Breakpoints", "Threads", "REPL", "Console"}
+	keys := []string{"W", "S", "E", "B", "T", "R", "C"}
+	bar := func(width, sel int) string {
+		sw := &Switcher{Selected: sel}
+		for i, n := range names {
+			sw.Children = append(sw.Children, SwitcherChild{ID: n, Title: n, Key: keys[i]})
+		}
+		r := &Renderer{Width: width, Height: 6, Theme: testTheme()}
+		s := r.Render(&Frame{Float: &Float{ID: 1, View: &Frame{Text: buffer.New("x")}, Fill: true, Switcher: sw}})
+		return screenRows(s)[0]
+	}
+	for _, tt := range []struct {
+		width, sel int
+		want       string
+	}{
+		{100, 3, " Watches [W]  Scopes [S]  Exceptions [E]  Breakpoints [B]  Threads [T]  REPL [R]  Console [C]"},
+		{80, 3, " Watches  Scopes  Exceptions  Breakpoints [B]  Threads  REPL  Console"},
+		{60, 3, " Watc…  Scop…  Exce…  Breakpoints [B]  Thre…  REPL  Cons…"},
+		{40, 0, " Watches [W]  S…  E…  B…  T…  R…  C…"},
+		{40, 3, " W  S  E  Breakpoints [B]  T  R  C"}, // 表示幅 1 まで切り詰めたら、名前の最初の文字だけを出す
+	} {
+		if got := bar(tt.width, tt.sel); got != tt.want {
+			t.Errorf("幅 %d、選んでいる子 %d: %q, want %q", tt.width, tt.sel, got, tt.want)
+		}
+	}
+}
+
 // 書き足すテキストと入力の行の組の子では、見出しの行を出力の上に置く。狭い窓では、見出しより先に組の見出しを省き、入力の行を残す。
 //
 // req: FR-269

@@ -155,6 +155,8 @@ type floatState struct {
 	onSelect func(row int)
 	// pending は、contributes.popupKeys のキーの列の途中まで打ったキーである。
 	pending []editcmd.Key
+	// count は、子を切り替える action の popupKeys のために預かった回数の数字（3<Tab> の 3）である（popupKey）。
+	count []editcmd.Key
 	// pane は、拡張機能の pane/open で、端末多重化ソフトのペインに開いた部品であることを表す（component.go）。
 	// viewFields.float ではなく viewFields.panes に置く。<Esc> では閉じない。
 	pane bool
@@ -376,7 +378,7 @@ func (e *Editor) unfocusFloat() {
 		return
 	}
 	f.focused = false
-	f.pending = nil
+	f.pending, f.count = nil, nil
 	e.switchFocus(f.base)
 }
 
@@ -582,12 +584,12 @@ func (e *Editor) popupStateKey(bs *bufferState, k editcmd.Key, insert bool) (boo
 //
 // req: FR-68
 func (e *Editor) floatKey(f *floatState, k editcmd.Key, insert bool) (bool, []editcmd.Key) {
-	if f.kind == floatFinder && len(f.pending) == 0 {
+	if f.kind == floatFinder && len(f.pending) == 0 && len(f.count) == 0 {
 		if done := e.finderKey(f, k, insert); done {
 			return true, nil
 		}
 	}
-	if f.kind == floatConsole && len(f.pending) == 0 {
+	if f.kind == floatConsole && len(f.pending) == 0 && len(f.count) == 0 {
 		if done, held := e.consoleKey(f, k, insert); done || len(held) > 0 {
 			return done, held
 		}
@@ -687,15 +689,23 @@ func floatItem(f *floatState) string {
 // children を並べた項目は、その子を出しているときだけ引き、切り替えの部品でない部品では引かない（FR-271）。
 // action が子を切り替える操作（ext.PopupKeyChildNext など）のキーは、拡張機能を呼ばずに子を切り替える（切り替えの部品でなければ何もしない）。
 // view/key の Child には、キーを打ったときに出していた子の ID を入れる。
+// 子を切り替える action の項目がある部品では、回数の数字を預かり（floatState.count）、子を切り替える action のキーなら回数の数だけ進む。
+// ほかのキーなら預かった数字を held で State へ返し、回数とキーを今までどおり本体の既定のキーとして解釈させる（子のキーも回数を読まない）。
 //
 // req: FR-69, FR-269, FR-271
 func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
-	if e.childKey(f, k) {
+	if len(f.count) == 0 && e.childKey(f, k) {
 		return true, nil
 	}
 	keys := e.popupKeys[f.ext]
 	if len(keys) == 0 {
 		return false, nil
+	}
+	if len(f.pending) == 0 && isCountKey(k, len(f.count) > 0) && hasChildAction(keys, f.child) {
+		// 回数（3<Tab> の 3）。State に渡すと、続くキーが KeyHook を通らずに本体の既定のキー（<Tab> のタブの移動）に落ちるので、
+		// ここで預かる。続くキーが子を切り替える action なら回数の数だけ進み、そうでなければ回数を State へ返す（popupKeyCount）。
+		f.count = append(f.count, k)
+		return true, nil
 	}
 	seq := append(slices.Clone(f.pending), k)
 	prefix := false
@@ -705,10 +715,16 @@ func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
 		}
 		switch {
 		case slices.Equal(pk.keys, seq) && pk.child != "":
-			// 子を切り替える action（DAP の <Tab> と <S-Tab>）。拡張機能を呼ばない。
-			f.pending = nil
-			e.moveChild(f, pk.child, 1)
+			// 子を切り替える action（DAP の <Tab> と <S-Tab>）。拡張機能を呼ばない。回数があれば、その数だけ進む（nvim-dap-view の count1）。
+			n := popupKeyCount(f.count)
+			f.pending, f.count = nil, nil
+			e.moveChild(f, pk.child, n)
 			return true, nil
+		case slices.Equal(pk.keys, seq) && len(f.count) > 0:
+			// 回数を付けたほかの popupKeys は、今までどおり、回数とキーを本体の既定のキーとして解釈させる（預かった回数を返す）。
+			held := slices.Concat(f.count, f.pending)
+			f.pending, f.count = nil, nil
+			return false, held
 		case slices.Equal(pk.keys, seq) && pk.selects:
 			// action が select のキー（ファイラの l）は、<CR> と同じく選ぶか開閉する（ext.PopupKeySelect。FR-105）。
 			f.pending = nil
@@ -739,9 +755,34 @@ func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
 		f.pending = seq
 		return true, nil
 	}
-	held := f.pending
-	f.pending = nil
+	held := slices.Concat(f.count, f.pending)
+	f.pending, f.count = nil, nil
 	return false, held
+}
+
+// isCountKey は、k がノーマルモードの回数の数字かを返す。started（既に回数の数字を預かっている）でなければ、0 は回数でない（行頭への移動）。
+func isCountKey(k editcmd.Key, started bool) bool {
+	if k.Code != editcmd.CodeRune || k.Mod != 0 || k.Rune < '0' || k.Rune > '9' {
+		return false
+	}
+	return started || k.Rune != '0'
+}
+
+// popupKeyCount は、預かった回数の数字 count の値を返す。無ければ 1 である。
+func popupKeyCount(count []editcmd.Key) int {
+	n := 0
+	for _, k := range count {
+		n = min(n*10+int(k.Rune-'0'), 1_000_000)
+	}
+	return max(n, 1)
+}
+
+// hasChildAction は、popupKeys の項目 keys に、子 child で効く、子を切り替える action の項目があるかを返す。
+// 回数を預かる（popupKey）のは、この項目がある部品の中だけにし、ほかの部品では回数を今までどおり State に渡す。
+func hasChildAction(keys []popupKeyBinding, child string) bool {
+	return slices.ContainsFunc(keys, func(pk popupKeyBinding) bool {
+		return pk.child != "" && (len(pk.children) == 0 || slices.Contains(pk.children, child))
+	})
 }
 
 // popupKeyBinding は、contributes.popupKeys の 1 項目を、キーの列にしたものである。

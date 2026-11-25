@@ -437,11 +437,11 @@ func (a *ViewAppend) Flush() {
 // closesView は、ev が拡張機能 extID の部品 view（切り替えの部品なら子 child）の中身を置き換えるか閉じる通知
 // （view/update か view/close）かを返す。同じ部品への書き足しを、それより前の書き足しにつながない境目である。
 // 切り替えの部品の別の子だけを置き換える view/update（Child が child と違う）は、境目にしない（DAP が区画をまとめて更新する間も、
-// 出力の区画への書き足しをつなぐため）。
+// 出力の区画への書き足しをつなぐため）。選ぶ子だけを替える view/update（SelectsOnly）も、中身を替えないので境目にしない。
 func closesView(ev Event, extID string, view ext.ViewID, child string) bool {
 	switch v := ev.(type) {
 	case *ViewUpdate:
-		return v.Extension == extID && v.Params.View == view && (v.Params.Child == "" || v.Params.Child == child)
+		return v.Extension == extID && v.Params.View == view && !v.Params.SelectsOnly() && (v.Params.Child == "" || v.Params.Child == child)
 	case *ViewClose:
 		return v.Extension == extID && v.Params.View == view
 	}

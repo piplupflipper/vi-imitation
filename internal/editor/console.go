@@ -107,11 +107,12 @@ func (e *Editor) setConsoleContent(f *floatState, c ext.ViewComponent) {
 }
 
 // startConsoleInsert は、開いた書き足すテキストと入力の行の組 f の入力の行を、行末から打てるインサートモードにする（FR-274）。
-// 組でない部品と、既にインサートモードの入力の行では何もしない。利用者のキーではないので、マクロに記録しない（command.State.FeedUnrecorded）。
+// 組でない部品と、既にインサートモードの入力の行と、切り替えの部品の子（入力の行のノーマルモードで始める。FR-301）では何もしない。
+// 利用者のキーではないので、マクロに記録しない（command.State.FeedUnrecorded）。
 // 分割したペインの部品は、元の client のキーを受けるバッファではないので、入力の行の State に直に渡す（モードを入れるだけで、
 // バッファもレジスターも変えないので、結果を処理しなくてよい）。
 func (e *Editor) startConsoleInsert(f *floatState) {
-	if f.kind != floatConsole || f.bs.state.Mode() == command.ModeInsert {
+	if f.kind != floatConsole || f.sw != nil || f.bs.state.Mode() == command.ModeInsert {
 		return
 	}
 	if e.cur == f.bs {

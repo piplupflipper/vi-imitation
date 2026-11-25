@@ -1441,6 +1441,8 @@ ViewSwitcher（switcher）（API 0.23.0）では、Child があれば Component 
 子の部品の種類が開いたときと違うか、知らない子なら捨てる。Child が無ければ部品の全体を置き換え、同じ ID の子は状態を保ったまま
 中身を置き換え、無くなった ID の子は捨て、新しい ID の子は作る。Selected を書けばその子を選び（view/childSelect は送らない）、
 書かなければ選んでいる子を保つ。子を並べ直したときは、見出しの行の並びも替える。
+Component を children の無い switcher にして Selected だけを書くと、子の中身を変えずに選ぶ子だけを替える（SelectsOnly）。
+全体の置き換えは、テキストと console の子の中身（書き足した出力）も送った中身で置き換えるので、選ぶ子だけを替えるときはこの形を使う。
 
 - `view`（`ViewID`）
 - `component`（`ViewComponent`）

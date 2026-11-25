@@ -80,7 +80,7 @@ func startSwitcher(t *testing.T) *harness {
 
 // 切り替えの部品は、見出しの行に子の名前とキーを並べ、選んだ子だけを出す。]v、[v、]V、[V（本体の操作 view.child-*）で次、前、最後、最初の子へ
 // 切り替え、次と前は回数の数だけ進んで端で折り返す。子のキー（T、L、R）でその子へ直に切り替える。利用者が切り替えたら view/childSelect で知らせる。
-// 書き足すテキストと入力の行の組の子を初めて出すと入力の行のインサートモードにし、切り替え直すと最後にフォーカスのあったバッファとモードに戻す。
+// 書き足すテキストと入力の行の組の子は入力の行のノーマルモードで始め、切り替え直すと最後にフォーカスのあったバッファへノーマルモードで戻す。
 // 組の子では、出力と入力の行のどちらのノーマルモードでも切り替えのキーが効き、インサートモードの ]v は文字として入る。
 //
 // req: FR-269, FR-270, FR-301
@@ -114,20 +114,22 @@ func TestSwitcherKeys(t *testing.T) {
 	h.eventually("一覧の子を描く", func() bool { return strings.Contains(h.term.screen(), "first") })
 	sel("[v", "tree")
 	sel("]V", "repl")
-	// 組の子を初めて出すと、入力の行のインサートモードにする（FR-301）。
-	if si, _ := h.switcher(); !si.curIsBs || si.mode != command.ModeInsert {
+	// 組の子は、入力の行のノーマルモードで始める（FR-301。組を単体で出したときと違い、インサートモードにしない）。
+	if si, _ := h.switcher(); !si.curIsBs || si.mode != command.ModeNormal {
 		t.Fatalf("組の子を初めて出したとき: %+v", si)
 	}
 	// インサートモードの ]v は文字として入る。
-	h.keys("]v<Esc>")
+	h.keys("i]v")
 	h.settle()
-	if si, _ := h.switcher(); si.sel != "repl" || si.mode != command.ModeNormal {
+	if si, _ := h.switcher(); si.sel != "repl" || si.mode != command.ModeInsert {
 		t.Fatalf("インサートモードの ]v: %+v", si)
 	}
-	sel("[V", "tree")
+	// インサートモードのまま見出しの行を押して離れると、入力を終えてノーマルモードにする。
+	h.e.do(func() { h.e.selectChild(h.e.float, 0, true) })
+	sel("", "tree")
 	sel("2]v", "out")
 	sel("]v", "repl")
-	// 切り替え直すと、最後のモード（ノーマルモード）と入力の行の中身に戻す。
+	// 切り替え直すと、入力の行の中身を保ち、ノーマルモードで戻る。
 	var input string
 	h.e.do(func() { input = h.e.float.bs.buf.Text() })
 	if si, _ := h.switcher(); !si.curIsBs || si.mode != command.ModeNormal || input != "]v" {
@@ -234,7 +236,7 @@ func TestSwitcherChildState(t *testing.T) {
 func TestSwitcherHiddenUpdates(t *testing.T) {
 	h := startSwitcher(t)
 	view := openSwitcher(t, h, "switcher")
-	h.keys("R")
+	h.keys("Ri")
 	h.keys("say hello<CR>")
 	h.waitSeen("kind=1 item=say hello key= child=repl")
 	h.eventually("見えていない子への書き足し", func() bool { return childText(h.e.float, "out") == "start\nhello" })
@@ -371,7 +373,7 @@ func TestSwitcherMouse(t *testing.T) {
 func TestSwitcherFloodHidden(t *testing.T) {
 	h := startSwitcher(t)
 	openSwitcher(t, h, "switcher")
-	h.keys("R")
+	h.keys("Ri")
 	h.keys("flood 3000<CR><Esc>")
 	h.keys("T")
 	for range 20 {
@@ -411,8 +413,10 @@ func TestSwitcherFloodHidden(t *testing.T) {
 }
 
 // 分割したペインの切り替えの部品では、popupKeys で子を切り替える action にした <Tab> と <S-Tab> が、ペインの中では子を切り替え、
-// 元の client の <Tab> と <S-Tab> はタブの移動（FR-98）のままである。組の子を初めて出すと入力の行のインサートモードにし、
-// 離れて戻ると最後のモードに戻す（FR-301）。
+// 元の client の <Tab> と <S-Tab> はタブの移動（FR-98）のままである。回数を付けた 3<Tab> と 2<S-Tab> は、回数の数だけ子を進め、
+// 元の client のタブを動かさない（nvim-dap-view の count1）。子を切り替える action でない popupKeys に回数を付けたときは、今までどおり
+// 回数とキーを本体の既定のキーとして解釈する。組の子は入力の行のノーマルモードで始め、インサートモードで打ってから
+// 離れて戻ると、打ちかけの入力を保ってノーマルモードで戻る（FR-301）。
 //
 // req: FR-269, FR-271, FR-301
 func TestSwitcherPane(t *testing.T) {
@@ -454,17 +458,96 @@ func TestSwitcherPane(t *testing.T) {
 	if curTab() != "a.txt" || pane().sel != "list" {
 		t.Errorf("元の client の <Tab>: tab=%s pane=%+v", curTab(), pane())
 	}
-	comp.keys("<S-Tab><S-Tab>")
-	if si := pane(); si.sel != "repl" || si.mode != command.ModeInsert {
+	// 回数を付けた <Tab> と <S-Tab>。list（1）から 3 つ進むと tree（0）、2 つ戻ると out（2）。元の client のタブは a.txt のまま。
+	comp.keys("3<Tab>")
+	if si := pane(); si.sel != "tree" {
+		t.Fatalf("ペインの 3<Tab>: %+v", si)
+	}
+	comp.keys("2<S-Tab>")
+	if si := pane(); si.sel != "out" {
+		t.Fatalf("ペインの 2<S-Tab>: %+v", si)
+	}
+	comp.keys("12<Tab>") // 2 桁の回数（12 は 4 の倍数なので out のまま）
+	if si := pane(); si.sel != "out" {
+		t.Fatalf("ペインの 12<Tab>: %+v", si)
+	}
+	if curTab() != "a.txt" {
+		t.Errorf("回数付きの <Tab> で元の client のタブが替わった: %s", curTab())
+	}
+	// 子を切り替える action でない popupKeys（list の d）と、popupKeys でないキー（3<Esc> の取り消し）は、回数を本体へ返す。
+	comp.keys("L")
+	comp.keys("3<Esc>j")
+	if si := pane(); si.sel != "list" || si.line != 1 {
+		t.Fatalf("3<Esc> の後の j: %+v", si)
+	}
+	comp.keys("2d")
+	h.settle()
+	if h.seen("key=fake.del") {
+		t.Error("回数付きの d が view/key を送った")
+	}
+	comp.keys("<Esc>")
+
+	comp.keys("<S-Tab>")
+	if si := pane(); si.sel != "tree" {
+		t.Fatalf("<S-Tab>: %+v", si)
+	}
+	comp.keys("<S-Tab>")
+	if si := pane(); si.sel != "repl" || si.mode != command.ModeNormal {
 		t.Fatalf("ペインの組の子を初めて出したとき: %+v", si)
 	}
-	comp.keys("ab<Esc>T")
+	comp.keys("iab<Esc>T")
 	comp.waitScreen("▸ dir")
 	comp.keys("R")
 	if si := pane(); si.sel != "repl" || si.mode != command.ModeNormal {
 		t.Fatalf("ペインの組の子へ戻ったとき: %+v", si)
 	}
 	comp.waitScreen("> ab")
+}
+
+// 拡張機能は、選ぶ子だけを替える view/update（children の無い switcher に selected だけを書く）で、子の中身を変えずに子を選べる。
+// view/childSelect は送らない。部品の全体の置き換えで子の名前を替えると、ステータス行に出る子のバッファの名前も替える。
+//
+// req: FR-270
+func TestSwitcherSelectOnly(t *testing.T) {
+	h := startSwitcher(t)
+	view := openSwitcher(t, h, "switcher")
+	h.keys("Ri")
+	h.keys("say hi<CR>half<Esc>")
+	h.eventually("見えていない子への書き足し", func() bool { return childText(h.e.float, "out") == "start\nhi" })
+	sel := func(child string) {
+		h.e.do(func() {
+			h.e.viewUpdate(&exthost.ViewUpdate{Extension: "fake", Params: ext.ViewUpdateParams{
+				View: ext.ViewID(view), Component: ext.ViewComponent{Kind: ext.ViewSwitcher, Selected: child},
+			}})
+		})
+	}
+	sel("out")
+	sel("nope") // 知らない子は捨てる
+	si, _ := h.switcher()
+	if si.sel != "out" || si.text != "start\nhi" || !si.curIsBs {
+		t.Fatalf("選ぶ子だけを替えた後: %+v", si)
+	}
+	var input string
+	h.e.do(func() { input = childText(h.e.float, "repl") + "|" + h.e.float.sw.children[3].content.bs.buf.Text() })
+	if input != "repl|half" {
+		t.Errorf("組の子の中身 = %q", input)
+	}
+	if h.seen("kind=6 item= key= child=out") {
+		t.Error("選ぶ子だけを替える view/update で view/childSelect を送った")
+	}
+
+	// 部品の全体の置き換えで子の名前を替える。
+	h.e.do(func() {
+		c := fakePopup("switcher").Component
+		c.Children[2].Title = "出力"
+		h.e.viewUpdate(&exthost.ViewUpdate{Extension: "fake", Params: ext.ViewUpdateParams{View: ext.ViewID(view), Component: c}})
+	})
+	var name string
+	h.e.do(func() { name = bufferTitle(h.e.float.bs) })
+	if name != "出力" {
+		t.Errorf("名前を替えた子のバッファの名前 = %q", name)
+	}
+	h.eventually("見出しの行の名前", func() bool { return strings.Contains(h.term.screen(), " 出力 ") })
 }
 
 // 子のキーは、読めない表記、2 つ以上のキー、本体の部品の操作と重なるキー、読んだ後に重なるキーを断る。

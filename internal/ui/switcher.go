@@ -55,12 +55,88 @@ func switcherLabel(c SwitcherChild) string {
 	return s
 }
 
+// switcherEllipsis は、狭い見出しの行で、切り詰めた子の名前の後に置く印である。
+const switcherEllipsis = "…"
+
+// switcherLabels は、幅 avail の見出しの行に出す子の見出しを返す（cur は選んでいる子の添字）。
+// どの子があるかを一目で読めるよう、すべての子の見出しが収まるまで、次の順に短くする（nvim-dap-view の見出しを窓の幅で変える label と同じ考え方）。
+//
+//  1. どの子も " 名前 [キー] "
+//  2. 選んでいる子だけ " 名前 [キー] "、ほかの子は " 名前 "（キーの添え字を省く）
+//  3. ほかの子の名前を同じ表示幅まで切り詰め、切った名前の後に "…" を置く（表示幅 2 以上。1 なら名前の最初の文字だけ）
+//
+// それでも収まらなければ 3 の最も短い形を返し、drawSwitcher が左右を省いて "<" と ">" を置く。
+func (r *Renderer) switcherLabels(cs []SwitcherChild, cur, avail int) []string {
+	labels := make([]string, len(cs))
+	fits := func() bool {
+		w := 0
+		for _, l := range labels {
+			w += StringWidth(l, r.tabStop)
+		}
+		return w <= avail
+	}
+	for i, c := range cs {
+		labels[i] = switcherLabel(c)
+	}
+	if fits() {
+		return labels
+	}
+	for i, c := range cs {
+		if i != cur {
+			labels[i] = " " + c.Title + " "
+		}
+	}
+	if fits() {
+		return labels
+	}
+	longest := 0
+	for i, c := range cs {
+		if i != cur {
+			longest = max(longest, StringWidth(c.Title, r.tabStop))
+		}
+	}
+	for n := longest - 1; n >= 1; n-- {
+		for i, c := range cs {
+			if i != cur {
+				labels[i] = " " + r.truncateTitle(c.Title, n) + " "
+			}
+		}
+		if fits() {
+			break
+		}
+	}
+	return labels
+}
+
+// truncateTitle は、名前 s を表示幅 n までに切り詰める。切ったら、n が 2 以上なら最後の 1 列を switcherEllipsis にする。
+func (r *Renderer) truncateTitle(s string, n int) string {
+	if StringWidth(s, r.tabStop) <= n {
+		return s
+	}
+	keep := n
+	mark := ""
+	if n >= 2 {
+		keep, mark = n-StringWidth(switcherEllipsis, r.tabStop), switcherEllipsis
+	}
+	w, end := 0, 0
+	for i, ch := range s {
+		cw := StringWidth(string(ch), r.tabStop)
+		if w+cw > keep {
+			break
+		}
+		w += cw
+		end = i + len(string(ch))
+	}
+	return s[:end] + mark
+}
+
 // childSpan は、見出しの行に描いた子の見出し 1 つの場所（行 row の列 [from, to)）と、Switcher.Children の添字である。
 type childSpan struct{ row, from, to, index int }
 
 // drawSwitcher は、切り替えの部品の見出しの行 sw を、row 行目の列 x0 から列 x1 の手前まで描く（FR-269）。
 // 子の見出し（switcherLabel）を左から並べ、選んでいる子を StyleViewChildSelected、ほかを StyleViewChild で描き、
-// 残りの列は base で埋める。見出しが幅に収まらなければ、選んでいる子の見出しの右の端までが収まるように左の見出しを省いて左の端に "<" を置き、
+// 残りの列は base で埋める。幅が狭ければ、ほかの子の見出しを短くしてすべての子を並べる（switcherLabels）。
+// 最も短くしても収まらなければ、選んでいる子の見出しの右の端までが収まるように左の見出しを省いて左の端に "<" を置き、
 // 右に収まらない見出しは収まる列で切って右の端に ">" を置く（タブの行の drawTabs と同じ考え方）。
 // マウスで子を切り替えるために、描いた見出しの場所を残す（HitTest の HitChild。FR-185 の例外）。
 //
@@ -75,11 +151,10 @@ func (r *Renderer) drawSwitcher(g *Grid, theme Theme, sw *Switcher, row, x0, x1 
 		return
 	}
 	cur := min(max(sw.Selected, 0), len(sw.Children)-1)
-	labels := make([]string, len(sw.Children))
-	widths := make([]int, len(sw.Children))
-	for i, c := range sw.Children {
-		labels[i] = switcherLabel(c)
-		widths[i] = StringWidth(labels[i], r.tabStop)
+	labels := r.switcherLabels(sw.Children, cur, avail)
+	widths := make([]int, len(labels))
+	for i, l := range labels {
+		widths[i] = StringWidth(l, r.tabStop)
 	}
 	first := 0
 	for first < cur {

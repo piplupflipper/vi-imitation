@@ -322,10 +322,13 @@ func TestHoldViewAppendChild(t *testing.T) {
 		e.hold(app("out", "a"))
 		e.hold(app("repl", "r"))
 		e.hold(up("scopes"))
-		e.hold(app("out", "b")) // 別の子の view/update は境目にしない
+		e.hold(&exthost.ViewUpdate{Extension: "fake", Params: ext.ViewUpdateParams{View: 1, Component: ext.ViewComponent{Kind: ext.ViewSwitcher, Selected: "out"}}})
+		e.hold(app("out", "b")) // 別の子の view/update と、選ぶ子だけを替える view/update は境目にしない
 		e.hold(up("out"))
 		e.hold(app("out", "c")) // 同じ子の view/update の後ろなので、新しい件
-		e.hold(&exthost.ViewUpdate{Extension: "fake", Params: ext.ViewUpdateParams{View: 1, Component: ext.ViewComponent{Kind: ext.ViewSwitcher}}})
+		e.hold(&exthost.ViewUpdate{Extension: "fake", Params: ext.ViewUpdateParams{View: 1, Component: ext.ViewComponent{
+			Kind: ext.ViewSwitcher, Children: []ext.ViewChild{{ID: "repl", Component: ext.ViewComponent{Kind: ext.ViewConsole}}},
+		}}})
 		e.hold(app("repl", "s")) // 部品の全体の view/update の後ろなので、新しい件
 		var got []string
 		for _, ev := range e.held {
