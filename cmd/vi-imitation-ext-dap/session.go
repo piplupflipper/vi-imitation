@@ -113,6 +113,8 @@ type session struct {
 	replyOnce sync.Once
 	// condWarned は、条件付きのブレークポイントに対応していないことを知らせたことを表す（FR-286）。
 	condWarned atomic.Bool
+	// excPending は、動いている間に例外のフィルターを送れず、次に止まったときに送り直すことを表す（exceptions.go の toggleException）。
+	excPending atomic.Bool
 
 	// 以下は debugger.mu で守る。
 
@@ -140,6 +142,14 @@ type session struct {
 	// hasFrame が false なら未知。
 	frame    int
 	hasFrame bool
+	// resumedAt は、最後に動き出した（続行、ステップ実行、restart を送った、continued の event を受けた）時刻である。
+	// ペインは、動き出してから runningShowDelay の間は、区画を「動いている」に作り直さない（pane.refresh）。
+	resumedAt time.Time
+	// shownAt は、最後に止まった位置を出し始めた（showStopped、stoppedWithoutSource）時刻である。続けて打っている（burst）ときは、
+	// ペインは、そこから settleDelay の間は区画を読み始めない（pane.refresh）。その間に次のステップ実行か続行が来れば、その停止の区画は読まない。
+	shownAt time.Time
+	// burst は、最後の続行かステップ実行を、その前の続行かステップ実行から burstWindow の内に送った（続けて打っている）ことを表す。
+	burst bool
 	// stopGen は、止まった位置を出し終える前（markStopped の後、showStopped か stoppedWithoutSource の前）の世代である。
 	// 0 なら出し終えた。世代が進めば（続けた、選び直した）意味を失う。ペインは、この間は区画を読まない（stopping）。
 	stopGen uint64
@@ -347,7 +357,7 @@ func (s *session) run() {
 		// 開始が成り立った（launch か attach の応答を受けた）。止まらずに動き続けるセッション（ブレークポイントを置かずに始めた、
 		// 動いているサーバーへ attach した）でも、繋がったことと、そのスレッドを区画に出す（PR #423 の再レビューの必須 1）。
 		// スレッドの一覧は、ここで 1 回読み、その後は thread の event で足し引きする（動いている間に request を送らない）。
-		s.d.pane.markDirty(secThreads, secScopes)
+		s.d.pane.markDirty(secThreads, secScopes, secWatches)
 	}
 	switch {
 	case err != nil && s.stopping.Load():
@@ -438,6 +448,7 @@ func (s *session) start() error {
 		return err
 	}
 	s.caps.Store(&caps)
+	s.d.noteExceptionFilters(s.spec.adapter.name, caps.ExceptionBreakpointFilters)
 
 	launchCtx, cancelLaunch := context.WithTimeout(context.Background(), t.launch)
 	defer cancelLaunch()
@@ -468,6 +479,10 @@ func (s *session) start() error {
 			s.d.logf("setBreakpoints %s: %v", path, err)
 		}
 	}
+	// 有効な例外のフィルター（FR-294）は、ブレークポイントの後、configurationDone の前に送る（DAP の仕様の Launch Sequencing）。
+	if err := s.sendExceptionBreakpoints(launchCtx); err != nil {
+		s.d.logf("setExceptionBreakpoints: %v", err)
+	}
 	if caps.SupportsConfigurationDoneRequest {
 		if err := c.call(launchCtx, "configurationDone", nil, nil); err != nil {
 			return err
@@ -488,6 +503,9 @@ func (s *session) reconfigure() {
 		if err := s.sendBreakpoints(ctx, path); err != nil {
 			s.d.logf("setBreakpoints %s: %v", path, err)
 		}
+	}
+	if err := s.sendExceptionBreakpoints(ctx); err != nil {
+		s.d.logf("setExceptionBreakpoints after restart: %v", err)
 	}
 	if c := s.getConn(); c != nil && s.supports(func(c *capabilities) bool { return c.SupportsConfigurationDoneRequest }) {
 		if err := c.call(ctx, "configurationDone", nil, nil); err != nil {
@@ -606,8 +624,11 @@ func (s *session) resume(ctx context.Context, command string) error {
 	s.d.mu.Lock()
 	wasHalted := s.halted
 	s.halted = false
+	now := time.Now()
+	s.burst = !s.resumedAt.IsZero() && now.Sub(s.resumedAt) < burstWindow
+	s.resumedAt = now
 	gen := s.gen.Add(1)
-	s.d.pane.markDirty(secThreads, secScopes)
+	s.d.pane.markDirty(secThreads, secScopes, secWatches)
 	s.d.mu.Unlock()
 	if err := c.call(ctx, command, threadArguments{ThreadID: tid}, nil); err != nil {
 		s.d.mu.Lock()
@@ -628,7 +649,7 @@ func (s *session) pause(ctx context.Context, tid int) error {
 		return errDAPClosed
 	}
 	s.gen.Add(1)
-	s.d.pane.markDirty(secThreads, secScopes)
+	s.d.pane.markDirty(secThreads, secScopes, secWatches)
 	return c.call(ctx, "pause", threadArguments{ThreadID: tid}, nil)
 }
 
@@ -1157,6 +1178,8 @@ func (s *session) stopped(body *stoppedEvent) {
 	gen, focus := s.d.markStopped(s, body.ThreadID)
 	ctx, cancel := context.WithTimeout(s.eventCtx, s.d.timeouts.request)
 	defer cancel()
+	// 動いている間に送れなかった例外のフィルターは、止まった位置を出した後に送り直す（どの道で戻っても）。
+	defer s.resendExceptionBreakpoints(ctx)
 	tid, err := s.threadID(ctx)
 	if err != nil {
 		s.d.logf("threads: %v", err)
@@ -1182,11 +1205,15 @@ func (s *session) stopped(body *stoppedEvent) {
 	}
 	if err != nil || len(st.StackFrames) == 0 || st.StackFrames[0].Source == nil || st.StackFrames[0].Source.Path == "" {
 		s.d.stoppedWithoutSource(s, gen, body.Reason)
-		return
+	} else {
+		f := st.StackFrames[0]
+		line := fromDAPLine(f.Line, linesStartAt1)
+		s.d.showStopped(ctx, s, gen, focus, f.ID, f.Source.Path, line, f.Column, body.Reason)
 	}
-	f := st.StackFrames[0]
-	line := fromDAPLine(f.Line, linesStartAt1)
-	s.d.showStopped(ctx, s, gen, focus, f.ID, f.Source.Path, line, f.Column, body.Reason)
+	if body.Reason == "exception" {
+		// 例外の中身は、止まった位置を出し終えた後に読む（止まった位置の stackTrace を先に送る取り決め。PR #423）。
+		s.showException(ctx, gen, tid, body)
+	}
 }
 
 // dapEvent は、受け取った 1 件の event か、逆向きの request である。

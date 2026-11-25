@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 )
@@ -44,6 +45,7 @@ type sessionSnap struct {
 	stopping              bool
 	supportsSetVariable   bool
 	supportsSetExpression bool
+	supportsClipboard     bool
 }
 
 // snapshot は、動いているセッションの状態を始めた順に、今のセッションと、デバッグを一度でも始めたか（出力の写しがあるか）と一緒に返す。
@@ -58,6 +60,7 @@ func (d *debugger) snapshot() (ss []sessionSnap, cur *session, started bool) {
 			stopping:              s.stopGen != 0 && s.stopGen == s.gen.Load(),
 			supportsSetVariable:   s.supports(func(c *capabilities) bool { return c.SupportsSetVariable }),
 			supportsSetExpression: s.supports(func(c *capabilities) bool { return c.SupportsSetExpression }),
+			supportsClipboard:     s.supports(func(c *capabilities) bool { return c.SupportsClipboardContext }),
 		})
 	}
 	return ss, d.cur, len(d.outLogs) > 0
@@ -68,7 +71,54 @@ func (d *debugger) snapshot() (ss []sessionSnap, cur *session, started bool) {
 // 出し終えたら（showStopped、stoppedWithoutSource）、作り直しの印が付く。
 func (d *debugger) stoppingAny() bool {
 	ss, _, _ := d.snapshot()
+	return anyStopping(ss)
+}
+
+// anyStopping は、写し ss に、止まった位置を出し終える前のセッションがあるかを返す。区画を作り始めた後に止まったとき
+// （refresh の stoppingAny の後、区画の写しを取る前に止まったとき）は、作るのをやめて errStale にする。止まった位置を出し終えると
+// 作り直しの印が付く。スレッドの区画が、選んでいるフレームの決まる前の中身を送っていた（#424 の make check で見つけた揺れ）。
+func anyStopping(ss []sessionSnap) bool {
 	return slices.ContainsFunc(ss, func(x sessionSnap) bool { return x.stopping })
+}
+
+// runningShowDelay は、動き出してから、区画を「動いている」の中身に作り直すまでの間である（仮）。
+// ステップ実行は、ふつうこの間に止まる（2026-11-25 の手元の測りで、止まった位置へ移るまで dlv は約 12 ms、debugpy と vscode-js-debug は
+// 約 55 ms）ので、動いている間の中身を送らずに、止まった後の中身だけを送る。ステップ実行のたびに「動いている」の中身を本体へ送ると、
+// 本体がその描き直しをしている間に止まった位置への移動が届き、元のペインの移動が遅れた（#424 の測り。ウォッチ式を 10 個出して約 9 ms）。
+// nvim-dap-view も、続けたときにスコープとウォッチ式の区画を描き直さない（listeners.lua）。
+const runningShowDelay = 150 * time.Millisecond
+
+// settleDelay は、止まった位置を出し始めてから、区画（スレッド、スコープ、ウォッチ式）を読み始めるまでの待ちである（仮。PR #425 のレビューの
+// 必須 1 へのオーケストレータの決め）。ステップ実行を続けて打つと、前の停止の区画の読み込み（vscode-js-debug でウォッチ式に 2 万の要素の列を
+// 置くと約 0.5 秒）がアダプターに送ってある間に次の next が届き、その後ろに並んで遅れた。待ちの間に次のステップ実行か続行が来れば、
+// その停止の区画は読まない（runningHold の間は読まないため）。0.1 秒の間でステップ実行を打つと、止まった位置を出してから次の next まで
+// 約 100 ms なので、それより長くした（PR #425 の測り）。
+const settleDelay = 120 * time.Millisecond
+
+// burstWindow は、続けて打っている（settleDelay の待ちを置く）とみなす、続行とステップ実行の送信の間の上限である（仮。PR #425 の再レビューの
+// 必須 1 へのオーケストレータの決め）。待ちを常に置くと、vscode-js-debug で 0.4 秒の間で打ったとき、待ちの後に始めた読み込み（約 0.5 秒）が
+// 次の next と重なって遅れた。0.1 秒の間で打つと送信の間は約 160 ms、0.4 秒の間では約 460 ms である。250 ms では、debugpy で 0.1 秒の間の
+// 送信の間がときどき 250 ms を超え（一度遅れると、次の間も延びる）、10 回のうち 3 回が遅れたので、350 ms にした（PR #425 の測り）。
+// 1 回だけ止めたときと間を置いて打つときは待たず、止まった位置を出し終えたらすぐ読み始める。
+const burstWindow = 350 * time.Millisecond
+
+// runningHold は、区画を読み始めるのを待つ残りの時間を返す（無ければ 0）。動き出してから runningShowDelay が経っていないセッションか、
+// 続けて打っている間に止まった位置を出し始めてから settleDelay が経っていない止まっているセッションがあれば、その残りである。
+func (d *debugger) runningHold() time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var hold time.Duration
+	for _, s := range d.sessions {
+		var left time.Duration
+		switch {
+		case !s.halted && !s.resumedAt.IsZero():
+			left = runningShowDelay - time.Since(s.resumedAt)
+		case s.halted && s.burst && !s.shownAt.IsZero():
+			left = settleDelay - time.Since(s.shownAt)
+		}
+		hold = max(hold, left)
+	}
+	return hold
 }
 
 // sessionByID は、番号 id の動いているセッションを返す。無ければ nil。
@@ -96,6 +146,8 @@ type threadsView struct {
 	cache map[*session]*threadCache
 	// frames は、フレームの項目の ID から、そのフレームへの対応である（項目を選んだとき）。
 	frames map[string]frameRef
+	// last は、最後に作った木である（区画に切り替えた直後に、読み直していることを添えて出す。pane.markReloading）。
+	last ext.ViewComponent
 }
 
 // threadCache は、1 つのセッションの、1 つの世代のスレッドとフレームである。
@@ -223,6 +275,9 @@ func (p *pane) threadEvent(s *session, e threadEvent) {
 // req: FR-290
 func (p *pane) buildThreads() (ext.ViewComponent, error) {
 	ss, cur, started := p.d.snapshot()
+	if anyStopping(ss) {
+		return ext.ViewComponent{}, errStale
+	}
 	for s := range p.threads.cache {
 		if !slices.ContainsFunc(ss, func(x sessionSnap) bool { return x.s == s }) {
 			delete(p.threads.cache, s)
@@ -274,7 +329,8 @@ func (p *pane) buildThreads() (ext.ViewComponent, error) {
 		id := sessionItemID(x.s)
 		items = append(items, ext.ViewItem{ID: id, Label: label, Highlights: hs, Children: children, Expanded: p.threads.open(id, true)})
 	}
-	return ext.ViewComponent{Kind: ext.ViewTree, Items: items}, nil
+	p.threads.last = ext.ViewComponent{Kind: ext.ViewTree, Items: items}
+	return p.threads.last, nil
 }
 
 // runningItem は、動いている間に区画の先頭に足す項目である。
@@ -535,15 +591,14 @@ func (p *pane) askThreadFilter() {
 	}()
 }
 
-// scopesView は、スコープの区画の状態である。run だけが触る。
-type scopesView struct {
-	// expanded は、利用者が開閉した項目の ID から、開いたかへの対応である。無い項目は既定（expensive でないスコープは開き、変数は閉じる）。
+// varTree は、変数の木（スコープの区画とウォッチ式の区画）の状態である。run だけが触る。
+type varTree struct {
+	// expanded は、利用者が開閉した項目の ID から、開いたかへの対応である。無い項目は区画ごとの既定（open の def）。
 	expanded map[string]bool
 	// cacheFor と cacheGen は、vars を読んだセッションと世代である。セッションか世代が替われば捨てる（変数の参照はセッションごとで、
 	// 止まっている間だけ有効。FR-302、FR-305）。
 	cacheFor *session
 	cacheGen uint64
-	scopes   []scope
 	vars     map[varsKey][]variable
 	verr     map[varsKey]error
 	// info は、最後に作った木の項目の ID から、その項目の変数への対応である（s と [[）。last は、最後に作った木である。
@@ -561,6 +616,23 @@ type scopesView struct {
 	snap sessionSnap
 }
 
+// fresh は、読んだ変数がセッション x のその世代のものでなければ捨て、捨てたかを返す。
+func (sv *varTree) fresh(x sessionSnap) bool {
+	if sv.cacheFor == x.s && sv.cacheGen == x.gen && sv.vars != nil {
+		return false
+	}
+	sv.cacheFor, sv.cacheGen = x.s, x.gen
+	sv.vars, sv.verr = map[varsKey][]variable{}, map[varsKey]error{}
+	return true
+}
+
+// scopesView は、スコープの区画の状態である。run だけが触る。
+type scopesView struct {
+	varTree
+	// scopes は、読んだスコープである（varTree の読んだ変数と同じセッションと世代のもの）。
+	scopes []scope
+}
+
 // varsKey は、読んだ子の変数の鍵（参照と、添字の範囲）である。
 type varsKey struct {
 	ref          int
@@ -574,12 +646,15 @@ type varInfo struct {
 	// ref は、この変数を持つ入れ物（スコープか親の変数）の参照である。scope は、スコープの項目かである。
 	ref   int
 	scope bool
-	v     variable
+	// watch は、ウォッチ式の項目（式そのもの）かである。v.Name と v.EvaluateName は式、v.Value は評価の結果である。
+	watch bool
+	// failure は、ウォッチ式の評価の誤りの全文である（誤りの項目の c で出す）。
+	failure string
+	v       variable
 }
 
-// varsOf は、鍵 k の子の変数を返す（同じ世代で読んだものは読み直さない）。読む前と読んでいる間に世代が進んだら errStale を返す。
-func (p *pane) varsOf(x sessionSnap, k varsKey) ([]variable, error) {
-	sv := &p.scopes
+// varsOf は、木 sv の鍵 k の子の変数を返す（同じ世代で読んだものは読み直さない）。読む前と読んでいる間に世代が進んだら errStale を返す。
+func (p *pane) varsOf(sv *varTree, x sessionSnap, k varsKey) ([]variable, error) {
 	if vs, ok := sv.vars[k]; ok {
 		return vs, nil
 	}
@@ -624,6 +699,9 @@ func current(ss []sessionSnap, cur *session) (sessionSnap, bool) {
 // req: FR-289, FR-302, FR-305
 func (p *pane) buildScopes() (ext.ViewComponent, error) {
 	ss, cur, started := p.d.snapshot()
+	if anyStopping(ss) {
+		return ext.ViewComponent{}, errStale
+	}
 	x, ok := current(ss, cur)
 	sv := &p.scopes
 	sv.snap = x
@@ -649,9 +727,8 @@ func (p *pane) buildScopes() (ext.ViewComponent, error) {
 		return c, nil
 	}
 	sv.info = map[string]varInfo{}
-	if sv.cacheFor != x.s || sv.cacheGen != x.gen || sv.vars == nil {
-		sv.cacheFor, sv.cacheGen, sv.scopes = x.s, x.gen, nil
-		sv.vars, sv.verr = map[varsKey][]variable{}, map[varsKey]error{}
+	if sv.fresh(x) {
+		sv.scopes = nil
 		if x.s.gen.Load() != x.gen {
 			sv.vars = nil
 			return ext.ViewComponent{}, errStale
@@ -688,7 +765,7 @@ func (p *pane) buildScopes() (ext.ViewComponent, error) {
 			Highlights: []ext.ViewSpan{{Start: 0, End: len(oneLine(sc.Name)), Style: "keyword"}},
 		}
 		if open && sc.VariablesReference > 0 {
-			children, err := p.childItems(x, id, variable{VariablesReference: sc.VariablesReference})
+			children, err := p.childItems(&sv.varTree, x, id, variable{VariablesReference: sc.VariablesReference})
 			if err != nil {
 				sv.vars = nil
 				return ext.ViewComponent{}, err
@@ -703,7 +780,7 @@ func (p *pane) buildScopes() (ext.ViewComponent, error) {
 }
 
 // open は、項目 id を開いて出すかを返す。利用者が開閉していなければ def である。
-func (sv *scopesView) open(id string, def bool) bool {
+func (sv *varTree) open(id string, def bool) bool {
 	if v, ok := sv.expanded[id]; ok {
 		return v
 	}
@@ -721,20 +798,20 @@ func uniqueID(seen map[string]int, id string) string {
 
 // childItems は、変数 v（スコープなら参照だけを入れたもの）の子の項目を作る。添字の子が pageSize より多ければ、名前の子と、
 // 最初の pageSize の添字の子と、残りを読む more の項目にする（indexedPage）。
-func (p *pane) childItems(x sessionSnap, parent string, v variable) ([]ext.ViewItem, error) {
+func (p *pane) childItems(sv *varTree, x sessionSnap, parent string, v variable) ([]ext.ViewItem, error) {
 	seen := map[string]int{}
 	if v.IndexedVariables <= pageSize {
-		return p.variableItems(x, parent, v.VariablesReference, varsKey{ref: v.VariablesReference}, seen)
+		return p.variableItems(sv, x, parent, v.VariablesReference, varsKey{ref: v.VariablesReference}, seen)
 	}
 	var items []ext.ViewItem
 	if v.NamedVariables > 0 {
-		named, err := p.variableItems(x, parent, v.VariablesReference, varsKey{ref: v.VariablesReference, filter: "named"}, seen)
+		named, err := p.variableItems(sv, x, parent, v.VariablesReference, varsKey{ref: v.VariablesReference, filter: "named"}, seen)
 		if err != nil {
 			return nil, err
 		}
 		items = append(items, named...)
 	}
-	page, err := p.indexedPage(x, parent, v.VariablesReference, 0, v.IndexedVariables, seen)
+	page, err := p.indexedPage(sv, x, parent, v.VariablesReference, 0, v.IndexedVariables, seen)
 	if err != nil {
 		return nil, err
 	}
@@ -743,9 +820,9 @@ func (p *pane) childItems(x sessionSnap, parent string, v variable) ([]ext.ViewI
 
 // indexedPage は、参照 ref の添字の子のうち start から pageSize 個の項目と、残りがあれば、開いたときに続きを読む more の項目を作る
 // （debugpy が 100 ずつ返して more の項目を付けるのと同じ見た目。PR #423 のレビューの推奨 5）。
-func (p *pane) indexedPage(x sessionSnap, parent string, ref, start, total int, seen map[string]int) ([]ext.ViewItem, error) {
+func (p *pane) indexedPage(sv *varTree, x sessionSnap, parent string, ref, start, total int, seen map[string]int) ([]ext.ViewItem, error) {
 	n := min(pageSize, total-start)
-	items, err := p.variableItems(x, parent, ref, varsKey{ref: ref, filter: "indexed", start: start, count: n}, seen)
+	items, err := p.variableItems(sv, x, parent, ref, varsKey{ref: ref, filter: "indexed", start: start, count: n}, seen)
 	if err != nil {
 		return nil, err
 	}
@@ -753,10 +830,10 @@ func (p *pane) indexedPage(x sessionSnap, parent string, ref, start, total int, 
 		return items, nil
 	}
 	id := parent + "\x1f!more" + strconv.Itoa(start+n)
-	if p.scopes.open(id, false) {
+	if sv.open(id, false) {
 		// 開いた more の項目は、続きの pageSize 個（と次の more）に置き換え、同じ深さに並べる（開き続けても字下げが深くならない。
 		// PR #423 の再レビューの推奨 5）。続きの項目の ID は、同じ変数の子として作る。
-		rest, err := p.indexedPage(x, parent, ref, start+n, total, seen)
+		rest, err := p.indexedPage(sv, x, parent, ref, start+n, total, seen)
 		if err != nil {
 			return nil, err
 		}
@@ -770,9 +847,8 @@ func (p *pane) indexedPage(x sessionSnap, parent string, ref, start, total int, 
 
 // variableItems は、鍵 k の子の変数の項目を作る。開いた子を持つ変数は、その子も読む。
 // 項目の ID は、親の ID に区切りの文字（U+001F）と変数の名前を足したもので、止まり直しても同じ変数は同じ ID になる（開閉とカーソルを保つ）。
-func (p *pane) variableItems(x sessionSnap, parent string, ref int, k varsKey, seen map[string]int) ([]ext.ViewItem, error) {
-	sv := &p.scopes
-	vs, err := p.varsOf(x, k)
+func (p *pane) variableItems(sv *varTree, x sessionSnap, parent string, ref int, k varsKey, seen map[string]int) ([]ext.ViewItem, error) {
+	vs, err := p.varsOf(sv, x, k)
 	if errors.Is(err, errStale) {
 		return nil, err
 	}
@@ -796,7 +872,7 @@ func (p *pane) variableItems(x sessionSnap, parent string, ref int, k varsKey, s
 			open := sv.open(id, false)
 			item.Expanded = &open
 			if open {
-				children, err := p.childItems(x, id, v)
+				children, err := p.childItems(sv, x, id, v)
 				if err != nil {
 					return nil, err
 				}
@@ -824,11 +900,11 @@ func variableLabel(v variable) (string, []ext.ViewSpan) {
 	return label, hs
 }
 
-// scopesParent は、スコープの区画のカーソルを、項目 item の親の項目へ移す（[[。nvim-dap-view の jump_to_parent）。
+// jumpParent は、変数の木 sv の区画 child（スコープかウォッチ式）のカーソルを、項目 item の親の項目へ移す（[[。nvim-dap-view の jump_to_parent）。
 // 本体の木の部品にこの操作が無いので、最後に作った木を cursor 付きの view/update で送り直す（基本設計 6.4）。
 // more の項目の下の項目は、more の項目の親（その変数）へ移す。
-func (p *pane) scopesParent(item string) {
-	info, ok := p.scopes.info[item]
+func (p *pane) jumpParent(sv *varTree, child, item string) {
+	info, ok := sv.info[item]
 	view := ext.ViewID(p.view.Load())
 	if !ok || info.parent == "" || view == 0 {
 		return
@@ -841,10 +917,10 @@ func (p *pane) scopesParent(item string) {
 		}
 		parent = parent[:i]
 	}
-	c := p.scopes.last
+	c := sv.last
 	c.Cursor = parent
-	if err := p.d.srv.UpdateView(ext.ViewUpdateParams{View: view, Child: secScopes, Component: c}); err != nil {
-		p.d.logf("view/update scopes: %v", err)
+	if err := p.d.srv.UpdateView(ext.ViewUpdateParams{View: view, Child: child, Component: c}); err != nil {
+		p.d.logf("view/update %s: %v", child, err)
 	}
 }
 
@@ -861,16 +937,34 @@ func flatten(s string) string {
 //
 // req: FR-289, FR-304
 func (p *pane) scopesSetValue(item string) {
-	info, ok := p.scopes.info[item]
+	p.askSetValue(&p.scopes.varTree, item)
+}
+
+// askSetValue は、変数の木 sv のカーソルの項目 item の値を書き換える（スコープとウォッチ式の区画の s）。
+// ウォッチ式の項目（式そのもの）は、evaluate の結果に evaluateName が無いので、式を setExpression で書き換える
+// （nvim-dap-view の watches/actions.lua の set_expr と同じ）。setExpression に対応しないアダプターでは、request を送らずに知らせる（FR-309）。
+// 子の変数は、スコープの区画と同じく選ぶ。
+//
+// req: FR-292, FR-309
+func (p *pane) askSetValue(sv *varTree, item string) {
+	info, ok := sv.info[item]
 	if !ok || info.scope {
 		return
 	}
-	x := p.scopes.snap
+	x := sv.snap
+	if x.s == nil {
+		p.d.showError("デバッグしていないので、値を書き換えられない")
+		return
+	}
 	if !x.halted {
 		p.d.showError("動いている間は、変数の値を書き換えられない")
 		return
 	}
 	useExpr := x.supportsSetExpression && info.v.EvaluateName != ""
+	if info.watch && !x.supportsSetExpression {
+		p.d.showError(fmt.Sprintf("アダプター %s は式の値の書き換え（setExpression）に対応していない", x.s.spec.adapter.name))
+		return
+	}
 	if !useExpr && !x.supportsSetVariable {
 		p.d.showError(fmt.Sprintf("アダプター %s は変数の値の書き換えに対応していない", x.s.spec.adapter.name))
 		return
@@ -882,12 +976,12 @@ func (p *pane) scopesSetValue(item string) {
 		if err != nil || res.Cancelled {
 			return
 		}
-		p.post(func() { p.setValue(x, item, info, useExpr, res.Value) })
+		p.post(func() { p.setValue(sv, x, item, info, useExpr, res.Value) })
 	}()
 }
 
-// setValue は、変数 info の値を value に書き換え、スコープの区画を読み直す。
-func (p *pane) setValue(x sessionSnap, id string, info varInfo, useExpr bool, value string) {
+// setValue は、木 sv の変数 info の値を value に書き換え、スコープとウォッチ式の区画を読み直す。
+func (p *pane) setValue(sv *varTree, x sessionSnap, id string, info varInfo, useExpr bool, value string) {
 	if x.s.gen.Load() != x.gen {
 		p.d.showError("止まった状態が変わったので、値を書き換えなかった")
 		return
@@ -912,7 +1006,6 @@ func (p *pane) setValue(x sessionSnap, id string, info varInfo, useExpr bool, va
 		// vscode-js-debug 1.117.0 は、setExpression の直後の variables で書き換える前の値を返す（#421 で実物で確かめた。
 		// nvim-dap-view も scopes/view.lua で、vscode-js-debug の issue 2320 への回り道として応答の値を出す）。
 		// 同じ止まった状態の間は、応答の値をその変数の値として出す。
-		sv := &p.scopes
 		if sv.setFor != x.s || sv.setGen != x.gen {
 			sv.setFor, sv.setGen, sv.setValues = x.s, x.gen, map[string]string{}
 		}
@@ -920,7 +1013,9 @@ func (p *pane) setValue(x sessionSnap, id string, info varInfo, useExpr bool, va
 			sv.setValues[id] = res.Value
 		}
 	}
-	// 書き換えると、ほかの変数の値と参照も変わりうる（DAP の仕様の SetVariableResponse）ので、読んだ変数を捨てて読み直す。
+	// 書き換えると、ほかの変数の値と参照も変わりうる（DAP の仕様の SetVariableResponse）ので、どちらの区画も読んだ変数と
+	// 評価の結果を捨てて読み直す（nvim-dap-view の listeners.lua も、setExpression と setVariable の後にウォッチ式を評価し直す）。
 	p.scopes.vars = nil
-	p.markDirty(secScopes)
+	p.watches.vars = nil
+	p.markDirty(secScopes, secWatches)
 }

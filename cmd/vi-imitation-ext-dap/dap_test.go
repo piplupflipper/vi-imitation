@@ -76,6 +76,8 @@ type host struct {
 	// updates と appends は、拡張機能が送った view/update と view/append である（ペインのテスト）。
 	updates chan ext.ViewUpdateParams
 	appends chan ext.ViewAppendParams
+	// popups は、拡張機能が popup/open で開いた部品である（ウォッチ式の区画の値のヤンク）。
+	popups chan ext.PopupOpenParams
 
 	mu       sync.Mutex
 	versions map[ext.BufferID]ext.Version
@@ -149,6 +151,7 @@ func newHostState(t *testing.T) *host {
 		inputAnswers: make(chan ext.InputAskResult, 16),
 		updates:      make(chan ext.ViewUpdateParams, 4096),
 		appends:      make(chan ext.ViewAppendParams, 4096),
+		popups:       make(chan ext.PopupOpenParams, 16),
 		versions:     map[ext.BufferID]ext.Version{},
 		ids:          map[string]ext.BufferID{},
 		workDir:      t.TempDir(),
@@ -220,6 +223,15 @@ func (h *host) request(_ context.Context, req *rpc.Request, reply rpc.Replier) {
 		h.mu.Unlock()
 		_ = reply(ext.PaneOpenResult{View: id}, nil)
 		h.panes <- openedPane{id: id, params: p}
+		return
+	case ext.MethodPopupOpen:
+		p := decode[ext.PopupOpenParams](h.t, req.Params)
+		h.mu.Lock()
+		h.nextView++
+		id := h.nextView
+		h.mu.Unlock()
+		_ = reply(ext.PopupOpenResult{View: id}, nil)
+		h.popups <- p
 		return
 	case ext.MethodChoiceAsk:
 		p := decode[ext.ChoiceAskParams](h.t, req.Params)
@@ -929,6 +941,8 @@ func TestManifest(t *testing.T) {
 		keyScopesParent: {secScopes}, keyScopesSetValue: {secScopes},
 		keyThreadsSubtle: {secThreads}, keyThreadsFilter: {secThreads}, keyThreadsInvert: {secThreads}, keyThreadsSelect: {secThreads},
 		keyBreakpointsDel: {secBreakpoints}, keyConsoleNext: {secConsole}, keyConsolePrev: {secConsole},
+		keyWatchesParent: {secWatches}, keyWatchesAppend: {secWatches}, keyWatchesInsert: {secWatches}, keyWatchesEdit: {secWatches},
+		keyWatchesDelete: {secWatches}, keyWatchesSet: {secWatches}, keyWatchesCopy: {secWatches},
 		"dap.view.next": nil, "dap.view.prev": nil,
 	}
 	got := map[string][]string{}
