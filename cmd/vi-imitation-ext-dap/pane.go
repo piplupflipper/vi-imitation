@@ -369,8 +369,8 @@ func (p *pane) closePane() {
 // 出力の区画と REPL の区画は、それぞれの写し（server.TextLog）の Open で開き、写しの中身（閉じている間の出力を含む）を出す（FR-273）。
 // 2 つの写しの Open は入れ子にし、内側の open が pane/open を送る（どちらの写しも、開いている間の書き足しを開いた後に送る）。
 // REPL の入力の履歴は、拡張機能が積んだものを渡す（FR-274）。
-// 選ぶ区画は、閉じたときに選んでいた区画で、初めては ui.defaultSection である。見えていない区画のうち、スコープとウォッチ式の区画は
-// 作らずに印を付け、選ばれたとき（view/childSelect）に作る。スレッドの区画は止まった位置の印のため常に作る。
+// 選ぶ区画は、閉じたときに選んでいた区画で、初めては ui.defaultSection である。見えていない区画のうち、スレッド、スコープ、ウォッチ式の
+// 区画（アダプターへ request を送って読む区画）は、作らずに印を付け、選ばれたとき（view/childSelect）に作る（#424 の裁定）。
 //
 // req: FR-108, FR-278, FR-291, FR-293
 func (p *pane) openPane() {
@@ -465,6 +465,10 @@ func (p *pane) build(sec string, visible bool) ext.ViewComponent {
 	case secRepl:
 		return ext.ViewComponent{Kind: ext.ViewConsole, Prompt: replPrompt}
 	case secThreads:
+		if !visible {
+			p.markDirty(sec)
+			return leafTree("（区画を選ぶと読みます）")
+		}
 		p.takeDirty(sec)
 		c, err := p.buildThreads()
 		if err != nil {
@@ -496,8 +500,9 @@ func leafTree(label string) ext.ViewComponent {
 	return ext.ViewComponent{Kind: ext.ViewTree, Items: []ext.ViewItem{{ID: "none", Label: label}}}
 }
 
-// refresh は、ペインを開いていれば、作り直しの印の付いた区画のうち、選んでいる区画と、スレッドとブレークポイントと例外の区画を作り直し、
-// 出力の区画に出す写しを今のセッションに合わせる（基本設計 6.4 の「表示の更新」）。見えていないスコープとウォッチ式の区画は印を残す。
+// refresh は、ペインを開いていれば、作り直しの印の付いた区画のうち、選んでいる区画と、ブレークポイントと例外の区画（request を送らない）を
+// 作り直し、出力の区画に出す写しを今のセッションに合わせる（基本設計 6.4 の「表示の更新」）。見えていないスレッド、スコープ、ウォッチ式の区画は
+// 印を残し、アダプターへ request を送らない（#424 の裁定。ウォッチ式を 10 個置いても、見えていなければステップ実行を遅らせない）。
 // スレッド、スコープ、ウォッチ式の区画は、止まった位置を出し終えるまで読まない（PR #423 のレビューの必須 1）。
 func (p *pane) refresh() {
 	view := ext.ViewID(p.view.Load())
@@ -511,7 +516,11 @@ func (p *pane) refresh() {
 	for _, sec := range ui.sections {
 		visible := sec == p.selected
 		reads := sec == secThreads || sec == secScopes || sec == secWatches
-		if (sec == secScopes || sec == secWatches) && !visible {
+		if reads && !visible {
+			// 見えていない区画は読まず、印を残して、選ばれたとき（view/childSelect）に読む（#424 の裁定）。
+			if p.isDirty(sec) {
+				p.forgetShown(sec)
+			}
 			continue
 		}
 		if !reads && sec != secBreakpoints && sec != secExceptions {
@@ -537,6 +546,23 @@ func (p *pane) refresh() {
 		if err := p.d.srv.UpdateView(ext.ViewUpdateParams{View: view, Child: sec, Component: c}); err != nil {
 			p.d.logf("view/update %s: %v", sec, err)
 		}
+	}
+}
+
+// forgetShown は、見えていない区画 sec の、最後に止まっている間に作った木を、動いている間の中身に使わないようにする。
+// 見えていない間に止まり直していれば、その木は最新の停止のものでないので、動いている間に区画へ切り替えたときに、
+// 前の停止の値を「動いている」の印と一緒に出さず、式だけ（スコープは「実行中」）を出す。止まっていれば、選んだときに読み直す。
+func (p *pane) forgetShown(sec string) {
+	ss, cur, _ := p.d.snapshot()
+	x, ok := current(ss, cur)
+	if !ok || !x.halted {
+		return
+	}
+	switch sec {
+	case secScopes:
+		p.scopes.lastFor = nil
+	case secWatches:
+		p.watches.lastFor = nil
 	}
 }
 

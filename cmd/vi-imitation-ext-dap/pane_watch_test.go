@@ -128,7 +128,10 @@ func TestPaneWatches(t *testing.T) {
 	// フレームを選び直すと、そのフレームで評価し直す（y は呼んだ側のフレームでだけ評価できる）。
 	h.addWatch(p.id, keyWatchesAppend, "w4", "y")
 	h.waitLabel(secWatches, "y = could not evaluate y")
+	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secThreads})
+	h.waitLabel(secThreads, "main.caller")
 	h.notifyView(ext.MethodViewSelect, ext.ViewSelectParams{View: p.id, Item: "t1/1/#2", Child: secThreads})
+	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secWatches})
 	h.waitLabel(secWatches, "y = 7")
 	h.waitOutput("evaluate watch y frame=1002")
 
@@ -156,6 +159,46 @@ func TestPaneWatchesRunning(t *testing.T) {
 	}
 	if all := h.outputsUntil("hello from debuggee"); strings.Contains(all, "evaluate") {
 		t.Errorf("evaluate was sent while running: %q", all)
+	}
+	h.stopAndWait()
+}
+
+// TestPaneWatchesHidden は、ウォッチ式の区画が見えていない間は、止まっても evaluate を送らず（スレッドの区画も読まない）、
+// 区画に切り替えた時点で最新の停止に対して評価することと、動いている間に切り替えたときは、前の停止の値を出さずに式だけを出し、
+// 止まったら最新の停止で評価することを確かめる（#424 の裁定）。
+//
+// req: FR-292
+func TestPaneWatchesHidden(t *testing.T) {
+	h := paneHost(t, nil, map[string]any{"stopDelayMs": 600}, nil)
+	h.toggleUI()
+	p := h.waitPane()
+	h.addWatch(p.id, keyWatchesAppend, "none", "x")
+	h.waitLabel(secWatches, "x  （デバッグしていない）")
+	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secScopes})
+	h.mustExec(cmdStart, 0)
+	h.waitLabel(secScopes, "x: int = 1")
+	h.mustExec(cmdNext, 0)
+	h.waitLabel(secScopes, "x: int = 2")
+	all := h.outputsUntil("stopped 2", "variables 1")
+	if strings.Contains(all, "evaluate") || strings.Contains(all, "threads") || strings.Contains(all, "levels=200") {
+		t.Errorf("a hidden section was read: %q", all)
+	}
+	// 止まっている間に切り替えると、最新の停止（2 回目）で評価する。
+	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secWatches})
+	h.waitLabel(secWatches, "x = 2")
+	// 見えていない間に止まり直してから、動いている間に切り替えると、前の停止の値（x = 2）を出さない。
+	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secScopes})
+	h.mustExec(cmdNext, 0)
+	h.waitLabel(secScopes, "x: int = 3")
+	h.mustExec(cmdNext, 0)
+	h.waitLabel(secScopes, runningLabel)
+	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secWatches})
+	var seen []ext.ViewComponent
+	h.waitUpdate(secWatches, func(c ext.ViewComponent) bool { return strings.Contains(labels(c.Items), "x = 4") }, &seen)
+	for _, c := range seen {
+		if l := labels(c.Items); strings.Contains(l, "x = 2") || strings.Contains(l, "x = 3") {
+			t.Errorf("a value of an older stop was shown: %q", l)
+		}
 	}
 	h.stopAndWait()
 }

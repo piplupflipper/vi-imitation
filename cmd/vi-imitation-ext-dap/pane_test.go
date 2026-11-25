@@ -151,9 +151,12 @@ func TestPaneToggle(t *testing.T) {
 	if err := p.params.Validate(); err != nil {
 		t.Errorf("Validate = %v", err)
 	}
-	if l := labels(childOf(t, c, secThreads).Items); !strings.Contains(l, "デバッグしていない") {
+	// 見えていないスレッドの区画は読まず、選んだときに作る（#424 の裁定）。
+	if l := labels(childOf(t, c, secThreads).Items); !strings.Contains(l, "区画を選ぶと読みます") {
 		t.Errorf("threads = %q", l)
 	}
+	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secThreads})
+	h.waitLabel(secThreads, "デバッグしていない")
 	h.toggleUI()
 	select {
 	case id := <-h.closes:
@@ -165,7 +168,7 @@ func TestPaneToggle(t *testing.T) {
 	}
 	// 閉じた後のもう一度で、閉じたときの区画を選んで開き直す。
 	h.toggleUI()
-	if p2 := h.waitPane(); p2.params.Component.Selected != secWatches {
+	if p2 := h.waitPane(); p2.params.Component.Selected != secThreads {
 		t.Errorf("reopened selected = %q", p2.params.Component.Selected)
 	}
 
@@ -530,9 +533,8 @@ func TestPaneOutput(t *testing.T) {
 	if console := childOf(t, p.params.Component, secConsole); !strings.Contains(console.Text, want) {
 		t.Errorf("console after the end = %q", console.Text)
 	}
-	if l := labels(childOf(t, p.params.Component, secThreads).Items); !strings.Contains(l, "デバッグは終わった") {
-		t.Errorf("threads after the end = %q", l)
-	}
+	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secThreads})
+	h.waitLabel(secThreads, "デバッグは終わった")
 }
 
 // TestPaneAutoOpenClose は、ui.autoOpen と ui.autoClose で、デバッグを始めたときにペインを開き、すべてのセッションが終わったら閉じることを確かめる。
