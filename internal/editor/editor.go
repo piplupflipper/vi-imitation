@@ -451,7 +451,8 @@ type Editor struct {
 	// clipPushes は、ホストのクリップボードへ最後に送ったか、送るかを判定したときの command.Registers.Pushes の値である（syncClipboard）。
 	clipPushes uint64
 
-	choices []*exthost.ChoiceAskRequest
+	// choices は、拡張機能の問い（choice/ask と input/ask。FR-275）の 1 本の列である。先頭の 1 つだけを出し、残りは届いた順に待たせる。
+	choices []*extQuestion
 	// choiceDone は、続けて届いた問い（choices が空になるまでの一続き）のうち、答えたか取り下げられた問いの数である。
 	// 表示中の問いが何件目か（choiceDone+1）を出すのに使い、choices が空になったら 0 に戻す（#151）。
 	choiceDone int

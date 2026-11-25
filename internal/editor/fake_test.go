@@ -490,6 +490,48 @@ func runFakeExt(mode string) int {
 			}()
 			return ext.CommandExecuteResult{OK: true}, nil
 		})
+		// fake.input は、input/ask で「名前: 」を聞き、結果を出力の欄 input に書き足す（FR-275）。
+		// コマンドラインから引数を付けて呼ぶと（:fake.input 既定）、引数を初めの中身にする。
+		s.Command("fake.input", func(_ context.Context, _ *server.Buffer, p *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
+			var a struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(p.Args, &a)
+			go func() {
+				r, err := s.AskInput(hostCtx, ext.InputAskParams{Title: "名前: ", Default: a.Text})
+				_ = s.AppendOutput("input", fmt.Sprintf("value=%q cancelled=%v err=%v\n", r.Value, r.Cancelled, err))
+			}()
+			return ext.CommandExecuteResult{OK: true}, nil
+		})
+		// fake.mixed は、choice/ask、input/ask（初めの中身 x）、input/ask の 3 つの問いを、この順に届くように間を置いて続けて送り、
+		// それぞれの結果を出力の欄 ask に書き足す（DAP の構成の選択の後に inputs の値を聞く順。FR-275）。
+		s.Command("fake.mixed", func(context.Context, *server.Buffer, *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
+			go func() {
+				r, err := s.AskChoice(hostCtx, ext.ChoiceAskParams{Title: "どれ?", Choices: []ext.Choice{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}}})
+				_ = s.AppendOutput("ask", fmt.Sprintf("choice selected=%s cancelled=%v err=%v\n", r.Selected, r.Cancelled, err))
+			}()
+			for i, title := range []string{"式: ", "値: "} {
+				go func() {
+					time.Sleep(time.Duration(i+1) * 50 * time.Millisecond)
+					def := ""
+					if i == 0 {
+						def = "x"
+					}
+					r, err := s.AskInput(hostCtx, ext.InputAskParams{Title: title, Default: def})
+					_ = s.AppendOutput("ask", fmt.Sprintf("input%d value=%q cancelled=%v err=%v\n", i+1, r.Value, r.Cancelled, err))
+				}()
+			}
+			return ext.CommandExecuteResult{OK: true}, nil
+		})
+		// fake.inputexit は、input/ask を送り、答えを待つ間に拡張機能のプロセスを終わらせる（FR-275 の取り下げ）。
+		s.Command("fake.inputexit", func(context.Context, *server.Buffer, *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
+			go func() {
+				go func() { _, _ = s.AskInput(hostCtx, ext.InputAskParams{Title: "終わる: ", Default: "d"}) }()
+				time.Sleep(300 * time.Millisecond)
+				os.Exit(3)
+			}()
+			return ext.CommandExecuteResult{OK: true}, nil
+		})
 		s.Command("fake.state", func(_ context.Context, _ *server.Buffer, _ *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
 			go func() {
 				st, err := s.EditorState(hostCtx)
@@ -691,6 +733,7 @@ func fakeSpecs(t *testing.T) []exthost.Spec {
 				act(ext.ActivationCommand, "fake.write"), act(ext.ActivationCommand, "fake.touch"),
 				act(ext.ActivationCommand, "fake.popup"), act(ext.ActivationCommand, "fake.headdiff"),
 				act(ext.ActivationCommand, "fake.pane"), act(ext.ActivationCommand, "fake.list"), act(ext.ActivationCommand, "fake.exec"),
+				act(ext.ActivationCommand, "fake.input"),
 			},
 			Contributes: ext.Contributes{
 				TextObjects: []ext.Contribution{contrib("fake.line", "il"), contrib("fake.slow", "is"), contrib("fake.hang", "ih")},
@@ -703,7 +746,7 @@ func fakeSpecs(t *testing.T) []exthost.Spec {
 					contrib("fake.bufs", `\b`), contrib("fake.ask3", `\3`), contrib("fake.askseq", `\4`),
 					contrib("fake.write", ""), contrib("fake.touch", ""), contrib("fake.ft", `\y`),
 					contrib("fake.popup", ""), contrib("fake.headdiff", ""), contrib("fake.pane", ""), contrib("fake.list", ""),
-					contrib("fake.exec", ""),
+					contrib("fake.exec", ""), contrib("fake.input", `\i`), contrib("fake.mixed", `\m`), contrib("fake.inputexit", `\x`),
 				},
 				// ポップアップの中だけで効くキー（FR-69）。x は本体では文字を消すキーで、ポップアップの中ではこちらが先に効く。
 				// gx は g で始まるので、gg はキーの列が当たらずに本体の gg として動く。

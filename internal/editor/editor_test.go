@@ -462,12 +462,12 @@ func TestUIChoice(t *testing.T) {
 	for i := range 11 {
 		chs = append(chs, ext.Choice{ID: fmt.Sprint(i), Label: fmt.Sprint("L", i)})
 	}
-	e := &Editor{choices: []*exthost.ChoiceAskRequest{{Params: ext.ChoiceAskParams{Title: "t", Choices: chs}}}}
+	e := &Editor{choices: []*extQuestion{{choice: &exthost.ChoiceAskRequest{Params: ext.ChoiceAskParams{Title: "t", Choices: chs}}}}}
 	c := e.uiChoice()
 	if c.Title != "t" || len(c.Labels) != 9 || c.Labels[8] != "L8" || c.Omitted != 2 || c.Index != 0 || c.Note != "" {
 		t.Errorf("uiChoice = %+v", c)
 	}
-	e.choices[0].Params.Choices = chs[:2]
+	e.choices[0].choice.Params.Choices = chs[:2]
 	c = e.uiChoice()
 	if len(c.Labels) != 2 || c.Omitted != 0 {
 		t.Errorf("uiChoice(2) = %+v", c)

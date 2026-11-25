@@ -82,6 +82,9 @@ func (e *Editor) frame() *ui.Frame {
 		f.Message = ui.Message{Text: e.confirm.Prompt, Level: ui.MessageWarning}
 	case question && e.prompt != nil:
 		f.Message = ui.Message{Text: e.prompt.text, Level: ui.MessageWarning}
+	case question && e.activeChoice() != nil && e.choices[0].input != nil:
+		// 1 行の入力の問い（input/ask。FR-275）は、コマンドラインの行か画面の上のポップアップに出す（ui の drawInput）。
+		f.Input = e.uiInput()
 	case question && e.activeChoice() != nil:
 		f.Choice = e.uiChoice()
 		f.List = e.uiRegList()

@@ -125,6 +125,20 @@ type Choice struct {
 	Note string
 }
 
+// Input は、1 行の入力の問い（input/ask。FR-275）の表示である（Frame.Input）。
+type Input struct {
+	// Prompt は、問いの文である。入力の前置きとして、入力の中身の前に続けて出す。改行を含めない。
+	Prompt string
+	// Text は、打っている入力の中身である。カーソルは常にその末尾に置く。
+	Text string
+	// Index は、続けて届いた問いのうち何件目か（1 から数える）である。0 より大きければ、問いの文の前に "問い 2: " の形で出す
+	// （Choice.Index と同じ。#151）。
+	Index int
+	// Note は、入力の行の上に出す知らせ（前の問いへの答え、待たせている問いの数）である。改行を含んでよい。空なら出さない
+	// （Choice.Note と同じ。#151）。
+	Note string
+}
+
 // List は、浮かべる窓に出す選択の一覧である（Frame.List。:registers の一覧。FR-54）。
 type List struct {
 	// Title は、窓の最初の行に出す見出し（選び方の案内）である。
@@ -141,7 +155,7 @@ type Float struct {
 	// ID は、窓を見分ける番号である。替わったら窓の中のスクロールの位置を決め直す。0 も 1 つの窓として扱う。
 	ID uint64
 	// View は、窓の中に描くバッファの Frame である。Text、Cursor、Mode、Selection、Decorations、Diagnostics、Wrap を読み、
-	// Tabs、Output、List、Choice、Float、Diff、Message、LineNumbers、Search、Highlights、Progress、Scrollbar、Intro、Band は読まない
+	// Tabs、Output、List、Choice、Input、Float、Diff、Message、LineNumbers、Search、Highlights、Progress、Scrollbar、Intro、Band は読まない
 	// （窓の中に行番号と検索の一致の色とヤンクした範囲の色とスクロールバーと起動の案内は出さない）。
 	// Text が nil なら窓を出さない。
 	View *Frame
@@ -265,7 +279,8 @@ type Frame struct {
 	Completion *CompletionMenu
 	// CommandLinePopup は、コマンドラインモードの入力（CommandLine と CommandLineType）を、最後の行の代わりに、
 	// 画面の上の中央のポップアップの枠の中に描くかである（設定の commandLine.popup。FR-215。drawCommandLinePopup）。
-	// 枠を置けないほど画面が狭いか低いときは、false のときと同じく最後の行に描く。コマンドラインモードでなければ読まない。
+	// 枠を置けないほど画面が狭いか低いときは、false のときと同じく最後の行に描く。1 行の入力の問い（Input）も、同じく枠に描く
+	// （FR-275）。コマンドラインモードでなく、Input も無ければ読まない。
 	CommandLinePopup bool
 	// OperatorPending は、オペレーターの後でモーションを待っているかどうかである。カーソルを下線の形にする。
 	OperatorPending bool
@@ -280,6 +295,11 @@ type Frame struct {
 	// nil でなければ、Message とコマンドラインの代わりに、画面の下から上へ問いの文と選択肢を 1 つずつ行に分けて描き、
 	// 最後の行に選び方の案内（ChoicePrompt）を出してカーソルをその末尾に置く。キーの扱いは internal/editor が行う。
 	Choice *Choice
+	// Input は、出している 1 行の入力の問い（input/ask。FR-275）である。nil なら問いを出していない。Choice と同時には出さない。
+	// nil でなければ、Message とコマンドラインの代わりに、最後の行（CommandLinePopup なら画面の上の中央のポップアップの枠）に
+	// 問いの文と入力の中身を出し、カーソル（縦線）を中身の末尾に置く。知らせ（Input.Note）は、その上の行から上へ出す。
+	// キーの扱いは internal/editor が行う。
+	Input *Input
 	// Decorations は、構文の色の範囲を行ごとに分けたもの（NewDecorations で作る）である。nil なら色を付けない。
 	Decorations *Decorations
 	// Diagnostics は、診断の範囲の一覧である。構文の色の上に重ねる。範囲の始まりの行には、印の列に診断の印も出す。

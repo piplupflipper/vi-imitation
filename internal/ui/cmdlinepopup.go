@@ -72,6 +72,19 @@ func (r *Renderer) cmdlineTail(full string, width int) string {
 //
 // req: FR-215, FR-216
 func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix rune) (Cursor, bool) {
+	var menu *CompletionMenu
+	if m := f.Completion; m != nil && m.Start >= 0 && m.Start <= len(f.CommandLine) {
+		menu = m
+	}
+	return r.drawLinePopup(g, theme, string(prefix)+f.CommandLine, cmdlinePopupTitle(prefix), prefix == '/' || prefix == '?', menu)
+}
+
+// drawLinePopup は、1 行の入力 full（前置きを含む）を、画面の上の中央のポップアップの枠の中に描き、入力の末尾に置くカーソルを返す。
+// 枠の題は記号 titleSymbol、枠線と題の色は、search なら StyleCommandLinePopupBorderSearch、そうでなければ
+// StyleCommandLinePopupBorder にする。menu が nil でなければ、入力の枠のすぐ下に候補の一覧を描く（FR-217）。
+// コマンドラインと検索の入力（drawCommandLinePopup）と、拡張機能が 1 行の入力を聞く問い（drawInput。FR-275）が使う。
+// 枠を置けなければ、何も描かずに ok を false で返す。
+func (r *Renderer) drawLinePopup(g *Grid, theme Theme, full, titleSymbol string, search bool, menu *CompletionMenu) (Cursor, bool) {
 	chars, ok := r.border()
 	if !ok {
 		chars = cmdlinePopupBorder
@@ -82,7 +95,6 @@ func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix r
 	if top < 0 || maxCW < 2 {
 		return Cursor{}, false
 	}
-	full := string(prefix) + f.CommandLine
 	tabStop := tabStopOr(r.tabStop)
 	cw := min(max(cmdlinePopupMinWidth, StringWidth(full, tabStop)+1), maxCW)
 	iw := cw + 2 // 左右の余白を含めた枠の中の列数
@@ -91,7 +103,7 @@ func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix r
 	x0 := left + 1
 	body := theme.attr(StyleCommandLinePopup)
 	ba := theme.attr(StyleCommandLinePopupBorder)
-	if prefix == '/' || prefix == '?' {
+	if search {
 		ba = theme.attr(StyleCommandLinePopupBorderSearch)
 	}
 	row := top + 1
@@ -100,7 +112,7 @@ func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix r
 		g.set(row, x0+c, blank(body))
 	}
 	r.drawBorderAttr(g, ba, chars, row, x0, 1, iw)
-	if title := r.symbol(cmdlinePopupTitle(prefix)); title != "" {
+	if title := r.symbol(titleSymbol); title != "" {
 		t := " " + title + " "
 		x := x0 + max((iw-StringWidth(t, tabStop))/2, 0)
 		r.drawText(g, top, x, x0+iw, t, ba)
@@ -108,8 +120,8 @@ func (r *Renderer) drawCommandLinePopup(g *Grid, theme Theme, f *Frame, prefix r
 	s := r.cmdlineTail(full, cw)
 	end := r.drawTextFrom(g, row, x0+1, x0+1+cw, s, body)
 	r.hits.cover(top, left, outerH, outerW)
-	if m := f.Completion; m != nil && m.Start >= 0 && m.Start <= len(f.CommandLine) {
-		r.drawPaletteMenu(g, theme, m, top+outerH, left, outerW, chars)
+	if menu != nil {
+		r.drawPaletteMenu(g, theme, menu, top+outerH, left, outerW, chars)
 	} else {
 		r.pum.valid = false
 	}

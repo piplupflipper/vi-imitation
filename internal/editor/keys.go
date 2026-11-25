@@ -323,6 +323,7 @@ func (e *Editor) feedMapped(keys []editcmd.Key) {
 // handlePaste は、端末から貼り付けたテキストを、カーソルのあるバッファへ入れる（#114）。
 // 貼り付けはキーマップを通さない（Vim と同じ）。キーマップの接頭辞を待っていれば、時間切れと同じく先に確定させて実行する。
 // 確認の問いと choice/ask の問いを出している間の貼り付けは、答えにせずに捨てる。choice/ask の問いでは、捨てたことを数えて出す（#151）。
+// input/ask の問いを出している間は、入力の中身に入れる（inputPaste。FR-275）。
 func (e *Editor) handlePaste(text string) {
 	// :intro の案内は消すが、貼り付けたテキストは捨てずに入れる（intro.go。FR-207）。
 	e.dismissIntro()
@@ -330,7 +331,12 @@ func (e *Editor) handlePaste(text string) {
 	if e.asking() {
 		return
 	}
-	if e.activeChoice() != nil {
+	if q := e.activeChoice(); q != nil {
+		if q.input != nil {
+			// 1 行の入力の問いには、貼り付けたテキストを入れる（FR-275）。
+			e.inputPaste(text)
+			return
+		}
 		e.dropChoiceInput()
 		return
 	}
