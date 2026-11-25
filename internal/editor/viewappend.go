@@ -16,8 +16,8 @@ import (
 // （基本設計 1.4 の「待ちの間」。仮）。拡張機能の写し（ext/server の TextLog）は欠けないので、閉じて開き直せば戻る。
 const appendLostNote = "（書き足しの一部を捨てました）"
 
-// viewAppend は、拡張機能の view/append を処理する。
-// 知らない部品、閉じた部品、テキストでない部品への書き足しと、切り替えの部品の子（Child）を指す書き足しは捨てる
+// viewAppend は、拡張機能の view/append を処理する。テキストの部品と、書き足すテキストと入力の行の組の出力（FR-274）に書き足す。
+// 知らない部品、閉じた部品、それ以外の部品への書き足しと、切り替えの部品の子（Child）を指す書き足しは捨てる
 // （切り替えの部品はまだ無いので、子はどれも知らない子である）。
 func (e *Editor) viewAppend(ev *exthost.ViewAppend) {
 	ev.Flush() // 取っておく列でつないだ中身を params に入れる
@@ -25,13 +25,14 @@ func (e *Editor) viewAppend(ev *exthost.ViewAppend) {
 		return
 	}
 	c, f := e.findViewFloat(ev.Extension, ev.Params.View)
-	if f == nil || f.kind != floatText {
+	if f == nil || !f.appendable() {
 		return
 	}
 	e.withView(c, func() { e.appendFloatText(f, ev.Params.Text, ev.Params.Highlights) })
 }
 
-// appendFloatText は、テキストの部品 f の中身の末尾へ text（その中の色の範囲が spans）を書き足す。
+// appendFloatText は、テキストの部品 f の中身（書き足すテキストと入力の行の組なら出力。floatState.textBuf）の末尾へ
+// text（その中の色の範囲が spans）を書き足す。組の入力の行の中身、カーソル、モードは変えない（FR-274）。
 //
 // 行の分け方と古い行の捨て方は ext.AppendViewText と ext.ViewTextOverflow で決め、拡張機能の写し（TextLog）とそろえる。
 // 中身は、アンドゥの履歴に積まない本体の中の書き込み（buffer.Buffer.ApplyUnrecorded）で替える。編集の禁止の判定は通らない。
@@ -47,9 +48,9 @@ func (e *Editor) viewAppend(ev *exthost.ViewAppend) {
 // 色の範囲は、部品の一覧（decorationSet）の後ろへ足し、先頭の行を捨てたときは一覧を作り直さずに shift を増やす。
 // 1 件の手間が、部品の色の範囲の数でなく、書き足した量と捨てた範囲の数に比例するようにするためである（同じレビューの推奨 3）。
 //
-// req: FR-272
+// req: FR-272, FR-274
 func (e *Editor) appendFloatText(f *floatState, text string, spans []ext.ViewSpan) {
-	bs := f.bs
+	bs := f.textBuf()
 	b := bs.buf
 	lastIdx := b.LineCount() - 1
 	last := b.Line(lastIdx)
@@ -145,9 +146,9 @@ func (e *Editor) appendFloatText(f *floatState, text string, spans []ext.ViewSpa
 			f.followHeld = false
 		}
 	}
-	if drop > 0 && !follow {
+	if vp := bs.state.Viewport; drop > 0 && !follow && vp != nil {
 		// 見ている行を動かさない。窓の最初の行の番号を、捨てた行数だけずらす。
-		vp := floatViewport{f: f, r: e.renderer}
+		// 窓は、テキストの部品なら floatViewport、組の出力なら consoleOutViewport である（開いたときに State に付けたもの）。
 		top, skip := vp.Top()-drop, vp.Skip()
 		if top < 0 {
 			top, skip = 0, 0
@@ -170,13 +171,14 @@ func holdingFollow(bs *bufferState) bool {
 //
 // req: FR-272
 func (e *Editor) resumeFollow(f *floatState) {
-	if f == nil || !f.followHeld || f.kind != floatText || holdingFollow(f.bs) {
+	if f == nil || !f.followHeld || !f.appendable() || holdingFollow(f.textBuf()) {
 		return
 	}
+	bs := f.textBuf()
 	f.followHeld = false
-	if c := f.bs.state.Cursor(); c.Line == f.heldLine {
-		last := f.bs.buf.LineCount() - 1
-		f.bs.state.SetCursor(buffer.Position{Line: last, Byte: min(c.Byte, len(f.bs.buf.Line(last)))})
+	if c := bs.state.Cursor(); c.Line == f.heldLine {
+		last := bs.buf.LineCount() - 1
+		bs.state.SetCursor(buffer.Position{Line: last, Byte: min(c.Byte, len(bs.buf.Line(last)))})
 	}
 }
 
@@ -257,7 +259,7 @@ func (e *Editor) floatOrNil(k appendKey) *floatState {
 		return nil
 	}
 	_, f := e.findViewFloat(k.ext, k.view)
-	if f == nil || f.kind != floatText {
+	if f == nil || !f.appendable() {
 		return nil
 	}
 	return f

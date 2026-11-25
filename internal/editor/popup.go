@@ -67,6 +67,9 @@ const (
 	floatInput
 	// floatFinder は、入力の行と一覧の組（ext.ViewFinder。FR-106）である。bs は入力の行、list は一覧のバッファである。
 	floatFinder
+	// floatConsole は、書き足すテキストと入力の行の組（ext.ViewConsole。FR-274）である。bs は入力の行、out は出力のバッファである
+	// （console.go）。
+	floatConsole
 )
 
 // floatRow は、一覧と木のポップアップの 1 行の項目である。
@@ -150,6 +153,15 @@ type floatState struct {
 	// screenPending は、端末の列数を問い合わせている間であることを表す。その間はプレビューを出さない（previewShown）。
 	screen        int
 	screenPending bool
+	// tailState は、末尾へ書き足す部品（テキストと、書き足すテキストと入力の行の組の出力）の書き足しと追従の状態である（viewappend.go）。
+	tailState
+	// con は、書き足すテキストと入力の行の組（floatConsole）の、入力の行（bs）のほかの状態である（console.go）。ほかの部品では nil である。
+	con *consoleState
+}
+
+// tailState は、末尾へ書き足す部品の書き足しと追従の状態である（FR-272）。
+// 切り替えの部品（FR-269）では子ごとに持つので、floatState に直に並べずに 1 つにまとめた。
+type tailState struct {
 	// textEOL は、テキストの部品（floatText）の中身の末尾が改行で終わっていることを表す（ext.SplitViewText の eol）。
 	// バッファの行は末尾の改行の後の空の行を持たないので、次の view/append を最後の行に続けるか、新しい行から始めるかをここで覚える
 	// （viewappend.go。FR-272）。開いたときと view/update のたびに決め直す。
@@ -162,6 +174,27 @@ type floatState struct {
 	// heldLine にあれば、最後の行へ戻して追従を続ける（resumeFollow。FR-272）。
 	followHeld bool
 	heldLine   int
+}
+
+// consoleOut は、書き足すテキストと入力の行の組 f の出力のバッファを返す。組でなければ nil である。
+func (f *floatState) consoleOut() *bufferState {
+	if f.con == nil {
+		return nil
+	}
+	return f.con.out
+}
+
+// textBuf は、末尾へ書き足す部品 f の、書き足す先のバッファを返す。テキストの部品なら bs、書き足すテキストと入力の行の組なら出力である。
+func (f *floatState) textBuf() *bufferState {
+	if f.con != nil {
+		return f.con.out
+	}
+	return f.bs
+}
+
+// appendable は、部品 f が view/append で書き足せる部品（テキストか、書き足すテキストと入力の行の組）かを返す。
+func (f *floatState) appendable() bool {
+	return f.kind == floatText || f.kind == floatConsole
 }
 
 // popupDecorationOwner は、ポップアップの部品の色を付ける範囲を、バッファの構文の色に入れるときの持ち主の名前である。
@@ -314,6 +347,10 @@ func (e *Editor) focusFloat() {
 		// プレビューにフォーカスを入れていたペインの部品（paneInput はキーのたびにフォーカスを入れ直す）。FR-149。
 		e.switchFocus(pv)
 	}
+	if f.con != nil && f.con.outFocus && slices.Contains(e.bufs, f.con.out) {
+		// 出力へフォーカスを移していた書き足すテキストと入力の行の組（FR-274）。
+		e.switchFocus(f.con.out)
+	}
 }
 
 // unfocusFloat は、ポップアップのフォーカスを外し、開いたときのタブへ戻す。ポップアップは閉じずに残す。
@@ -375,6 +412,9 @@ func (e *Editor) closeFloat(notify bool) {
 	if f.list != nil && slices.Contains(e.bufs, f.list) {
 		e.closeBufferState(f.list)
 	}
+	if out := f.consoleOut(); out != nil && slices.Contains(e.bufs, out) {
+		e.closeBufferState(out)
+	}
 	e.closePreview(f)
 	if notify && f.ext != "" {
 		e.noteViewClient(f, false)
@@ -411,11 +451,11 @@ func (e *Editor) closeFloatsOf(bs *bufferState) {
 		if c.detached {
 			continue
 		}
-		if f := e.viewOf(c).float; f != nil && (f.bs == bs || f.base == bs || (f.list != nil && f.list == bs)) {
+		if f := e.viewOf(c).float; f != nil && (f.bs == bs || f.base == bs || (f.list != nil && f.list == bs) || (f.con != nil && f.con.out == bs)) {
 			e.withView(c, func() { e.closeFloat(true) })
 		}
 		for _, p := range slices.Clone(e.viewOf(c).panes) {
-			if p.bs == bs {
+			if p.bs == bs || (p.con != nil && p.con.out == bs) {
 				e.withView(c, func() { e.closePane(p, true) })
 			}
 		}
@@ -487,6 +527,17 @@ func (e *Editor) popupStateKey(bs *bufferState, k editcmd.Key, insert bool) (boo
 		e.leavePreview(f)
 		return true, nil, command.ErrBufferSwitched
 	}
+	if f != nil && f.focused && f.con != nil && f.con.out == bs {
+		// 書き足すテキストと入力の行の組の出力（フォーカスを移したとき。FR-274）。
+		done, held := e.consoleOutputKey(f, k, insert)
+		switch {
+		case !done:
+			return false, held, nil
+		case e.cur != bs:
+			return true, nil, command.ErrBufferSwitched
+		}
+		return true, nil, nil
+	}
 	if f == nil || !f.focused || f.bs != bs {
 		return false, nil, nil
 	}
@@ -514,6 +565,11 @@ func (e *Editor) floatKey(f *floatState, k editcmd.Key, insert bool) (bool, []ed
 	if f.kind == floatFinder && len(f.pending) == 0 {
 		if done := e.finderKey(f, k, insert); done {
 			return true, nil
+		}
+	}
+	if f.kind == floatConsole && len(f.pending) == 0 {
+		if done, held := e.consoleKey(f, k, insert); done || len(held) > 0 {
+			return done, held
 		}
 	}
 	if insert {
@@ -630,7 +686,7 @@ func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
 			f.pending = nil
 			p := ext.ViewKeyParams{View: ext.ViewID(f.id), ID: pk.id}
 			switch f.kind {
-			case floatInput:
+			case floatInput, floatConsole:
 				p.Item = f.bs.buf.Line(0)
 			case floatFinder:
 				p.Item, p.Input = floatItem(f), f.bs.buf.Line(0)
@@ -685,6 +741,10 @@ func loadPopupKeys(specs []exthost.Spec, leader []editcmd.Key) (map[string][]pop
 // selectFloat は、ポップアップ f のカーソルの行の項目を選ぶ。木で子を持つ項目なら開閉する。
 // 本体の一覧なら onSelect を呼び、拡張機能のポップアップなら view/select を送る。入力の行は中身を送る。
 func (e *Editor) selectFloat(f *floatState) {
+	if f.kind == floatConsole {
+		e.submitConsole(f)
+		return
+	}
 	if f.kind == floatInput {
 		e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: f.bs.buf.Line(0)})
 		return
@@ -746,11 +806,13 @@ func (e *Editor) selectionFor(f *floatState) uint64 {
 }
 
 // notifyView は、拡張機能のポップアップ f の持ち主へ通知を送る。持ち主がいなければ送らない。
+// 書き足すテキストと入力の行の組の入力の送信（view/select）は、項目を選んだことに数えない（noteViewClient の selected を立てない）。
+// 送った後もペインで打ち続けるので、続く editor/open（DAP の止まった位置など）で端末多重化ソフトのフォーカスをペインから出さないためである。
 func (e *Editor) notifyView(f *floatState, method string, params any) {
 	if f.ext == "" {
 		return
 	}
-	e.noteViewClient(f, method == ext.MethodViewSelect)
+	e.noteViewClient(f, method == ext.MethodViewSelect && f.kind != floatConsole)
 	if err := e.host.Notify(f.ext, method, params); err != nil {
 		e.log.Warn("ポップアップの知らせを送れない", "extension", f.ext, "method", method, "err", err)
 	}
@@ -763,8 +825,12 @@ func (e *Editor) notifyView(f *floatState, method string, params any) {
 // req: FR-106
 func (e *Editor) afterFloatKey() {
 	f := e.float
-	if f == nil || (f.kind != floatInput && f.kind != floatFinder) || !slices.Contains(e.bufs, f.bs) {
+	if f == nil || (f.kind != floatInput && f.kind != floatFinder && f.kind != floatConsole) || !slices.Contains(e.bufs, f.bs) {
 		return
+	}
+	if f.con != nil && f.bs.buf.LineCount() > 1 {
+		// 書き足すテキストと入力の行の組は、2 行目から後ろを捨てずに、行の間を空白にした 1 行へ戻す（console.go。PR #415 のレビューの必須 1）。
+		e.joinConsoleInput(f)
 	}
 	if f.bs.buf.LineCount() > 1 {
 		// 入力の行は 1 行だけにする（o や行単位の p で増えた行を捨てる。PR #242 のレビューの推奨 3）。
@@ -774,6 +840,11 @@ func (e *Editor) afterFloatKey() {
 		e.message = infoMessage("入力の行は 1 行だけです")
 	}
 	e.notifyInputChange(f)
+	if f.kind == floatConsole {
+		// 書き足すテキストと入力の行の組の入力の行は、保存するものではないので、未保存の変更として数えない。
+		// 数えると、ペインを閉じる :q が E37 で断られ、ステータス行に [+] が出続ける（#413 の画面の確認で見つけた）。
+		f.bs.buf.MarkSaved()
+	}
 }
 
 // notifyInputChange は、入力の行の中身が最後に知らせたものから変わっていれば、番号を進めて input/change で知らせる。
@@ -862,6 +933,10 @@ func floatLines(c ext.ViewComponent, expanded map[string]bool, icons *itemIcons)
 		}
 		// 行は Vim と同じく数え、末尾の改行は 1 つだけを除く（"a\n\n" は "a" と空の行の 2 行）。view/append で書き足した中身を
 		// 拡張機能の写し（TextLog）から開き直したときに、末尾の空の行まで同じ行にするためである（ext.SplitViewText）。
+		text, _ := ext.SplitViewText(c.Text)
+		return text, nil, c.Highlights
+	case ext.ViewConsole:
+		// 書き足すテキストと入力の行の組の出力の行（FR-274）。テキストと同じく数える。
 		text, _ := ext.SplitViewText(c.Text)
 		return text, nil, c.Highlights
 	case ext.ViewInput:
@@ -993,6 +1068,10 @@ func floatBufferText(lines []string) string {
 // テキストでは、カーソルが最後の行にあれば新しい中身の最後の行へ置く（末尾を追う）。
 // 中身を替えるのは、編集の禁止の判定を通らない読み直しの入り口で行う（基本設計 4.6 の「ファイルでないバッファの中身の更新」）。
 func (e *Editor) setFloatContent(f *floatState, c ext.ViewComponent) {
+	if f.kind == floatConsole {
+		e.setConsoleContent(f, c)
+		return
+	}
 	f.hasPreview = c.HasPreview()
 	if c.Kind == ext.ViewTree {
 		f.tree = c.Items
@@ -1064,6 +1143,8 @@ func (e *Editor) newComponentFloat(c ext.ViewComponent, extID string) *floatStat
 		f.input = c.Text
 	case ext.ViewFinder:
 		return e.newFinderFloat(c, extID)
+	case ext.ViewConsole:
+		return e.newConsoleFloat(c, extID)
 	case ext.ViewText:
 		f.textEOL = strings.HasSuffix(c.Text, "\n")
 	}
@@ -1172,18 +1253,24 @@ func (e *Editor) popupOpenRequest(ev *exthost.PopupOpenRequest) {
 		_ = ev.ReplyError(errors.New("no client to show the popup"))
 		return
 	}
-	if p.Placement != ext.PopupCenter && e.inFocusedPopup() {
+	// ファインダーと書き足すテキストと入力の行の組は、置き場所の指定に依らず中央に出し、フォーカスを入れる（基本設計 6.9、1.4）。
+	// 組を中央にするのは、カーソルの近くの窓（12 行）では出力と入力の行を読みにくいためである。
+	center := p.Placement == ext.PopupCenter || p.Component.Kind == ext.ViewFinder || p.Component.Kind == ext.ViewConsole
+	if !center && e.inFocusedPopup() {
 		_ = ev.ReplyError(errFocusedPopup)
 		return
 	}
 	f := e.newComponentFloat(p.Component, ev.Extension)
-	// ファインダーは、置き場所の指定に依らず中央に出し、フォーカスを入れる（基本設計 6.9）。
-	f.center = p.Placement == ext.PopupCenter || f.kind == floatFinder
+	f.center = center
 	f.focused = f.center || p.Focus
 	f.transient = !f.focused
 	e.openFloat(f)
-	if f.kind == floatFinder {
+	switch f.kind {
+	case floatFinder:
 		e.startFinderInsert(f)
+	case floatConsole:
+		e.startConsoleInsert(f)
+	case floatText, floatList, floatTree, floatInput:
 	}
 	_ = ev.Reply(ext.PopupOpenResult{View: ext.ViewID(f.id)})
 }
@@ -1253,6 +1340,8 @@ func componentKind(k ext.ViewKind) floatKind {
 		return floatInput
 	case ext.ViewFinder:
 		return floatFinder
+	case ext.ViewConsole:
+		return floatConsole
 	case ext.ViewText:
 	}
 	return floatText
@@ -1392,6 +1481,10 @@ func (e *Editor) floatAction(bs *bufferState, a ex.Action) error {
 		switch {
 		case f == nil:
 			return errors.New("ポップアップがありません")
+		case f.focused && f.kind == floatConsole:
+			// 書き足すテキストと入力の行の組では、出力と入力の行の間でフォーカスを移す（FR-274）。
+			e.toggleConsoleFocus(f)
+			return nil
 		case f.focused && e.previewShown(f):
 			// プレビューを出している窓では、一覧（入力の行）とプレビューの間でフォーカスを移す（FR-149）。
 			return e.togglePreviewFocus(f)
@@ -1462,7 +1555,7 @@ func (e *Editor) expandFloat() error {
 		return errors.New("ポップアップがありません")
 	}
 	if f.kind != floatText {
-		return errors.New("一覧、木、入力の行のポップアップはタブへ広げられません")
+		return errors.New("一覧、木、入力の行、出力と入力の行の組のポップアップはタブへ広げられません")
 	}
 	switch {
 	case f.peek != nil:
@@ -1513,6 +1606,10 @@ func (e *Editor) floatFrame(f *floatState) *ui.Float {
 	if f.kind == floatFinder {
 		fl.List = &ui.Frame{Text: f.list.buf, LineLayout: e.lineLayout(f.list, false), Cursor: f.list.state.Cursor(), Decorations: f.list.decoView}
 		fl.ListCount = len(f.rows)
+	}
+	if f.kind == floatConsole {
+		fl.Console = e.uiConsole(f)
+		return fl
 	}
 	if e.previewShown(f) {
 		// 出すかは previewShown で決め、ui は決めた窓の中を幅の規則で分ける。端末多重化ソフトのポップアップ（Fill）は、

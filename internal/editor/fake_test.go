@@ -286,6 +286,19 @@ func runFakeExt(mode string) int {
 				}()
 			}
 			switch {
+			case e.Kind == server.ViewSelected && strings.HasPrefix(e.Item, "say "):
+				// 書き足すテキストと入力の行の組（fakePopup の console）の入力を、出力へ書き足して返す（FR-274）。
+				_ = s.AppendView(ext.ViewAppendParams{View: e.View, Text: strings.TrimPrefix(e.Item, "say ") + "\n"})
+			case e.Kind == server.ViewSelected && strings.HasPrefix(e.Item, "flood "):
+				// 指定の行数を、1 行ずつの view/append で書き足す。書き終えたら "flooded" と出す。
+				n, _ := strconv.Atoi(strings.TrimPrefix(e.Item, "flood "))
+				view := e.View
+				go func() {
+					for i := range n {
+						_ = s.AppendView(ext.ViewAppendParams{View: view, Text: fmt.Sprintf("line %d\n", i)})
+					}
+					_ = s.ShowMessage(ext.MessageInfo, "flooded")
+				}()
 			case e.Kind == server.ViewInputChanged && strings.HasPrefix(e.Item, "f:"):
 				// ファインダー（入力が f: で始まる）は、候補のうち入力の残りを含むものを、同じ seq で返す（FR-106）。
 				q := strings.TrimPrefix(e.Item, "f:")
@@ -730,6 +743,12 @@ func fakePopup(kind string) ext.PopupOpenParams {
 		return ext.PopupOpenParams{Component: ext.ViewComponent{
 			Kind: ext.ViewText, Text: "alpha beta\ngamma",
 			Highlights: []ext.Decoration{{Range: ext.Range{End: ext.Position{Byte: 5}}, Style: "keyword"}},
+		}}
+	case "console":
+		// 書き足すテキストと入力の行の組（FR-274）。placement を書かなくても、本体は中央に出す。
+		// 入力の行で say <文字列> を送ると、偽の拡張機能はその文字列の行を出力へ書き足し、flood <行数> を送ると、その行数を書き足す。
+		return ext.PopupOpenParams{Component: ext.ViewComponent{
+			Kind: ext.ViewConsole, Title: "console", Text: "welcome\n", Prompt: "> ", History: []string{"h1"},
 		}}
 	}
 	return ext.PopupOpenParams{Placement: ext.PopupCenter, Component: ext.ViewComponent{Kind: ext.ViewList, Title: "list", Items: []ext.ViewItem{

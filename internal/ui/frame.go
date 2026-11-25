@@ -188,6 +188,19 @@ type Float struct {
 	Preview *Preview
 	// PreviewRule は、窓とプレビューの幅を決める設定の値である。
 	PreviewRule PreviewRule
+	// Console は、書き足すテキストと入力の行の組（FR-274）の出力と入力の行の前置きである。nil でなければ、View を入力の行として
+	// 窓の最後の行に描き、出力をその上に描く（drawConsole）。List と Preview は読まない。
+	Console *Console
+}
+
+// Console は、書き足すテキストと入力の行の組（Float.Console。FR-274）の、入力の行のほかの部分である。
+type Console struct {
+	// Output は、出力のバッファの Frame である。Text、Cursor、Mode、Selection、OperatorPending、Decorations、LineLayout、Wrap を読む。
+	Output *Frame
+	// Prompt は、入力の行の前に置く前置きである。空なら置かない。
+	Prompt string
+	// OutputFocused は、キーを出力のバッファが受けていることを表す。Float.Focused なら、端末のカーソルを出力のカーソルに置く。
+	OutputFocused bool
 }
 
 // SignKind は、行の印の種類である。値は sign/set の kind と同じ文字列である（基本設計 6.7）。

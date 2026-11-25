@@ -410,7 +410,7 @@ view/key の params である。
 
 - `view`（`ViewID`）
 - `id`（Go では `ID`、`string`）: 打ったキーの contributes.popupKeys の項目の ID である。
-- `item`（`string`、省ける）: 一覧、木、ViewFinder（finder） ではカーソルの行の項目の ID、入力の行では中身、テキストでは空である。
+- `item`（`string`、省ける）: 一覧、木、ViewFinder（finder） ではカーソルの行の項目の ID、入力の行と ViewConsole（console） では入力の行の中身、テキストでは空である。
 - `input`（`string`、省ける）: ViewFinder（finder） の入力の行の中身である。他の部品では省く。
 
 #### `ViewSelectParams`
@@ -418,7 +418,7 @@ view/key の params である。
 view/select の params である。
 
 - `view`（`ViewID`）
-- `item`（`string`）: 選んだ項目の ID（ViewList（list）、ViewTree（tree）、ViewFinder（finder））か、入力の行の中身（ViewInput（input））である。
+- `item`（`string`）: 選んだ項目の ID（ViewList（list）、ViewTree（tree）、ViewFinder（finder））か、入力の行の中身（ViewInput（input） と ViewConsole（console））である。
   ViewFinder（finder） で一覧が空なら空である。
 - `input`（`string`、省ける）: ViewFinder（finder） の入力の行の中身である。他の部品では省く。
 - `selection`（`uint64`、省ける）: ViewList（list）、ViewTree（tree）、ViewFinder（finder） の項目の選択に本体が付ける番号である（1 から。API 0.9.0 で足した）。
@@ -1098,9 +1098,10 @@ Placement が PaneCenter（center） のときと、端末多重化ソフトの�
 
 - `kind`（`ViewKind`）
 - `title`（`string`、省ける）: ポップアップの枠の上に出す見出しである。空なら出さない。
-- `text`（`string`、省ける）: ViewText（text） の本文と、ViewInput（input） と ViewFinder（finder） の入力の行の最初の中身である。ViewInput（input） と ViewFinder（finder） では改行を含めない。
+- `text`（`string`、省ける）: ViewText（text） の本文と、ViewConsole（console） の出力の最初の中身と、ViewInput（input） と ViewFinder（finder） の入力の行の最初の中身である。
+  ViewInput（input） と ViewFinder（finder） では改行を含めない。
 - `format`（`PopupFormat`、省ける）: ViewText（text） の本文の形式である。PopupMarkdown（markdown） なら、本体はコードの囲みの行を除いて出す（popup/show と同じ）。
-- `highlights`（`[]Decoration`、省ける）: ViewText（text） の本文に色を付ける範囲である。位置は Format の整形の前の Text を指す（4.1 の位置）。
+- `highlights`（`[]Decoration`、省ける）: ViewText（text） の本文と ViewConsole（console） の出力に色を付ける範囲である。位置は Format の整形の前の Text を指す（4.1 の位置）。
   Markdown で本体が除くコードの囲みの行の中の範囲（始まりか終わりがその行にあるもの）は捨てる。
   Style は 7.1 の色の名前（"keyword"、"diagnostic.error" など）で、知らない名前には色を付けない。
 - `items`（`[]ViewItem`、省ける）: ViewList（list）、ViewTree（tree）、ViewFinder（finder） の項目である。ViewTree（tree） では Children で木にする。
@@ -1117,6 +1118,11 @@ Placement が PaneCenter（center） のときと、端末多重化ソフトの�
   （API 0.20.0 で足した）。末尾に追従する表示（view/append で書き足す出力）を、末尾から見せて追従させて始めるのに使う。
   ext/server の TextLog は、開き直す部品と付け替える部品に立てる。省くと、開いたときは先頭の行に置き、
   view/update では今までの規則（カーソルが最後の行にあれば最後の行）にする。他の種類では読まない。古い本体は読まずに捨てる。
+- `input`（`string`、省ける）: ViewConsole（console） の入力の行の最初の中身である（API 0.22.0 で足した）。改行を含めない。view/update では読まない。
+- `prompt`（`string`、省ける）: ViewConsole（console） の入力の行の前に置く前置き（"> " など）である（API 0.22.0 で足した）。改行を含めない。空なら置かない。
+  view/update で置き換える。
+- `history`（`[]string`、省ける）: ViewConsole（console） の入力の履歴の最初の中身（古い順）である（API 0.22.0 で足した）。どの項目も改行を含めない。
+  ConsoleHistoryMax（1000） を超える分は、本体が古いものから捨てる。view/update では読まない。
 
 #### `ViewKind`
 
@@ -1137,6 +1143,14 @@ JSON の文字列である。
   view/update は一覧（Items）と見出し（Title）だけを置き換え、入力の行の中身（Text）は読まない（利用者が打ち続けているため）。
   一覧の中のカーソルは <C-n>、<C-p>、<C-j>、<C-k>、<Down>、<Up> で動かし、<CR> で view/select（Item は一覧の項目の ID、
   Input は入力の行の中身）を送る。<Esc> はインサートモードでも閉じる。
+- `"console"`（ViewConsole）: 書き足すテキストと 1 行の入力の行を組にした部品である（デバッガーの REPL、ACP のプロンプトと返答の欄。API 0.22.0 で足した）。上に出力（Text と Highlights。view/append で書き足すテキストのバッファ）を、下に入力の行
+  （Prompt の後に Input）を置く。開いた時点で入力の行にフォーカスを置いてインサートモードにし、出力は最後の行から見せて末尾に追従する。
+  入力の行の <CR>（ノーマルモードとインサートモード）で view/select（Item は入力の行の中身。空でも送る）を送り、
+  空でない中身を入力の履歴に積んで入力の行を空にする（モードは変えない）。送ったときは出力を末尾へ戻して追従を続ける。
+  入力の行は改行を持たず、貼り付けた改行は空白になる。インサートモードの <Up> と <Down> で履歴をたどる。
+  履歴は部品ごとに本体が持ち、閉じたら捨てる。拡張機能は、開き直すときに受けた中身を History で渡す（AppendConsoleHistory）。
+  インサートモードの <Esc> はノーマルモードへ戻り、閉じない。<C-w>w で出力と入力の行の間でフォーカスを移す。
+  view/update は出力（Text、Highlights）と Prompt だけを置き換え、Input と History は読まない（利用者が打っているため）。
 
 #### `PopupFormat`
 
@@ -1341,12 +1355,13 @@ statusline/set の params である。
 
 view/append の params である（API 0.20.0 で足した）。
 
-本体は、開いたテキストの部品（ViewText（text））の中身の末尾へ Text を書き足す。部品の全体を送り直さない。
+本体は、開いたテキストの部品（ViewText（text））の中身か、書き足すテキストと入力の行の組（ViewConsole（console）。API 0.22.0 から）の出力の末尾へ
+Text を書き足す。部品の全体を送り直さない。ViewConsole（console） では、入力の行の中身、カーソル、モードを変えない。
 中身の末尾が改行で終わっていなければ、その行に続ける。行の数え方と上限は AppendViewText と ViewTextOverflow のとおりで、
 行数が ViewTextMaxLines（10000） を超えたら古い行から捨て、1 行が ViewTextMaxLineBytes（4096） を超えたら文字の境目で次の行へ送る。
 書き足す前に部品のカーソルが最後の行にあれば、書き足した後の最後の行へカーソルを動かして末尾に追従し、
 利用者が最後の行より上へカーソルを動かしている間は、見ている行とカーソルを動かさない。
-閉じた後、知らない ID、テキストでない部品への書き足しは、view/update と同じく黙って捨てる。
+閉じた後、知らない ID、テキストと ViewConsole（console） でない部品への書き足しは、view/update と同じく黙って捨てる。
 Format が Markdown の部品へ書き足したテキストは、コードの囲みの行を除かずにそのまま出す。
 
 閉じた部品を開き直したときに中身を戻すには、拡張機能の側で写しを持つ（ext/server の TextLog）。
@@ -1377,6 +1392,9 @@ Seq は、この一覧がどの入力に答えたものかを、input/change の
 同じ Seq の view/update は何度送ってもよい（候補を読みながら一覧を送り直すとき）。
 前の view/update より大きい Seq の一覧では、カーソルを先頭の項目へ置き、同じ Seq なら項目の ID で保つ。
 ViewFinder（finder） 以外では Seq を読まない。
+
+ViewConsole（console） では、出力（Text、Highlights）と前置き（Prompt）だけを置き換え、入力の行（Input）と履歴（History）は読まない
+（利用者が打っているため）。出力のカーソルは、テキストと同じく最後の行にあれば（Tail なら常に）新しい中身の最後の行へ置く。
 
 - `view`（`ViewID`）
 - `component`（`ViewComponent`）
@@ -1441,6 +1459,7 @@ JSON の文字列である。
   編集の無い（NoLines と EndOfLine だけの）要求も断る。
   版の不一致（BufferEditResult の Applied が false）と違い、新しい版で作り直しても通らないので、拡張機能は繰り返さない。
   ext/server を使う拡張機能は、server.IsReadOnly で見分けられる。
+- `1000`（ConsoleHistoryMax）: ViewConsole（console） の入力の履歴の件数の上限である（仮）。超えたら古いものから捨てる。
 - `4194304`（ViewAppendJoinMaxBytes）: つないだ 1 件の大きさ（ViewAppendSize）の上限（仮に 4 MiB）である。
   改行の無い出力は行数の上限で捨てられないので、上限を置かないと 1 件が際限なく大きくなる。
   本体が受け取る 1 件のメッセージの上限（64 MiB。

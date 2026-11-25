@@ -112,4 +112,7 @@ package ext
 // 古い本体は view/append を知らない通知として捨てる。使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
 // 0.21.0 で、利用者に 1 行の文字列を聞く input/ask（InputAskParams、InputAskResult。message.go）を足した（#409。FR-275）。
 // 古い本体は input/ask に method not found で応答する。使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
-const APIVersion = "0.21.0"
+// 0.22.0 で、書き足すテキストと入力の行を組にした部品の種類 console（ViewConsole）と、部品の input、prompt、history を足し、
+// view/append を console の部品の出力にも当てるようにした（#413。FR-274）。古い本体は console を知らない部品の種類として、
+// その popup/open と pane/open を誤りで断る。使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
+const APIVersion = "0.22.0"

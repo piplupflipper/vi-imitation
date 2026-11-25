@@ -34,6 +34,13 @@ func TestViewComponentValidate(t *testing.T) {
 		{"範囲の外", PopupOpenParams{Component: ViewComponent{Kind: ViewList, Items: []ViewItem{
 			{ID: "a", Label: "abc", Highlights: []ViewSpan{{Start: 1, End: 4, Style: "keyword"}}},
 		}}}, "label の外"},
+		{"書き足すテキストと入力の行の組", PopupOpenParams{Placement: PopupCenter, Component: ViewComponent{
+			Kind: ViewConsole, Text: "out\nput\n", Input: "x", Prompt: "> ", History: []string{"a", "b"},
+		}}, ""},
+		{"組の入力の改行", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, Input: "a\nb"}}, "input が改行"},
+		{"組の前置きの改行", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, Prompt: ">\n"}}, "prompt が改行"},
+		{"組の履歴の改行", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, History: []string{"a", "b\rc"}}}, "history[1]"},
+		{"組の項目", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, Items: []ViewItem{item("a", "A")}}}, "items"},
 	}
 	for _, tt := range tests {
 		err := tt.p.Validate()
@@ -58,6 +65,8 @@ func TestViewMessageJSON(t *testing.T) {
 	roundTrip(t, InputChangeParams{View: 3, Text: "x", Seq: 2}, `{"view":3,"text":"x","seq":2}`)
 	roundTrip(t, ViewUpdateParams{View: 3, Seq: 2, Component: ViewComponent{Kind: ViewFinder, Items: []ViewItem{{ID: "a", Label: "A"}}}},
 		`{"view":3,"component":{"kind":"finder","items":[{"id":"a","label":"A"}]},"seq":2}`)
+	roundTrip(t, PaneOpenParams{Component: ViewComponent{Kind: ViewConsole, Text: "o", Input: "i", Prompt: "$ ", History: []string{"h"}}},
+		`{"component":{"kind":"console","text":"o","input":"i","prompt":"$ ","history":["h"]}}`)
 	roundTrip(t, ViewSelectParams{View: 3, Item: "a", Input: "q"}, `{"view":3,"item":"a","input":"q"}`)
 	roundTrip(t, ViewKeyParams{View: 3, ID: "k", Item: "a", Input: "q"}, `{"view":3,"id":"k","item":"a","input":"q"}`)
 	roundTrip(t, EditorListParams{List: ListTabs}, `{"list":"tabs"}`)
@@ -70,6 +79,27 @@ func TestViewMessageJSON(t *testing.T) {
 	roundTrip(t, EditorListParams{List: ListHelp}, `{"list":"help"}`)
 	roundTrip(t, EditorListResult{Help: []ListHelpWord{{Word: ":write", Kind: HelpKindCommand, Description: "保存する"}, {Word: "w", Kind: HelpKindKey}}},
 		`{"help":[{"word":":write","kind":"command","description":"保存する"},{"word":"w","kind":"key"}]}`)
+}
+
+// 書き足すテキストと入力の行の組の履歴は、空の中身と直前と同じ中身を積まず、上限を超えたら古いものから捨てる。
+// 本体と拡張機能が同じ関数で積むので、開き直したときの履歴は、本体が閉じる前に持っていた履歴と同じになる。
+func TestAppendConsoleHistory(t *testing.T) {
+	var h []string
+	for _, s := range []string{"a", "", "a", "b", "a"} {
+		h = AppendConsoleHistory(h, s)
+	}
+	if strings.Join(h, ",") != "a,b,a" {
+		t.Fatalf("history = %q", h)
+	}
+	for i := range ConsoleHistoryMax + 5 {
+		h = AppendConsoleHistory(h, strings.Repeat("x", i%7+1)+string(rune('A'+i%26)))
+	}
+	if len(h) != ConsoleHistoryMax {
+		t.Fatalf("len = %d, want %d", len(h), ConsoleHistoryMax)
+	}
+	if want := strings.Repeat("x", (ConsoleHistoryMax+4)%7+1) + string(rune('A'+(ConsoleHistoryMax+4)%26)); h[len(h)-1] != want {
+		t.Errorf("last = %q, want %q", h[len(h)-1], want)
+	}
 }
 
 // editor/list の params は、知っている一覧の種類だけを通す（FR-107）。

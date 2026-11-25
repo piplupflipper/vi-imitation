@@ -488,3 +488,70 @@ func TestTextLogConcurrent(t *testing.T) {
 		}
 	}
 }
+
+// 書き足すテキストと入力の行の組の出力の写し（NewConsoleLog）は、開く部品と付け替えの view/update の部品を、
+// 出力を写しの中身にし前置きを保った console の部品にする。入力の行と履歴は、open の中で拡張機能が入れる。
+// 閉じて開き直すと、閉じる前の出力と閉じている間の出力と、拡張機能が積んでおいた履歴が戻る。
+//
+// req: FR-274
+func TestConsoleLog(t *testing.T) {
+	s := server.New()
+	var mu sync.Mutex
+	var history []string
+	var opened []ext.ViewComponent
+	s.OnView(func(_ context.Context, e *server.ViewEvent) {
+		if e.Kind == server.ViewSelected {
+			mu.Lock()
+			history = ext.AppendConsoleHistory(history, e.Item)
+			mu.Unlock()
+		}
+	})
+	vh := startViewHost(t, s)
+	log := server.NewConsoleLog(s, "> ")
+	open := func(c ext.ViewComponent) (ext.ViewID, error) {
+		mu.Lock()
+		c.History = append([]string(nil), history...)
+		opened = append(opened, c)
+		mu.Unlock()
+		return openPane(s)(c)
+	}
+	_ = log.Append("hello\n", "")
+	if err := log.Open(open, ""); err != nil {
+		t.Fatal(err)
+	}
+	view, _, _ := log.Attached()
+	_ = log.Append("> 1+1\n2\n", "")
+	vh.notify(t, ext.MethodViewSelect, ext.ViewSelectParams{View: view, Item: "1+1"})
+	vh.sync(t)
+	if got := vh.text(view); got != "hello\n> 1+1\n2\n" {
+		t.Errorf("shown = %q", got)
+	}
+	vh.closeView(t, view)
+	vh.sync(t)
+	_ = log.Append("late\n", "")
+	if err := log.Open(open, ""); err != nil {
+		t.Fatal(err)
+	}
+	view2, _, _ := log.Attached()
+	vh.sync(t)
+	if got := vh.text(view2); got != "hello\n> 1+1\n2\nlate\n" {
+		t.Errorf("reopened = %q", got)
+	}
+	mu.Lock()
+	c := opened[1]
+	mu.Unlock()
+	if c.Kind != ext.ViewConsole || c.Prompt != "> " || strings.Join(c.History, ",") != "1+1" || !c.Tail {
+		t.Errorf("reopened component = %+v", c)
+	}
+	// 付け替えの view/update も console の部品で送り、前置きを空にしない。
+	if err := log.Rebind(view2, ""); err != nil {
+		t.Fatal(err)
+	}
+	vh.sync(t)
+	var p ext.ViewUpdateParams
+	_ = json.Unmarshal(vh.last().Params, &p)
+	if vh.last().Method != ext.MethodViewUpdate || p.Component.Kind != ext.ViewConsole || p.Component.Prompt != "> " ||
+		p.Component.Text != "hello\n> 1+1\n2\nlate\n" {
+		t.Errorf("rebind = %s %s", vh.last().Method, vh.last().Params)
+	}
+}

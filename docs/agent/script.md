@@ -371,6 +371,12 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
 
 テキストの部品へ書き足す中身の写しである。
 
+- `func NewConsoleLog(s *Server, prompt string) *TextLog`: 書き足すテキストと入力の行の組（ext.ViewConsole（console））の出力の写しを作る。
+  NewTextLog と同じく使い、Open が open に渡す部品と、Open と Rebind が送る view/update の部品を、出力を写しの中身にし、
+  入力の行の前置きを prompt にした console の部品にする（view/update が前置きを空にしないため）。
+  入力の行の最初の中身（ext.ViewComponent.Input）と入力の履歴（History）は、Open の open の中で、受け取った部品に入れてから開く。
+  履歴は、view/select で受けた中身を ext.AppendConsoleHistory で積んでおいたものを渡すと、閉じる前と同じになる。
+  prompt が改行を含むと、開く部品が ext.ViewComponent.Validate を通らない。
 - `func NewTextLog(s *Server) *TextLog`: s の上の空の写しを作る。行数の上限は本体と同じ値（ext.ViewTextMaxLines（10000））である。
 - `func (t *TextLog) Append(text, style string) error`: text を写しに足す。style は 7.1 の色の名前で、空でなければ text の全体にその色を付ける。
   結びついていれば、錠を持ったまま view/append（結びついた部品と子）を送る。開き直している最中（Open）なら、送らずに

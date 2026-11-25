@@ -30,7 +30,8 @@ import (
 //   - view/expand（本体 → 拡張機能、通知）: 木の項目を利用者が開閉したことを知らせる（ViewExpandParams）
 //   - view/tabChange（本体 → 拡張機能、通知）: 分割したペインを開いた元の client のカーソルのあるタブが替わったことを知らせる
 //     （ViewTabChangeParams。API 0.10.0 で足した）
-//   - view/append（拡張機能 → 本体、通知）: 開いたテキストの部品の末尾へテキストを書き足す（ViewAppendParams。API 0.20.0 で足した）
+//   - view/append（拡張機能 → 本体、通知）: 開いたテキストの部品の末尾へテキストを書き足す（ViewAppendParams。API 0.20.0 で足した）。
+//     API 0.22.0 から、書き足すテキストと入力の行の組（ViewConsole）の出力にも書き足せる
 //
 // 本体は、閉じた後や知らない ID の view/update、view/append、view/close を黙って捨てる（閉じた知らせと行き違いうるため）。
 const (
@@ -84,12 +85,40 @@ const (
 	// 一覧の中のカーソルは <C-n>、<C-p>、<C-j>、<C-k>、<Down>、<Up> で動かし、<CR> で view/select（Item は一覧の項目の ID、
 	// Input は入力の行の中身）を送る。<Esc> はインサートモードでも閉じる。
 	ViewFinder ViewKind = "finder"
+	// ViewConsole は、書き足すテキストと 1 行の入力の行を組にした部品である（デバッガーの REPL、ACP のプロンプトと返答の欄。
+	// FR-274。API 0.22.0 で足した）。上に出力（Text と Highlights。view/append で書き足すテキストのバッファ）を、下に入力の行
+	// （Prompt の後に Input）を置く。開いた時点で入力の行にフォーカスを置いてインサートモードにし、出力は最後の行から見せて末尾に追従する。
+	// 入力の行の <CR>（ノーマルモードとインサートモード）で view/select（Item は入力の行の中身。空でも送る）を送り、
+	// 空でない中身を入力の履歴に積んで入力の行を空にする（モードは変えない）。送ったときは出力を末尾へ戻して追従を続ける。
+	// 入力の行は改行を持たず、貼り付けた改行は空白になる。インサートモードの <Up> と <Down> で履歴をたどる。
+	// 履歴は部品ごとに本体が持ち、閉じたら捨てる。拡張機能は、開き直すときに受けた中身を History で渡す（AppendConsoleHistory）。
+	// インサートモードの <Esc> はノーマルモードへ戻り、閉じない。<C-w>w で出力と入力の行の間でフォーカスを移す。
+	// view/update は出力（Text、Highlights）と Prompt だけを置き換え、Input と History は読まない（利用者が打っているため）。
+	ViewConsole ViewKind = "console"
 )
+
+// ConsoleHistoryMax は、ViewConsole の入力の履歴の件数の上限である（基本設計 1.4。仮）。超えたら古いものから捨てる。
+const ConsoleHistoryMax = 1000
+
+// AppendConsoleHistory は、ViewConsole の入力の履歴 h の末尾に、送った中身 s を積んだ履歴を返す（基本設計 1.4 の「書き足すテキストと
+// 入力の行の組」）。s が空か、直前に積んだものと同じなら積まない。件数が ConsoleHistoryMax を超えたら古いものから捨てる。
+// 本体は view/select を送るたびにこの規則で積む。拡張機能は、view/select で受けた中身を同じ関数で積んでおき、開き直すときに
+// ViewComponent.History で渡すと、本体が閉じる前に持っていた履歴と同じになる。h の後ろの容量を使うことがある（append と同じ）。
+func AppendConsoleHistory(h []string, s string) []string {
+	if s == "" || (len(h) > 0 && h[len(h)-1] == s) {
+		return h
+	}
+	h = append(h, s)
+	if d := len(h) - ConsoleHistoryMax; d > 0 {
+		h = append(h[:0:0], h[d:]...)
+	}
+	return h
+}
 
 // Known は、k がこの版の API の知っている部品の種類かを返す。
 func (k ViewKind) Known() bool {
 	switch k {
-	case ViewText, ViewList, ViewTree, ViewInput, ViewFinder:
+	case ViewText, ViewList, ViewTree, ViewInput, ViewFinder, ViewConsole:
 		return true
 	}
 	return false
@@ -100,11 +129,12 @@ type ViewComponent struct {
 	Kind ViewKind `json:"kind"`
 	// Title は、ポップアップの枠の上に出す見出しである。空なら出さない。
 	Title string `json:"title,omitempty"`
-	// Text は、ViewText の本文と、ViewInput と ViewFinder の入力の行の最初の中身である。ViewInput と ViewFinder では改行を含めない。
+	// Text は、ViewText の本文と、ViewConsole の出力の最初の中身と、ViewInput と ViewFinder の入力の行の最初の中身である。
+	// ViewInput と ViewFinder では改行を含めない。
 	Text string `json:"text,omitempty"`
 	// Format は、ViewText の本文の形式である。PopupMarkdown なら、本体はコードの囲みの行を除いて出す（popup/show と同じ）。
 	Format PopupFormat `json:"format,omitempty"`
-	// Highlights は、ViewText の本文に色を付ける範囲である。位置は Format の整形の前の Text を指す（4.1 の位置）。
+	// Highlights は、ViewText の本文と ViewConsole の出力に色を付ける範囲である。位置は Format の整形の前の Text を指す（4.1 の位置）。
 	// Markdown で本体が除くコードの囲みの行の中の範囲（始まりか終わりがその行にあるもの）は捨てる。
 	// Style は 7.1 の色の名前（"keyword"、"diagnostic.error" など）で、知らない名前には色を付けない。
 	Highlights []Decoration `json:"highlights,omitempty"`
@@ -126,6 +156,14 @@ type ViewComponent struct {
 	// ext/server の TextLog は、開き直す部品と付け替える部品に立てる。省くと、開いたときは先頭の行に置き、
 	// view/update では今までの規則（カーソルが最後の行にあれば最後の行）にする。他の種類では読まない。古い本体は読まずに捨てる。
 	Tail bool `json:"tail,omitempty"`
+	// Input は、ViewConsole の入力の行の最初の中身である（API 0.22.0 で足した）。改行を含めない。view/update では読まない。
+	Input string `json:"input,omitempty"`
+	// Prompt は、ViewConsole の入力の行の前に置く前置き（"> " など）である（API 0.22.0 で足した）。改行を含めない。空なら置かない。
+	// view/update で置き換える。
+	Prompt string `json:"prompt,omitempty"`
+	// History は、ViewConsole の入力の履歴の最初の中身（古い順）である（API 0.22.0 で足した）。どの項目も改行を含めない。
+	// ConsoleHistoryMax を超える分は、本体が古いものから捨てる。view/update では読まない。
+	History []string `json:"history,omitempty"`
 }
 
 // ViewPreview は、一覧、木、ファインダーの項目 1 つの、プレビューに出すものである（FR-149。API 0.11.0 で足した）。
@@ -249,6 +287,21 @@ func (c *ViewComponent) Validate() error {
 	}
 	if (c.Kind == ViewInput || c.Kind == ViewFinder) && containsNewline(c.Text) {
 		return fmt.Errorf("%s の text が改行を含む", c.Kind)
+	}
+	if c.Kind == ViewConsole {
+		switch {
+		case containsNewline(c.Input):
+			return fmt.Errorf("console の input が改行を含む")
+		case containsNewline(c.Prompt):
+			return fmt.Errorf("console の prompt が改行を含む")
+		case len(c.Items) > 0:
+			return fmt.Errorf("console は items を持てない")
+		}
+		for i, h := range c.History {
+			if containsNewline(h) {
+				return fmt.Errorf("console の history[%d] が改行を含む", i)
+			}
+		}
 	}
 	seen := map[string]bool{}
 	var check func(items []ViewItem, path string) error
@@ -432,6 +485,9 @@ type PaneOpenResult struct {
 // 同じ Seq の view/update は何度送ってもよい（候補を読みながら一覧を送り直すとき）。
 // 前の view/update より大きい Seq の一覧では、カーソルを先頭の項目へ置き、同じ Seq なら項目の ID で保つ。
 // ViewFinder 以外では Seq を読まない。
+//
+// ViewConsole では、出力（Text、Highlights）と前置き（Prompt）だけを置き換え、入力の行（Input）と履歴（History）は読まない
+// （利用者が打っているため）。出力のカーソルは、テキストと同じく最後の行にあれば（Tail なら常に）新しい中身の最後の行へ置く。
 type ViewUpdateParams struct {
 	View      ViewID        `json:"view"`
 	Component ViewComponent `json:"component"`
@@ -440,12 +496,13 @@ type ViewUpdateParams struct {
 
 // ViewAppendParams は、view/append の params である（基本設計 1.4 の「末尾への書き足し」。FR-272。API 0.20.0 で足した）。
 //
-// 本体は、開いたテキストの部品（ViewText）の中身の末尾へ Text を書き足す。部品の全体を送り直さない。
+// 本体は、開いたテキストの部品（ViewText）の中身か、書き足すテキストと入力の行の組（ViewConsole。API 0.22.0 から）の出力の末尾へ
+// Text を書き足す。部品の全体を送り直さない。ViewConsole では、入力の行の中身、カーソル、モードを変えない。
 // 中身の末尾が改行で終わっていなければ、その行に続ける。行の数え方と上限は AppendViewText と ViewTextOverflow のとおりで、
 // 行数が ViewTextMaxLines を超えたら古い行から捨て、1 行が ViewTextMaxLineBytes を超えたら文字の境目で次の行へ送る。
 // 書き足す前に部品のカーソルが最後の行にあれば、書き足した後の最後の行へカーソルを動かして末尾に追従し、
 // 利用者が最後の行より上へカーソルを動かしている間は、見ている行とカーソルを動かさない。
-// 閉じた後、知らない ID、テキストでない部品への書き足しは、view/update と同じく黙って捨てる。
+// 閉じた後、知らない ID、テキストと ViewConsole でない部品への書き足しは、view/update と同じく黙って捨てる。
 // Format が Markdown の部品へ書き足したテキストは、コードの囲みの行を除かずにそのまま出す。
 //
 // 閉じた部品を開き直したときに中身を戻すには、拡張機能の側で写しを持つ（ext/server の TextLog。FR-273）。
@@ -570,7 +627,7 @@ type ViewClosedParams struct {
 // ViewSelectParams は、view/select の params である。
 type ViewSelectParams struct {
 	View ViewID `json:"view"`
-	// Item は、選んだ項目の ID（ViewList、ViewTree、ViewFinder）か、入力の行の中身（ViewInput）である。
+	// Item は、選んだ項目の ID（ViewList、ViewTree、ViewFinder）か、入力の行の中身（ViewInput と ViewConsole）である。
 	// ViewFinder で一覧が空なら空である。
 	Item string `json:"item"`
 	// Input は、ViewFinder の入力の行の中身である。他の部品では省く。
@@ -597,7 +654,7 @@ type ViewKeyParams struct {
 	View ViewID `json:"view"`
 	// ID は、打ったキーの contributes.popupKeys の項目の ID である。
 	ID string `json:"id"`
-	// Item は、一覧、木、ViewFinder ではカーソルの行の項目の ID、入力の行では中身、テキストでは空である。
+	// Item は、一覧、木、ViewFinder ではカーソルの行の項目の ID、入力の行と ViewConsole では入力の行の中身、テキストでは空である。
 	Item string `json:"item,omitempty"`
 	// Input は、ViewFinder の入力の行の中身である。他の部品では省く。
 	Input string `json:"input,omitempty"`
