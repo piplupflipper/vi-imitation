@@ -4503,16 +4503,19 @@ VS Code の文書は「Variable substitution is supported inside some key and va
 
 | 責務 | 口 | 探し方 | 移す元 |
 |---|---|---|---|
-| 根の探索 | `project.Root(file, markers) (string, bool)`、`project.GitRoot(file)`（目印が `.git`） | `filepath.Dir(file)` から親へたどり、目印の名前（ファイルかディレクトリ。`os.Stat` で在ること）のどれかを含む最初のディレクトリ。1 つのディレクトリの中では目印の並びに意味を持たせない。見つからなければ偽を返す | LSP の `findRoot`（見つからなければファイルのディレクトリを返す。同じ結果は呼び出す側が `filepath.Dir(file)` で作る） |
-| 実行ファイルの探索 | `project.Find(name, file, kind) (project.Executable, error)`。`Executable` は `Path` と、見つけた場所の `Source`（`FromPath`、`FromVirtualEnv`、`FromProjectVenv`、`FromNodeModules`） | `KindPython` は、下の仮想環境の `bin/name`、PATH の順。仮想環境に `name` が無ければ、ほかの仮想環境を探さずに PATH へ進む。`KindNode` は、`filepath.Dir(file)` から `GitRoot(file)` まで親へたどった各 `node_modules/.bin/name`、PATH の順で、Git の作業ツリーの外では `node_modules/.bin` を探さない。`KindPath` は PATH だけ。見つからなければ `project.ErrNotFound`、名前がパスの区切りを含むなどなら `project.ErrInvalidName` | 整形ツールの `run.go` の `findCommand` |
-| Python の仮想環境 | `project.PythonVenv(file) (project.Venv, bool)`。`Venv` は、仮想環境のディレクトリ `Dir`、その `bin/python` の `Python`、`Source`、仮想環境のあるディレクトリを返す `Parent()` | 絶対パスの `VIRTUAL_ENV`、`filepath.Dir(file)` から親へたどった各ディレクトリの `.venv`、`venv` の順で、`bin/python` を実行できる最初のもの。Git の根で止めない（uv のワークスペースのメンバーから根の `.venv` に届く） | 無し（オーナーの nvim の DAP の設定が Lua の関数で決めていたもの） |
+| 根の探索 | `project.Root(path, markers) (string, error)`、`project.GitRoot(path)`（目印が `.git`） | 起点（下の共通の決め）から親へたどり、目印の名前（ファイルかディレクトリ。`os.Stat` で在ること）のどれかを含む最初のディレクトリ。1 つのディレクトリの中では目印の並びに意味を持たせない | LSP の `findRoot`（見つからなければファイルのディレクトリを返す。同じ結果は呼び出す側が `ErrNotFound` のときに `filepath.Dir(file)` で作る） |
+| 実行ファイルの探索 | `project.Find(name, path, kind) (project.Executable, error)`。`Executable` は `Path` と、見つけた場所の `Source`（`FromPath`、`FromVirtualEnv`、`FromProjectVenv`、`FromNodeModules`） | `KindPython` は、下の仮想環境の `bin/name`、PATH の順。仮想環境に `name` が無ければ、ほかの仮想環境を探さずに PATH へ進む。`KindNode` は、起点から `GitRoot(path)` まで親へたどった各 `node_modules/.bin/name`、PATH の順で、Git の作業ツリーの外では `node_modules/.bin` を探さない。`KindPath` は PATH だけ。名前がパスの区切りを含むなどなら `project.ErrInvalidName` | 整形ツールの `run.go` の `findCommand` |
+| Python の仮想環境 | `project.PythonVenv(path) (project.Venv, error)`。`Venv` は、仮想環境のディレクトリ `Dir`、その `bin/python` の `Python`、`Source`、仮想環境のあるディレクトリを返す `Parent()` | 起点から親へたどった各ディレクトリの `.venv`、`venv`、絶対パスの `VIRTUAL_ENV` の順で、`bin/python` を実行できる最初のもの。Git の根で止めない（uv のワークスペースのメンバーから根の `.venv` に届く） | 無し（オーナーの nvim の DAP の設定が Lua の関数で決めていたもの） |
 
 3 つの探索に共通の決めは、次のとおりである。
 
-- シンボリックリンクは解かない。リンクのファイルはリンクの置き場所のディレクトリから探し、目印、仮想環境、実行ファイルはリンクの先で在るかと種類を見る。返すパスもリンクを解かない（仮想環境の `bin/python` は、ふつう元の python へのリンクで、解くと仮想環境の外を指す）
-- ホームディレクトリで止めず、ファイルシステムの根までたどる（`node_modules/.bin` だけは Git の根で止める）
-- 実行ファイルは、実行の権限（どれかの x のビット）を持つ通常のファイルだけを数え、権限の無いものは無いものとして次を探す。`.venv` が通常のファイルか、`bin/python` の無いディレクトリなら、次の候補へ進む
-- ファイルのパスが空（ファイルの無いバッファ）なら、ファイルから探す段を飛ばす（`VIRTUAL_ENV` と PATH は見る）
+- 起点は、パスがディレクトリならそのディレクトリ、それ以外（ファイル、まだ無いパス）なら `filepath.Dir(path)` である。ファイルのパスでは LSP の `findRoot` と同じ起点で、ディレクトリでは `lsp/resolver.lua` の `start_dir` と同じ起点である（オーナーの nvim の LSP の設定は、根のディレクトリを渡して呼ぶ。PR #407 のレビューの推奨 1）
+- 親へたどる途中で、他の利用者が書けるディレクトリ（パーミッションの `0o002` が立つもの。スティッキービットの有無を問わない。`/tmp`、`/var/tmp`、`/dev/shm` など）に当たったら、そのディレクトリの中の候補（目印、`.venv`、`venv`、`node_modules/.bin`）を見ずに、たどるのをそこで止める。他の利用者がそこに置いた `.venv/bin/python` や `.git` と `node_modules/.bin` を拾い、自分の権限で起動しないためである（PR #407 のレビューの必須 1）。`/tmp/proj/.venv` のように、誰でも書けるディレクトリの下の、そうでないディレクトリの中の候補は採る。候補の持ち主（git の `safe.directory` に当たる見方）は見ない
+- シンボリックリンクは解かない。リンクのファイルはリンクの置き場所のディレクトリから探し、目印、仮想環境、実行ファイル、たどるディレクトリの権限はリンクの先で見る。返すパスもリンクを解かない（仮想環境の `bin/python` は、ふつう元の python へのリンクで、解くと仮想環境の外を指す）
+- ホームディレクトリでは止めず、上の他の利用者が書けるディレクトリに当たるまで、ファイルシステムの根までたどる（`node_modules/.bin` だけは Git の根で止める）
+- 実行ファイルは、通常のファイルで、今の利用者が実行できる（Linux と macOS では `access(2)` の `X_OK`。nvim の `executable()` と同じ見方。PR #407 のレビューの推奨 4）ものだけを数え、実行できないものは無いものとして次を探す。`.venv` が通常のファイルか、`bin/python` の無いディレクトリなら、次の候補へ進む
+- パスが空（ファイルの無いバッファ）なら、パスから探す段を飛ばす（`VIRTUAL_ENV` と PATH は見る）
+- 見つからなければ `project.ErrNotFound` を包んだ誤りを返す。他の利用者が書けるディレクトリで止めた理由と、PATH の `exec.LookPath` の誤りを包む。候補を調べるときに権限の誤り（読めない `.venv` など）が起きたら、外側の候補へ進まずに止め、`fs.ErrPermission` を包んだ誤りを返す。呼び出す側は `errors.Is` で見分けて、利用者に理由を知らせられる（PR #407 のレビューの推奨 5）。在らないことと権限の誤りのほかの誤り（`ENOTDIR`、シンボリックリンクの輪など）は、在らないものとして扱う
 - 読むだけで、ファイルを作らず、外部のコマンドを起動しない。PATH で見つけた mise の shim の版が決まっているかは確かめない（LSP の拡張機能の FR-143 の扱いは、LSP の拡張機能に残す）
 
 #399 の未決に書かれた注意は、次のとおりに扱った。
@@ -4524,8 +4527,10 @@ VS Code の文書は「Variable substitution is supported inside some key and va
 
 | 点 | `lsp/resolver.lua` | `ext/project` | 理由 |
 |---|---|---|---|
-| 探索の起点 | パスがディレクトリならそのディレクトリ | 常に `filepath.Dir(file)` | LSP の拡張機能の `findRoot` と同じ結果にするため（#406 の受入条件） |
-| `VIRTUAL_ENV` | 相対パスでも使う | 絶対パスのときだけ使う | 相対パスは拡張機能の作業ディレクトリに依って意味が変わる。整形ツールの拡張機能の今の扱いと同じ |
+| 他の利用者が書けるディレクトリ | 持ち主と権限を見ずに、ファイルシステムの根までたどる（`/tmp/.venv` も返す） | そこで止め、中の候補を見ない | 他の利用者の置いた実行ファイルを、自分の権限で起動しないため（PR #407 のレビューの必須 1） |
+| `VIRTUAL_ENV` の順 | プロジェクトの中より先 | プロジェクトの中の `.venv`、`venv` より後 | 拡張機能の環境は server の環境（6.4 の外部のコマンドの表の「環境」）で、server を起動したシェルの `VIRTUAL_ENV` が、同じ server で開いた別のプロジェクトのファイルにも効くため。整形ツールの拡張機能の PR #341 の再レビューの推奨 2 の決め（プロジェクトの中を先）と同じ順（PR #407 のレビューの推奨 2） |
+| `VIRTUAL_ENV` の形 | 相対パスでも使う | 絶対パスのときだけ使う | 相対パスは拡張機能の作業ディレクトリに依って意味が変わる。整形ツールの拡張機能の今の扱いと同じ |
+| 権限の誤り | 在らないものとして次へ進む | 止めて `fs.ErrPermission` を包んで返す | 読めない近い `.venv` を黙って飛ばし、外側の仮想環境を返さないため |
 | PATH で見つけたときの値 | 名前を返す | `exec.LookPath` のパスを返す | 拡張機能が子プロセスを起動するときに、同じ実行ファイルを指すため |
 | 入れ方の案内 | 見つからなければ mise の案内を出す | 持たない | 案内は別の責務（#399 の裁定）。LSP の `mise.go` に残す |
 
@@ -4535,7 +4540,17 @@ VS Code の文書は「Variable substitution is supported inside some key and va
 
 - DAP の拡張機能は、構成に書いた値（`python`、`cwd`、`runtimeExecutable`）と、外部のコマンドの値（`resolveCommand`。FR-282）だけで決める。拡張機能は、構成に書かれていない値を探して補わない
 - `${workspaceFolder}` と `.vscode/launch.json` の置き場は、6.4 の変数の表の仮の決め（`workDir`、または `.vscode` のあるディレクトリ）にする
-- LSP と整形ツールの探索は、今のまま変えない。整形ツールの拡張機能は Git の作業ツリーの外でも `node_modules/.bin` をファイルシステムの根までたどり、`.venv/bin` を Git の根で止め、`VIRTUAL_ENV` をプロジェクトの中の `.venv/bin` より後にする点が `ext/project` と違う。移すときに、どちらに合わせるかを決める
+- LSP と整形ツールの探索は、今のまま変えない。整形ツールの拡張機能を移すときは、下の表の差で利用者の結果が変わるので、どちらに合わせるかを移す issue で決める（PR #407 のレビューの推奨 3）
+
+| 点 | 整形ツールの今の `findCommand` | `ext/project` | 結果が変わる例 |
+|---|---|---|---|
+| Git の作業ツリーの外の `node_modules/.bin` | ファイルシステムの根までたどる | 探さない | Git の外のファイルで、祖先の `node_modules/.bin/biome` を使わなくなる |
+| `.venv` の範囲 | `.venv/bin` を Git の根で止める | Git の根で止めず、`venv` も見る | worktree に `.venv` が無いと、Git の根の外の `.venv` に届く |
+| 他の利用者が書けるディレクトリ | 止めない | 止める | `/tmp` の `node_modules/.bin` を使わなくなる |
+| 種類 | 整形ツールを問わず、各ディレクトリで `node_modules/.bin` と `.venv/bin` の両方を見る | `Kind` で 1 つを選ぶ。設定に整形ツールごとの種類が要る（オーナーの nvim の `conform.lua` も、biome を `node_bin`、ruff を `python_bin` で引く） | pip で `.venv` に入れた taplo や clang-format は、`KindNode` か `KindPath` にすると見つからない |
+| 壊れた `.git` のシンボリックリンク | `isGitRoot` が `os.Lstat` なので Git の根とみなし、その下の `node_modules/.bin` を使う | `os.Stat` なので Git の外とみなし、`node_modules/.bin` を探さない（nvim と同じ） | 壊れた `.git` の下の `node_modules/.bin/biome` を使わず、PATH へ進む |
+| 仮想環境の数え方 | `.venv/bin/<名前>` があれば使う | `bin/python` を実行できる `.venv`、`venv` だけ（nvim と同じ） | `bin/python` の無い `.venv/bin/ruff` は見つからない |
+| 実行できるかの見方 | どれかの x のビット | 今の利用者が実行できるか（`access(2)`） | root が `0o700` で作った `.venv/bin/ruff` を飛ばして PATH へ進む |
 - DAP の拡張機能の変数の意味（`${workspaceFolder}`）と、構成に書いていない値を `ext/project` で補うかは、DAP の拡張機能を `ext/project` に移す issue で決める（10 章）
 
 ### 6.8 diff
