@@ -3415,7 +3415,7 @@ DAP の仕様の概観（https://microsoft.github.io/debug-adapter-protocol/over
 DAP の仕様の `startDebugging` は、アダプターからクライアントへ、同じ種類の新しいセッションを、呼んだセッションと同じ方法で始めるよう求める逆向きのリクエストで、`configuration` と `request`（`launch` か `attach`）を持つ（同仕様の「StartDebugging Request」。2026-11-25 に読んだ）。
 拡張機能は、受けたら次のとおりに子のセッションを始め、受け付けたことを応答する。
 
-- つなぎ方は、親のアダプターの `connectFrom` を子の `configuration` に当てて決める。子の `configuration` がそのキー（debugpy では `connect`）を持てば、そのつなぐ先へ直に繋ぐ（debugpy 1.8.22 の子のプロセスで確かめた。上の「つなぎ方」）。持たなければ親と同じにし、`stdio` と `clientSocket` はアダプターをもう 1 つ起動し、`serverPort` と `server` は同じホストとポートへ新しく接続する（PR #401 のレビューの推奨 4 によると、nvim-dap の `start_debugging` も、`server` の親には同じポートへ繋ぎ直し、`executable` には新しく起動する）。vscode-js-debug の子が何を送るかは未確認で、段 3 で確かめる
+- つなぎ方は、親のアダプターの `connectFrom` を子の `configuration` に当てて決める。子の `configuration` がそのキー（debugpy では `connect`）を持てば、そのつなぐ先へ直に繋ぐ（debugpy 1.8.22 の子のプロセスで確かめた。上の「つなぎ方」）。持たなければ親と同じにし、`stdio` と `clientSocket` はアダプターをもう 1 つ起動し、`serverPort` と `server` は同じホストとポートへ新しく接続する（PR #401 のレビューの推奨 4 によると、nvim-dap の `start_debugging` も、`server` の親には同じポートへ繋ぎ直し、`executable` には新しく起動する）。vscode-js-debug 1.117.0 の子は、`request` が親と同じで、`configuration` が `type`、`name`、`__pendingTargetId` の 3 つだった（#412 で確かめた。下の「#412 の複数のセッション」）
 - `initialize` から `configurationDone` までは、親と同じ手順で送る。`launch` か `attach` の引数は、受けた `configuration` をそのまま使い、変数の展開も `resolveCommand` もしない（同仕様は、`configuration` に変数を含めないとしている）
 - 子のセッションは親の下に置き、スレッドの区画の木に親の子として出す
 
@@ -3498,7 +3498,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 | Python の `launch` | `debugpy-adapter`（`stdio`）、`console` は `internalConsole` | 出力が出力の区画に出る。`console` を省いたときに始まらず、`integratedTerminal` を替えて送れば始まる（上の `console` の行の確かめ） |
 | Python の `attach` | `python` のアダプター（`connectFrom` が `connect`）。`python -m debugpy --listen 5678` で起動したプログラムへ、構成の `connect` の `host` と `port`（`${input:port}`）で直に繋ぐ | 終えてもプログラムが動き続ける。DAP で直に繋いで止まり、`disconnect` の後も動き続けることは、2026-11-25 に debugpy 1.8.22 で、拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、`${input:port}` の文字列のポートで繋げるかを確かめる |
 | Python の子のプロセス | 上の `launch` で、`subprocess` で Python の子のプロセスを起こすプログラム | debugpy 1.8.22 が `startDebugging`（`request` は `attach`、`configuration` に `connect`）を送り、その `connect` へ直に繋いで子のセッションの `attach` が成り立つことは、2026-11-25 に拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、子のセッションが `connectFrom` で直に繋がり、子のプロセスのブレークポイントで止まる。手元の 1.8.20 でも同じものを送るかは未確認。`debug.terminate` で、親と一緒に子のプロセスも終わる（子の手順を親の `request` で引くことの確かめ） |
-| Node.js の `launch` | vscode-js-debug の `dapDebugServer.js`（`serverPort`）、`type` は `pwa-node` | 子のセッションが要るか。2026-11-25 に、手元の `dapDebugServer.js` が `startDebuggingRequest`（`configuration` に `type`、`name`、`__pendingTargetId` を入れたもの）を送る処理を持つことを読んだが、`launch` のたびに送るかは未確認。送るなら、子のセッションで止まる |
+| Node.js の `launch` | vscode-js-debug の `dapDebugServer.js`（`serverPort`）、`type` は `pwa-node` | 子のセッションが要るか。2026-11-25 に、手元の `dapDebugServer.js` が `startDebuggingRequest`（`configuration` に `type`、`name`、`__pendingTargetId` を入れたもの）を送る処理を持つことを読んだが、`launch` のたびに送るかは未確認。送るなら、子のセッションで止まる。#412 で、`launch` と `attach` のたびに送り、子のセッションで止まることを確かめた（下の「#412 の複数のセッション」） |
 | Node.js の `attach` | 同上。`port` が 9229 の `pwa-node` の `attach`（`NODE_OPTIONS=--inspect` で起動した開発用のサーバー） | 終えてもサーバーが動き続ける |
 | Chrome の `attach` | 同上。`port` が 9222 の `pwa-chrome` の `attach` | オーナーの nvim の設定にある形。手元に Chrome が無ければ、確かめられなかったと書く |
 | `.vscode/launch.json` | 上のどれかを `launch.json` に書く。`inputs`、`linux`、`envFile`、無視して続けられる項目（`preLaunchTask`）、扱えない変数（`${command:…}`）を含む | 無視して続けられる項目は知らせて聞き、続けられる。扱えない変数は、何も聞かずに知らせて始めない（FR-281、FR-298） |
@@ -3516,7 +3516,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 
 #408 で、上の「設定の形」「アダプターのつなぎ方」「構成の出どころと値の当て方」「`.vscode/launch.json` の読み方」「外部のコマンドの取り決め」「変数」「開始の流れ」の 1〜7 と 10、「終了と切断」を実装した（`cmd/vi-imitation-ext-dap` の `config.go`、`launchjson.go`、`resolve.go`、`resolvecmd.go`、`transport.go`、`picker.go`）。
 `inputs`（FR-298）と `ui`（FR-108、FR-277、FR-278）は、設定に書いても読み捨て、`${input:…}` は扱えない変数として始めずに知らせる（次の issue）。
-`startDebugging`（FR-285）は、`initialize` で申し出ず、届いたら失敗で応答してログに書く。
+`startDebugging`（FR-285）は、`initialize` で申し出ず、届いたら失敗で応答してログに書く（#412 で子のセッションを作り、この扱いをやめた）。
 上の表に無い点は、次のとおりに決めた（どれも仮）。
 
 - 構成の候補の一覧と `${pickProcess}` の一覧は、上の表のとおり `pane/open` の `center` と `closeOnSelect` の一覧で出す。`choice/ask` は番号のキーで選ぶ 9 つまでの問いなので、無視できる項目を続けるかの問いにだけ使う
@@ -3534,7 +3534,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 PR #410 のレビュー（2026-11-25）を受けて、次のとおりに改めた。
 
 - **アダプターの見張り**（必須 1）: Linux では、アダプターを直に起動せず、拡張機能の実行ファイルを見張りとして起動し（引数 `--vi-imitation-ext-dap-guard`）、見張りにアダプターを起動させる（`guard_linux.go`）。見張りは子の回収役（`PR_SET_CHILD_SUBREAPER`）になり、`SIGTERM`（拡張機能が SIGKILL で終わったときの `Pdeathsig` を含む）を受けたときと、アダプターが終わったときに、アダプターへ `SIGTERM` を送って 500 ミリ秒待ち、残った子孫（`/proc` の親のプロセス ID でたどる）へ `SIGKILL` を送る。vscode-js-debug の `dapDebugServer.js` は `SIGTERM` で終わるときにデバッグ対象の node を残すので、拡張機能が SIGKILL で終わるとデバッグ対象が孤児で残っていた。アダプターの子孫から抜け出したプロセス（`attach` の相手、二重の fork の後に別の回収役の下に入ったもの）は止めない。Linux 以外では見張りを使わず、今までどおり直に起動する（子孫は残りうる）
-- **子のセッションを求められたとき**（必須 2）: アダプターから `startDebugging` が届いたら、失敗で応答し、「アダプター <名前> が子のセッション（startDebugging）を求めたが、まだ対応していないので、デバッグを終える」をメッセージの行に出して、終え方の表のとおりに終える（FR-285 の issue まで）
+- **子のセッションを求められたとき**（必須 2）: アダプターから `startDebugging` が届いたら、失敗で応答し、「アダプター <名前> が子のセッション（startDebugging）を求めたが、まだ対応していないので、デバッグを終える」をメッセージの行に出して、終え方の表のとおりに終える（FR-285 の issue まで。#412 で子のセッションを作り、この扱いをやめた）
 - **`${pickProcess}` の型**（必須 3）: 構成の値の全体が `${pickProcess}` だけの文字列なら、展開した値（プロセス ID）を数（JSON の数）にして送る。6.7 の展開の口の「文字列の全体が 1 つの変数でも、展開した結果は文字列で、数にしない」の例外で、展開の口は変えずに DAP の拡張機能が展開の後に直す。dlv 1.27.2 の `attach` は `processId` を数でしか受けない（`service/dap/types.go` の `ProcessID int`。レビューで確かめた）。オーナーの nvim の `dap.utils.pick_process` も数を返す。ほかの文字と混ざった値（`"pid ${pickProcess}"`）は文字列のままにする。VS Code の `${command:pickProcess}` の値がアダプターへどの型で届くかは確かめていない。`${input:…}` を数に直すかは 10 章の未決に残す
 - **外部のコマンドの待ち**（必須 4）: 外部のコマンドが、標準出力の書き込み口を持ったままの子プロセスを、プロセスグループの外（`setsid`）に残しても、コマンドが終わった（か止めた）後 500 ミリ秒で読むのを打ち切る（`exec.Cmd` の `WaitDelay`）。0 で終わっていれば、それまでに読んだ出力を使い、その旨をログに書く
 - **外部のコマンドの値の中の `${…}`**（推奨 1）: 展開し直さずに文字のまま送る（上の「つなぐ段階」と 6.7 の取り決めどおり）。構成に残ったときに誤りにするのは `${port}` と `${clientAddr}` だけにした
@@ -3560,6 +3560,45 @@ PR #410 の再レビュー（2026-11-25）を受けて、次のとおりに改�
 
 上の `console` の行の「省いたときも `runInTerminal` を求めて始めない」という見込み（debugpy 1.8.20 のソースを読んだもの）は、debugpy 1.8.22 では当たらなかった（`console` を省いても始まり、出力も `output` の event で届いた）。
 同梱の設定の例は、版に依らないよう `console` を `internalConsole` と書いたままにした。
+
+#### #412 の複数のセッション
+
+#412 で、上の「セッションと状態の分離」と「capabilities に応じた操作」と、遅れた応答を捨てる取り決め（世代の番号）を実装した（`cmd/vi-imitation-ext-dap` の `session.go`、`debugger.go`、`transport.go` の `spawnChild`）。
+上の表に無い点は、次のとおりに決めた（どれも仮）。
+
+- **状態の置き場**: 動いているセッションを `debugger.sessions`（始めた順）に、今のセッションを `debugger.cur` に持つ。止まっているか、選んでいるスレッドとフレーム、実行位置、setBreakpoints を送り始めたか、子のセッションの一覧は `session` に持ち、`debugger.mu` で守る。最上位のセッションは一度に 1 つで、デバッグ中かは `sessions` が空でないかで決める
+- **今のセッションの選び直し**: 今のセッションが終わったら、止まっているセッション（始めた順）、終わったセッションの親、最初のセッションの順に選ぶ。後の issue のデバッグのペインのために、選択を引く口（`currentSelection`）と、選び直す口（`selectSession`、`selectThread`、`selectFrame`）と、変わり目を知らせる口（`onSelect`）を置いた。どれも世代を進める
+- **スレッドの ID**: vscode-js-debug はスレッドの ID に 0 を使うので、0 を未知の印にせず、未知かどうかを別に持つ
+- **実行位置の印**: 止まっているセッションごとに付け、同じ行の印は 1 つにする。セッションが続けたか終わったときは、そのセッションの印だけを消す。止まったときのメッセージには、セッションが 2 つ以上あればセッションの名前を添える
+- **ブレークポイントの検証の印**: セッションごとに setBreakpoints の応答を覚え、どれかのセッションが検証できたものを `breakpoint`、どのセッションも検証できなかったものを `breakpointUnverified` にする。行は、始めた順に、検証できた応答の行を採る。vscode-js-debug は、親のセッションでも子のセッションでも、応答では `verified` を false にする。子のセッションの `launch` は、後から `breakpoint` の event（`reason` が `changed`）で検証を知らせ、`attach` は知らせずに、止まったときの `stopped` の `hitBreakpointIds` で止まったブレークポイントを示す。このため、どちらでも検証できたものにする。送った数と合わない応答（vscode-js-debug の子が、2 回目の `initialized` の後に送り直した setBreakpoints へ返す空の列）は、印に使わない。すべてのセッションが終わったら、今までどおり未検証に戻す
+- **2 回目の `initialized`**: ブレークポイントと `configurationDone` を送り直す。dlv 1.27.2 は `restart` の後に `initialized` を送り（`service/dap/server.go` の `onRestartRequest`）、送り直さないと止まらなかった。vscode-js-debug 1.117.0 の子のセッションも、`attach` と `launch` の応答の後に 2 回目の `initialized` を送る
+- **`startDebugging` への応答**: 子のセッションの接続ができたら受け付けたことを、つなげなかったとき、引数が誤っているとき、親が終わるところのときは失敗を応答する（nvim-dap の `start_debugging` も、接続か起動ができた後に応答する）
+- **子の構成**: `configuration` をそのまま送り、`request` のキーを足さない。nvim-dap（コミット cfa2d58f4537aca6ca83e2de1a0d9f1491121264）の `start_debugging` は `config.request = body.request` と足すが、vscode-js-debug 1.117.0 と debugpy 1.8.22 は足さずに始まった。名前は `configuration` の `name`（無ければ親の名前）、アダプターの表の名前と `adapterID` は親と同じにする
+- **`serverPort` のアダプター**: 親と子で 1 つのプロセスを使い、最後の使い手が抜けたときに止める（`adapterProc` の使い手の数）
+- **親の終わり**: `debug.terminate` に加えて、親のアダプターが `terminated` を送ったときと、親の接続が切れたときも、子を先に終える
+- **子の終わりの知らせ**: 子のセッションが終わったことはログにだけ書き、アダプターが異常終了したときだけメッセージの行に出す（debugpy は子のプロセスごとに子のセッションを作るので、終わるたびに出すと多い）
+- **再生中（`sync`）の操作**: 操作を送ったセッション（開始では最上位のセッション）とその子孫の次の停止か、そのセッションの終わりで応答する。vscode-js-debug の開始は、子のセッションの最初の停止で応答する
+- **条件付きのブレークポイント（FR-286）**: アダプターが `supportsConditionalBreakpoints` を持たなければ、条件を外したブレークポイントとして送り、セッションごとに 1 回メッセージの行に出す。FR-286 の文の「条件を送らず」と「条件の無いブレークポイントは置く」を、条件だけを外して置くと読んだ
+- **`debug.restart`（FR-286）**: 最上位のセッションのアダプターが `supportsRestartRequest` を持てば、そのセッションへ、前回の構成を `arguments` にした `restart` を送る。2026-11-25 の手元の版では、dlv 1.27.2 と vscode-js-debug 1.117.0 が持ち、debugpy 1.8.22 は持たなかった。vscode-js-debug は、`restart` の後に古い子のセッションを終え、新しい子のセッションを求めた
+- **遅れた応答（FR-287）**: 世代を進めるのは、止まった、`continued`、続行とステップ実行と一時停止を送る直前、セッションかスレッドかフレームの選び直し、`restart` を送る直前である。今の拡張機能が送るのは `stackTrace` だけなので、これを世代つきの呼び出し（`session.callGen`）で送る。`scopes`、`variables`、`evaluate` と変数の参照は、区画の issue が同じ呼び出しで送る
+- **出力の写し**: セッションごとに `server.TextLog` に足す。今は部品に結びつけず、`output/append` の `dap` の欄にも今までどおり書き足す（出力の区画の issue で、区画に結びつける）
+- **vscode-js-debug の `processId` の `attach`**: PR #410 の再レビューの推奨 A の「プロセスへ attach（選ぶ）」が `connection closed` で失敗する件は、子のセッションに依らない。手元の vscode-js-debug 1.117.0 の `dapDebugServer.js` は `attach` の `processId` を読まず（ソースに `processId` を読む処理が無く、SIGUSR1 を送る処理も無い）、既定の `localhost:9229` へ繋ごうとして「Could not connect to debug target at http://localhost:9229: Could not find any debuggable target」で `attach` を断った（2026-11-25 に、`--inspect` を付けずに起動した node へ `processId` で `attach` して確かめた）。VS Code では、`processId` から inspector を開かせる処理を VS Code の拡張機能の側が持つと見ている（確かめていない）。拡張機能は、アダプターごとの処理を足さず、同梱の設定の例からこの構成を除き、`kill -USR1` で inspector を開かせてから `port` で `attach` する手順を使い方に書いた
+
+vscode-js-debug の版は、`dapDebugServer.js` の置き場には無いが、`launch` の後にアダプターが送る `output`（`category` が `telemetry`）の `adapterVersion` が 1.117.0 だった。
+
+2026-11-25 に、`make dist` の本体を tmux の独自のサーバーで起動し、次のとおり確かめた（vscode-js-debug、debugpy、dlv は、拡張機能を本体の役のテストから動かしても確かめた）。
+
+| アダプターと版 | つなぎ方 | 場面 | 結果 |
+|---|---|---|---|
+| vscode-js-debug 1.117.0（node 26.1.0） | `serverPort` | JavaScript の `launch` | 子のセッションで止まり、ステップ実行、続行、`debug.restart`（`restart` を送った）、`debug.terminate` ができた。終えた後に、アダプターとデバッグ対象は残らなかった |
+| 同上（tsx 4.23.0） | `serverPort` | TypeScript の `launch`（`runtimeExecutable` が tsx） | 子のセッションが 2 段（tsx と、その子の node）で作られ、孫のセッションで止まった。ステップ実行、続行、`debug.terminate` ができ、何も残らなかった |
+| 同上 | `serverPort` | `node --inspect` で動いているプロセスの `port` への `attach` | 子のセッションで止まり、ステップ実行ができた。`debug.terminate` の後も、プロセスは動き続けた |
+| 同上 | `serverPort` | `processId` の `attach` | 始まらない（上の「`processId` の `attach`」） |
+| debugpy 1.8.22 | `stdio`、子は `connectFrom` | `subprocess` で Python の子のプロセスを起こす `launch` | 親のブレークポイントで止まり、続けると、子のプロセスのブレークポイントで、子のセッション（`Subprocess <PID>`）が止まった。子を続けると子のセッションだけが終わり、親は最後まで動いた。子が止まっている間の `debug.terminate` で、親と子のプロセスとアダプターは残らなかった。`debug.restart` は、終えてから始め直した |
+| dlv 1.27.2 | `clientSocket` | Go の `launch` | 止まり、ステップ実行ができた。`debug.restart` は `restart` を送り、ビルドし直して同じブレークポイントで止まった。`debug.terminate` の後に何も残らなかった |
+
+拡張機能への SIGKILL（拡張機能のプロセスグループへ）は、vscode-js-debug の `launch` で止まっている間と、debugpy の子のセッションが止まっている間に送り、どちらもアダプターとデバッグ対象（debugpy は親と子のプロセス）が残らなかった。
+本体の `:qa!` は、vscode-js-debug の `launch` で止まっている間に打ち、何も残らなかった。
 
 ### 6.5 ACP
 

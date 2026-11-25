@@ -396,8 +396,8 @@
           },
           // vscode-js-debug の dapDebugServer.js。拡張機能が決めた空いたポート（${port}）で待ち受けさせて繋ぐ（serverPort）。
           // 置き場は入れ方で変わるので、自分の置き場に書き換える。1 つのアダプターで pwa-node と pwa-chrome を type で分ける。
-          // vscode-js-debug は launch と attach の後に子のセッション（startDebugging）を求めるが、拡張機能はまだ子のセッションを作らないので、
-          // 今はそのことを知らせてデバッグを終える（ブレークポイントでは止まらない。docs/usage.md）
+          // vscode-js-debug は launch と attach の後に子のセッション（startDebugging）を求め、拡張機能は同じポートへ新しく繋いで
+          // 子のセッションを始める。ブレークポイントでは子のセッションが止まる（docs/usage.md の「複数のセッション」）
           "pwa-node": {
             "transport": "serverPort",
             "command": "node",
@@ -456,8 +456,9 @@
               "sourceMaps": true,
               "skipFiles": ["<node_internals>/**"],
             },
-            { "name": "プロセスへ attach（選ぶ）", "type": "pwa-node", "request": "attach", "processId": "${pickProcess}", "cwd": "${workspaceFolder}", "sourceMaps": true },
-            // NODE_OPTIONS=--inspect で起動した開発用のサーバー（9229 で待つ）へ attach する
+            // NODE_OPTIONS=--inspect で起動した開発用のサーバー（9229 で待つ）へ attach する。
+            // --inspect を付けずに起動した node へは、kill -USR1 <プロセス ID> で 9229 を開かせてから使う
+            // （dapDebugServer.js は processId の attach で node に inspector を開かせないので、processId の構成は置かない）
             {
               "name": "開発用のサーバーへ attach（9229）",
               "type": "pwa-node",

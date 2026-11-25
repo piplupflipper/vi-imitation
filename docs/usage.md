@@ -1628,7 +1628,7 @@ LSP と DAP の操作（定義へ移動、ホバー、ブレークポイント�
 | `<leader>lj`、`<leader>lk` | （本体） | 次の診断、前の診断へ移る。端で折り返す |
 | `gq{モーション}` | `format` | 範囲を整形する。言語サーバーが範囲の整形に対応しなければ、全体を整形する。整形ツールを設定したファイルの種類では、整形ツールで全体を整形し、範囲と重なるところだけを書き換える（[整形ツール](#整形ツール)） |
 | `<leader>dc` | `debug.continue` | 続行。デバッグが始まっていなければ始める |
-| `<leader>dp`、`<leader>dt`、`<leader>dr` | `debug.pause`、`debug.terminate`、`debug.restart` | 一時停止、終了、終了してから前回の設定で始め直す |
+| `<leader>dp`、`<leader>dt`、`<leader>dr` | `debug.pause`、`debug.terminate`、`debug.restart` | 一時停止、終了、始め直す（アダプターが `restart` に対応していなければ、終了してから前回の設定で始め直す） |
 | `<leader>db` / `<leader>dB` | `breakpoint.toggle` / `breakpoint.conditional` | ブレークポイントの切り替え / 条件付きのブレークポイント。条件は `:breakpoint.conditional 式` で渡す |
 | `<leader>dX` | `breakpoint.clear` | ブレークポイントをすべて消す |
 | `<leader>dn`、`<leader>di`、`<leader>do` | `debug.stepOver`、`debug.stepIn`、`debug.stepOut` | ステップオーバー、ステップイン、ステップアウト |
@@ -2817,7 +2817,7 @@ nvim の conform.nvim と違う点は次のとおりである。
 2. `<leader>dc` を打つ。デバッグを始めたバッファのファイルのあるディレクトリのパッケージをビルドして実行し、ブレークポイントで止まる。止まった行の左に `=>` が出て、最下行に「停止した（breakpoint）」が出る
 3. `<leader>dn`、`<leader>di`、`<leader>do` で 1 行ずつ進む。`=>` とカーソルが止まった位置へ移る
 4. `<leader>dc` で続ける。デバッグ対象が終わると「デバッグを終了した」が出る
-5. 途中でやめるときは `<leader>dt` を打つ。`<leader>dr` は終えてから始め直し、`<leader>dl` は前回と同じ設定で始める
+5. 途中でやめるときは `<leader>dt` を打つ。`<leader>dr` は始め直し（Delve は `restart` に対応するので、終えずにビルドし直して始め直す）、`<leader>dl` は前回と同じ設定で始める
 
 デバッグ対象の標準出力（`fmt.Println` の出力など）と Delve の出力は、`dap` の欄に出る（`:output dap`）。
 デバッグが失敗したときの理由も、この欄で読む。
@@ -2886,9 +2886,25 @@ Go 以外の言語と、`attach` を使うときは、`extensions.settings.dap` 
 Linux では、拡張機能が強制終了されても、拡張機能が起動したアダプターと、アダプターが起動したデバッグ対象は残らない（拡張機能はアダプターを見張りのプロセスの下で起動する）。
 Linux 以外では、アダプターが後始末をしないデバッグ対象（vscode-js-debug の node など）が残りうる。
 
-vscode-js-debug は、`launch` と `attach` の後に子のセッション（DAP の `startDebugging`）を求める。
-拡張機能はまだ子のセッションを作らないので、そのことをメッセージの行に出してデバッグを終える（2026-11-25 に、手元の vscode-js-debug で確かめた）。
-Node.js のブレークポイントで止まるのは、子のセッションを作った後である。
+#### 複数のセッション
+
+アダプターが子のセッション（DAP の `startDebugging`）を求めると、拡張機能は親のセッションの下に子のセッションを始める。
+vscode-js-debug は `launch` と `attach` の後に、デバッグ対象の node ごとに子のセッションを求め、ブレークポイントでは子のセッションが止まる。
+debugpy は、デバッグ対象が `subprocess` で Python の子のプロセスを起こすと、子のプロセスごとに子のセッションを求める。
+子のセッションの構成が `connectFrom` のキー（debugpy の `connect`）を持てばそこへ直に繋ぎ、持たなければ親と同じアダプターとつなぎ方にする。
+
+- 止まった位置の印は、止まっているセッションごとに付く。止まったときのメッセージには、セッションが 2 つ以上あればセッションの名前（`Subprocess 12345` など）が付く
+- `<leader>dc`、`<leader>dn` などの続行とステップ実行、`<leader>dp` の一時停止は、今のセッション（最後に止まったセッション）の止まったスレッドへ送る
+- ブレークポイントは、すべてのセッションへ送る。どれかのセッションが確かめられたものは、確かめられた印で出す
+- `<leader>dt` は、子のセッションを先に終えてから親を終える。子のセッションの終え方は、親の `launch` か `attach` で決まる（`launch` した親の子は、子のプロセスも終わらせる）
+- 子のセッションだけが終わっても（子のプロセスが終わった）、親のセッションは続く
+- `<leader>dr` は、アダプターが `restart` に対応していれば（dlv と vscode-js-debug）、終えずに `restart` を送る。対応していなければ（debugpy）、終えてから前回の構成で始め直す
+- アダプターが条件付きのブレークポイントに対応していなければ、条件を外して送り、そのことを知らせる
+
+vscode-js-debug の `dapDebugServer.js` への `attach` は、`port`（`--inspect` で待つ node）で繋ぐ。
+`processId` を書いた `attach` は、プロセスを選んでも、既定のポート（9229）へ繋ごうとして失敗する。
+`processId` からデバッグ対象の node に inspector を開かせる処理は、`dapDebugServer.js` に無い（2026-11-25 に、手元の vscode-js-debug 1.117.0 の `dapDebugServer.js` で、`processId` で attach して確かめ、ソースに `processId` を読む処理が無いことを読んだ）。
+プロセスに後から繋ぐときは、`kill -USR1 <プロセス ID>` で node に inspector を開かせて（既定は 9229）から、`port` の構成で `attach` する。
 
 ### ACP のエージェント
 
