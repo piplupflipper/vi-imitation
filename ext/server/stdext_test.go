@@ -51,6 +51,8 @@ func (sh *stdHost) handle(req *rpc.Request, reply rpc.Replier) bool {
 		res = ext.EditorExecuteResult{}
 	case ext.MethodOptionSet:
 		res = ext.OptionSetResult{}
+	case ext.MethodRegisterSet:
+		res = ext.RegisterSetResult{}
 	case ext.MethodOptionGet:
 		res = ext.OptionGetResult{Values: map[string]json.RawMessage{"indent.width": json.RawMessage("2")}}
 	default:
@@ -151,6 +153,17 @@ func TestStdExtRequests(t *testing.T) {
 	}
 	if got := sh.next(t); got != `option/get {"buffer":1,"names":["indent.width"]}` {
 		t.Errorf("host received %s", got)
+	}
+
+	// レジスターへ入れる口（FR-315）。2 文字以上の名前は送らない。
+	if err := s.SetRegister(ctx, ext.RegisterSetParams{Register: "a", Text: "値\n2", Linewise: true}); err != nil {
+		t.Errorf("SetRegister = %v", err)
+	}
+	if got := sh.next(t); got != `register/set {"register":"a","text":"値\n2","linewise":true}` {
+		t.Errorf("host received %s", got)
+	}
+	if err := s.SetRegister(ctx, ext.RegisterSetParams{Register: "ab"}); err == nil {
+		t.Error("SetRegister with a two-character name succeeded")
 	}
 
 	// 誤りのある editor/open と editor/list の params は送らない。

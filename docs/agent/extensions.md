@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.24.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.25.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -363,6 +363,7 @@ params と result の型の項目は、`vi-imitation --docs extension-types <型
 - `popup/open`: リクエスト。params は `PopupOpenParams`、result は `PopupOpenResult`。
 - `popup/show`: 通知。params は `PopupShowParams`。
 - `progress/report`: 通知。params は `ProgressReportParams`。時間のかかる処理（言語サーバーの読み込み、パーサのビルド、道具の入れ込み）の進み具合を知らせる。中身は LSP 3.17 の WorkDoneProgress の begin、report、end に対応させた。1 つの処理を、拡張機能が決めた識別子（Token）で表し、begin で始め、report で中身を変え、end で終える。本体は、続いている進み具合と、終わってから設定 progress.doneMs のミリ秒が過ぎていないものを、編集の client の画面の右下に重ねて出す（設定 progress.show が false なら出さない）。本体が入れ子の待ち（保存の前の整形の buffer/willSave の応答など）をしている間も、取っておかずにその場で出す。識別子は拡張機能ごとに分けて扱うので、他の拡張機能の識別子と重なってもよい。続いている識別子の begin は、その進み具合を始め直す（表題と本文と百分率を置き換える）。begin の無い（終えた後を含む）識別子の report と end は捨てる。拡張機能が異常で終わるか止まったら、本体はその拡張機能の進み具合をすべて消す（他の表示のデータと同じ）。拡張機能は、終えずに止まる処理（取り消し、失敗）も、Failed を true にした end で終える。失敗の理由は message/show で知らせる。本体は、その拡張機能が後から届けるもの（editor/open、message/show、choice/ask）を出す client と同じ client の画面にだけ出す（その拡張機能へ最後に問い合わせを始めた client。問い合わせていなければ操作中の client）。分割したペインのどの client にも出すと、同じ進み具合が 2 回出るためである。古い本体（0.13.0 まで）は、知らない通知として捨てる（ログに残すだけ）。
+- `register/set`: リクエスト。params は `RegisterSetParams`、result は `RegisterSetResult`。拡張機能が本体のレジスターへテキストを入れる（API 0.25.0 で足した）。拡張機能は、レジスターの名前、テキスト、文字単位か行単位かを渡す。本体は、名前を指定した y と同じくレジスターへ書く。名前を省けば無名のレジスター（履歴の先頭に積む）、a〜z はそのレジスターに書いて履歴にも積み、A〜Z は追記した後の内容を積み、_ には何も書かない。履歴の先頭が変わったら、本体の y と同じく、本体の設定（registers.clipboard）に従ってホストのクリップボードへ送る。知らせも本体の y と同じにする。書いたことは知らせず、履歴の 1 件の上限（registers.maxEntryBytes）を超えて積まなかったことと、クリップボードへ送るには大きすぎたことだけを、メッセージの行に出す。使えない名前（Vim の読み取り専用のレジスター . : % なども含む）は、本体の y と同じく E354 をメッセージの行に出し、何も書かずに、code が CodeInvalidParams の誤りで応答する。メッセージは、その拡張機能へ最後に問い合わせを始めた client に出す（message/show と同じ）。利用者がレジスターの名前を前に付けて contributes.popupKeys のキーを打ったとき（"ac）は、本体はその名前を view/key のRegister（ViewKeyParams）に入れて知らせる。拡張機能は、それを RegisterSetParams.Register に入れて送れば、利用者の指定どおりに入れられる。古い本体（0.24.0 まで）は register/set に method not found で応答し、view/key の Register を送らない（古い本体では、"a の後のキーは popupKeys に当たらず、本体のキーとして解釈する）。
 - `sign/set`: 通知。params は `SignSetParams`。
 - `statusline/set`: 通知。params は `StatusLineSetParams`。宣言ファイルの contributes.statusline で足した部品の中身を送る。本体は、部品の ID ごとに最後に届いた中身を持ち、利用者が設定の statusline か tabline に並べた部品だけを描く。並べていない部品の中身も持つので、拡張機能は設定を知らずに送ってよい。宣言ファイルで足していない部品の ID と、他の拡張機能が足した部品の ID の通知は捨てる。拡張機能が異常で終わるか止まったら、その拡張機能の部品の中身をすべて消す（他の表示のデータと同じ）。中身はバッファに依らず、どの client のどのバッファのステータス行にも同じものを出す（仮。lualine の mrreview の状態と、本体のメモリの使用量のような、エディタ全体の状態を出す部品を想定した）。
 - `view/append`: 通知。params は `ViewAppendParams`。

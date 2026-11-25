@@ -15,7 +15,7 @@ import (
 //   - 拡張機能からのリクエスト: [EditRequest]、[EditorStateRequest]、[EditorOpenRequest]、[BufferSaveRequest]、
 //     [DiagnosticListRequest]、[ChoiceAskRequest]、[InputAskRequest]、[PopupOpenRequest]、[BufferCreateRequest]、[BufferUpdateRequest]、
 //     [BufferDisposeRequest]、[DiffStartRequest]、[PaneOpenRequest]、[EditorListRequest]、[EditorExecuteRequest]、
-//     [OptionSetRequest]、[OptionGetRequest]
+//     [OptionSetRequest]、[OptionGetRequest]、[RegisterSetRequest]
 //   - 拡張機能からの通知: [DecorationSet]、[MessageShow]、[DiagnosticSet]、[SignSet]、[PopupShow]、[OutputAppend]、
 //     [ViewUpdate]、[ViewClose]、[ViewAppend]、[BandSet]、[VirtualTextSet]
 //   - Host が作るもの: [StateChange]、[QueryResult]
@@ -376,6 +376,19 @@ func (r *OptionGetRequest) Reply(result ext.OptionGetResult) error {
 	return r.reply(result, nil)
 }
 
+// RegisterSetRequest は、拡張機能からの register/set のリクエストである（ext.MethodRegisterSet の doc。#432。FR-315）。
+// Params は ext.RegisterSetParams.Validate を通したものである。名前が使えるか（FR-50）は、イベントループが確かめる。
+type RegisterSetRequest struct {
+	Extension string
+	Params    ext.RegisterSetParams
+	replyOnce
+}
+
+// Reply は、拡張機能へ register/set の結果を返す。
+func (r *RegisterSetRequest) Reply() error {
+	return r.reply(ext.RegisterSetResult{}, nil)
+}
+
 // ViewUpdate は、拡張機能からの view/update の通知である。読めない部品（ext.ViewComponent.Validate の誤り）は Host が捨てる。
 type ViewUpdate struct {
 	Extension string
@@ -534,6 +547,7 @@ func (*EditorListRequest) isEvent()     {}
 func (*EditorExecuteRequest) isEvent()  {}
 func (*OptionSetRequest) isEvent()      {}
 func (*OptionGetRequest) isEvent()      {}
+func (*RegisterSetRequest) isEvent()    {}
 func (*ViewUpdate) isEvent()            {}
 func (*ViewClose) isEvent()             {}
 func (*ViewAppend) isEvent()            {}

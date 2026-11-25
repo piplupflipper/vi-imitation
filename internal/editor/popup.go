@@ -157,6 +157,8 @@ type floatState struct {
 	pending []editcmd.Key
 	// count は、子を切り替える action の popupKeys のために預かった回数の数字（3<Tab> の 3）である（popupKey）。
 	count []editcmd.Key
+	// keyErr は、popupKey が引き受けたキーの操作の失敗（".c の E354。FR-315）である。popupStateKey が State へ返して消す。
+	keyErr error
 	// pane は、拡張機能の pane/open で、端末多重化ソフトのペインに開いた部品であることを表す（component.go）。
 	// viewFields.float ではなく viewFields.panes に置く。<Esc> では閉じない。
 	pane bool
@@ -545,9 +547,11 @@ var ctrlW = editcmd.MustParseKeys("<C-w>")[0]
 // ポップアップを閉じてキーを受けるバッファが替わったら command.ErrBufferSwitched を返し、再生の残りを移った先で続けさせる。
 func (e *Editor) popupStateKey(bs *bufferState, k editcmd.Key, insert bool) (bool, []editcmd.Key, error) {
 	f := e.float
+	_, regPending := bs.state.PendingRegister()
 	if f != nil && f.focused && f.preview.bs == bs && f.preview.focus {
 		// プレビューのバッファでは、ノーマルモードの <Esc> でフォーカスを一覧へ戻す。ほかのキーは通常のキーである（FR-149、FR-71）。
-		if insert || k != editcmd.Esc {
+		// "a の後の <Esc> は、通常のキーとして " と名前を捨てる。
+		if insert || k != editcmd.Esc || regPending {
 			return false, nil, nil
 		}
 		e.leavePreview(f)
@@ -562,7 +566,7 @@ func (e *Editor) popupStateKey(bs *bufferState, k editcmd.Key, insert bool) (boo
 		case e.cur != bs:
 			return true, nil, command.ErrBufferSwitched
 		}
-		return true, nil, nil
+		return true, nil, f.takeKeyErr()
 	}
 	if f == nil || !f.focused || f.bs != bs {
 		return false, nil, nil
@@ -574,7 +578,14 @@ func (e *Editor) popupStateKey(bs *bufferState, k editcmd.Key, insert bool) (boo
 	if e.cur != bs {
 		return true, nil, command.ErrBufferSwitched
 	}
-	return true, nil, nil
+	return true, nil, f.takeKeyErr()
+}
+
+// takeKeyErr は、popupKey が残した操作の失敗（keyErr）を返して消す。
+func (f *floatState) takeKeyErr() error {
+	err := f.keyErr
+	f.keyErr = nil
+	return err
 }
 
 // floatKey は、フォーカスのあるポップアップ f で、キー k をポップアップの操作として扱えれば扱い、true を返す。
@@ -588,6 +599,13 @@ func (e *Editor) popupStateKey(bs *bufferState, k editcmd.Key, insert bool) (boo
 //
 // req: FR-68
 func (e *Editor) floatKey(f *floatState, k editcmd.Key, insert bool) (bool, []editcmd.Key) {
+	if _, ok := f.bs.state.PendingRegister(); ok {
+		// "a の後は、popupKeys のキーだけを引く（FR-315）。<Esc>、<CR> などは通常のキーとして " と名前に続けて解釈する。
+		if f.ext == "" {
+			return false, nil
+		}
+		return e.popupKey(f, k, f.bs.state)
+	}
 	if f.kind == floatFinder && len(f.pending) == 0 && len(f.count) == 0 {
 		if done := e.finderKey(f, k, insert); done {
 			return true, nil
@@ -607,7 +625,7 @@ func (e *Editor) floatKey(f *floatState, k editcmd.Key, insert bool) (bool, []ed
 		return e.previewInsertKey(f, k), nil
 	}
 	if f.ext != "" {
-		done, held := e.popupKey(f, k)
+		done, held := e.popupKey(f, k, f.bs.state)
 		if done || len(held) > 0 {
 			return done, held
 		}
@@ -696,16 +714,22 @@ func floatItem(f *floatState) string {
 // 子を切り替える action の項目がある部品では、回数の数字を預かり（floatState.count）、子を切り替える action のキーなら回数の数だけ進む。
 // ほかのキーなら預かった数字を held で State へ返し、回数とキーを今までどおり本体の既定のキーとして解釈させる（子のキーも回数を読まない）。
 //
-// req: FR-69, FR-269, FR-271
-func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
-	if len(f.count) == 0 && e.childKey(f, k) {
+// st は、キーを解釈している State である。st がレジスターの名前だけを待ち終えた後（"a。command.State.PendingRegister）なら、
+// view/key を送る項目だけを引き、当たったら名前を st から受け取って view/key の Register に入れる（FR-315）。
+// 子を直に切り替えるキー、回数、子を切り替える action、select の action は、名前を付けても引かずに held で State へ返す
+// （"a の後の通常のキーとして解釈する）。名前が FR-50 で使えないものなら、view/key を送らずに E354 を出す（本体の y と同じ）。
+//
+// req: FR-69, FR-269, FR-271, FR-315
+func (e *Editor) popupKey(f *floatState, k editcmd.Key, st *command.State) (bool, []editcmd.Key) {
+	_, regPending := st.PendingRegister()
+	if !regPending && len(f.count) == 0 && e.childKey(f, k) {
 		return true, nil
 	}
 	keys := e.popupKeys[f.ext]
 	if len(keys) == 0 {
 		return false, nil
 	}
-	if len(f.pending) == 0 && isCountKey(k, len(f.count) > 0) && hasChildAction(keys, f.child) {
+	if !regPending && len(f.pending) == 0 && isCountKey(k, len(f.count) > 0) && hasChildAction(keys, f.child) {
 		// 回数（3<Tab> の 3）。State に渡すと、続くキーが KeyHook を通らずに本体の既定のキー（<Tab> のタブの移動）に落ちるので、
 		// ここで預かる。続くキーが子を切り替える action なら回数の数だけ進み、そうでなければ回数を State へ返す（popupKeyCount）。
 		f.count = append(f.count, k)
@@ -715,6 +739,9 @@ func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
 	prefix := false
 	for _, pk := range keys {
 		if len(pk.children) > 0 && !slices.Contains(pk.children, f.child) {
+			continue
+		}
+		if regPending && (pk.child != "" || pk.selects) {
 			continue
 		}
 		switch {
@@ -741,6 +768,14 @@ func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
 		case slices.Equal(pk.keys, seq):
 			f.pending = nil
 			p := ext.ViewKeyParams{View: ext.ViewID(f.id), ID: pk.id, Child: f.child}
+			if regPending {
+				name := st.TakeRegister()
+				if err := command.CheckRegister(name); err != nil {
+					f.keyErr = err // popupStateKey が操作の失敗として State へ返す（マクロの再生も止まる）
+					return true, nil
+				}
+				p.Register = string(name)
+			}
 			switch f.kind {
 			case floatInput, floatConsole:
 				p.Item = f.bs.buf.Line(0)

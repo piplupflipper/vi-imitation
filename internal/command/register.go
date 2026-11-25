@@ -157,6 +157,10 @@ func checkRegister(name rune) error {
 	return &InvalidRegisterError{Name: name}
 }
 
+// CheckRegister は、name がレジスターの名前（a〜z、A〜Z、_、名前の省略の 0）でなければ *InvalidRegisterError（E354）を返す（FR-50）。
+// 拡張機能のポップアップのキーに付けた名前（"ac。FR-315）を、view/key で知らせる前に確かめるのに使う（internal/editor）。
+func CheckRegister(name rune) error { return checkRegister(name) }
+
 // Get は、名前が name のレジスターの内容を返す。name が 0 なら無名のレジスター（上限を超えた無名のレジスターがあればそれ、
 // 無ければ履歴の先頭）である。_ は空を返す。名前に使えない文字なら false を返す（FR-50）。
 //
@@ -267,6 +271,20 @@ func (r *Registers) Set(name rune, reg Register) bool {
 	}
 	r.write(name, reg, false, false)
 	return true
+}
+
+// Yank は、名前を指定した本体の y と同じく、名前が name のレジスターに reg を書き込む（拡張機能の register/set。FR-315）。
+// 大文字の名前は追記し、name が 0 なら履歴に積むだけで、_ には何も書かない（Set と同じ。基本設計 4.5 の表）。
+// 名前に使えない文字なら何も書かずに *InvalidRegisterError（E354）を返す（FR-50）。
+// Set と違い、書き込んだテキストが MaxEntryBytes を超えて履歴に積まなかったら、y と同じ知らせの文言を notice に返す（FR-53）。
+//
+// req: FR-315
+func (r *Registers) Yank(name rune, reg Register) (notice string, err error) {
+	if err := checkRegister(name); err != nil {
+		return "", err
+	}
+	_, notice = r.write(name, reg, false, false)
+	return notice, nil
 }
 
 // slot は、名前付きのレジスターを指すポインターを返す。a〜z、A〜Z 以外の名前では nil を返す。

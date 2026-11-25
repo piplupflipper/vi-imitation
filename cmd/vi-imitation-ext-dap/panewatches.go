@@ -460,14 +460,14 @@ func (p *pane) deleteWatch(item string) {
 	p.markDirty(secWatches)
 }
 
-// copyWatchValue は、カーソルの項目の値を、ヤンクできるよう中央のポップアップのテキストに出す（c）。
+// copyWatchValue は、カーソルの項目の値を、本体のレジスターへ入れる（c。FR-311）。
 // アダプターが supportsClipboardContext を示し、項目に式（式そのものか、変数の evaluateName）があれば、evaluate の context を
-// clipboard にした結果を、そうでなければ表示している値（切る前の値）を出す（基本設計 6.4 の capabilities の表）。
-// 本体の拡張機能 API に、拡張機能がレジスターへ値を入れる口が無いので、利用者がポップアップの中でヤンクする
-// （nvim-dap-view は + のレジスターへ直に入れる。FR-311 で、口ができたら直に入れる）。
+// clipboard にした結果を、そうでなければ表示している値（切る前の値）を入れる（基本設計 6.4 の capabilities の表）。
+// 入れる先は、利用者がキーの前に付けたレジスター（"ac の a。register）で、付けなければ無名のレジスターである（register/set。FR-315）。
+// 入れ方は putRegister にある。評価の誤りの行は誤りの全文をポップアップに出し、値が無い行は知らせる（入れない）。
 //
-// req: FR-292
-func (p *pane) copyWatchValue(item string) {
+// req: FR-292, FR-311
+func (p *pane) copyWatchValue(item, register string) {
 	w := &p.watches
 	info, ok := w.info[item]
 	if !ok {
@@ -511,7 +511,27 @@ func (p *pane) copyWatchValue(item string) {
 		p.d.showInfo("コピーする値が無い")
 		return
 	}
-	p.openValuePopup(oneLine(info.v.Name)+" の値", value)
+	p.putRegister(register, value)
+}
+
+// putRegister は、値 value を、本体のレジスター register（空なら無名のレジスター）へ register/set で入れる（FR-311）。
+// 改行は "\n" にそろえる。nvim-dap-view の c（setreg に値だけを渡す）と同じく、文字単位で入れ、値が改行で終わるときだけ行単位で入れる
+// （Vim の setreg() は、型を指定しなければ、改行で終わる文字列を行単位にする）。
+// 履歴、ホストのクリップボード、知らせは本体が y と同じに扱うので、入れたことはここでは知らせない。
+// 本体が断った（使えない名前の E354 は本体がメッセージの行に出す）ときは、ログに残すだけにする。
+// register/set の応答を待つので、goroutine で送る（ペインの操作を止めない）。
+//
+// req: FR-311
+func (p *pane) putRegister(register, value string) {
+	text := normalizeNewlines(value)
+	params := ext.RegisterSetParams{Register: register, Text: text, Linewise: strings.HasSuffix(text, "\n")}
+	go func() {
+		ctx, cancel := p.ctx()
+		defer cancel()
+		if err := p.d.srv.SetRegister(ctx, params); err != nil {
+			p.d.logf("register/set %q: %v", register, err)
+		}
+	}()
 }
 
 // openValuePopup は、text をヤンクできるよう中央のポップアップのテキストに出す。題には、ヤンクのキーを添える。

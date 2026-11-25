@@ -362,6 +362,12 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
   値は利用者が :set で変えた値には勝たない。表に無い名前や範囲の外の値があれば、本体はどの値も入れずに誤りで応答する。
   p が ext.OptionSetParams.Validate を通らなければ、送らずにその誤りを返す。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す（buffer/open のフックからは goroutine を起こして呼ぶ）。
+- `func (s *Server) SetRegister(ctx context.Context, p ext.RegisterSetParams) error`: 本体へ register/set を送り、本体のレジスターへテキストを入れる（API 0.25.0 から）。
+  入れ方と知らせ（履歴、ホストのクリップボード、上限を超えたときのメッセージ）は、本体の y と同じである。
+  利用者がキーの前にレジスターの名前を付けたなら、ViewEvent.Register を p.Register に入れる。
+  使えない名前なら、本体は E354 をメッセージの行に出して誤りで応答する。
+  p が ext.RegisterSetParams.Validate を通らなければ、送らずにその誤りを返す。
+  Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す（OnView のフックからは goroutine を起こして呼ぶ）。
 - `func (s *Server) SetSigns(p ext.SignSetParams) error`: 本体へ sign/set を送る。応答は待たない。どこから呼んでもよい。
 - `func (s *Server) SetStatusLine(part, text, style string) error`: 本体へ statusline/set を送り、宣言ファイルの contributes.statusline で足した部品 part の中身を text にする
   。style は部品の色の名前で、空なら利用者の設定の statusline.ext の色で描く。text が空なら部品を出さない。
@@ -446,6 +452,8 @@ view/tabChange）を受け取ったことを表す。
 - `Buffer ext.BufferID`: ViewTabChanged のときの、替わった後のタブのバッファの番号である。
 - `Child string`: 切り替えの部品（ext.ViewSwitcher（switcher））の中の知らせ（ViewSelected、ViewInputChanged、ViewKey、ViewExpanded）なら、
   その子の ID である。ViewChildSelected では選んだ子の ID である。ほかでは空である（API 0.23.0 で足した）。
+- `Register string`: ViewKey のときの、利用者がキーの前に付けたレジスターの名前（"ac の "a"）である。付けなければ空である
+  （ext.ViewKeyParams.Register。API 0.25.0 で足した）。レジスターへ入れるキーは、これを SetRegister の Register に入れる。
 
 #### `server.ViewEventKind`
 

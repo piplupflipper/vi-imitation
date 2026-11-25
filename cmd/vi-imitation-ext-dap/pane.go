@@ -709,7 +709,7 @@ func (p *pane) onKey(e server.ViewEvent) {
 	case keyWatchesSet:
 		p.askSetValue(&p.watches.varTree, e.Item)
 	case keyWatchesCopy:
-		p.copyWatchValue(e.Item)
+		p.copyWatchValue(e.Item, e.Register)
 	case keyScopesSetValue:
 		p.scopesSetValue(e.Item)
 	case keyThreadsSubtle:

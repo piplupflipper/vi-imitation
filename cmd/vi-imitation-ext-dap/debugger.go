@@ -681,11 +681,12 @@ func (d *debugger) toggleUI(context.Context, *server.Buffer, *ext.ProviderInvoke
 }
 
 // minAPIVersion は、この拡張機能が要る本体の拡張機能 API の版である（基本設計 1.4 の「古い本体での標準の拡張機能」。FR-306）。
-// 値は、使うメッセージのうち最後に足したものの版で、今は REPL の区画の入力の行の補完（部品の complete と console/complete。
-// API 0.24.0。FR-310）である。切り替えの部品（pane/open の switcher、子を指す view/update、view/childSelect、popupKeys の children と
+// 値は、使うメッセージのうち最後に足したものの版で、今はウォッチ式の区画の c でレジスターへ値を入れる register/set と、
+// view/key の register（API 0.25.0。FR-311、FR-315）である。REPL の区画の入力の行の補完（部品の complete と console/complete。FR-310）は
+// 0.24.0、切り替えの部品（pane/open の switcher、子を指す view/update、view/childSelect、popupKeys の children と
 // 子を切り替える action）は 0.23.0、view/append と server.TextLog は 0.20.0、input/ask は 0.21.0、progress/report（resolveCommand の進み具合）は 0.14.0、
 // pane/open の center と closeOnSelect（構成の候補と ${pickProcess} の一覧）は 0.10.0、editor/state の workDir は 0.9.0 で足した。
-const minAPIVersion = "0.24.0"
+const minAPIVersion = "0.25.0"
 
 // apiSupported は、本体の拡張機能 API の版が minAPIVersion 以上かを返す。
 // 足りなければ、最初の 1 回だけ要る版をメッセージの行に出す。操作は、段階 2 の取り決めだけを使うものも含めてすべて断る（基本設計 1.4）。

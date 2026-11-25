@@ -969,7 +969,7 @@ func (a *adapter) variables(ref int) ([]map[string]any, bool) {
 // evaluate は、evaluate の request に答える。受けたことを "evaluate <context> <式> frame=<frameId か none>" で出す。
 //   - x: 止まった回数（書き換えればその値）。big: 3000 の要素の列（参照 3）。nested: 深い入れ子（参照 20）。
 //   - y: 呼んだ側のフレーム（1002）でだけ 7。ほかのフレームでは誤り（フレームを選び直したときのテスト）。
-//   - multi: 2 行にわたる結果。x = N: x を N に書き換える（REPL の代入）。
+//   - multi: 2 行にわたる結果。crlf: 多バイト文字と CRLF を含み、改行で終わる結果。x = N: x を N に書き換える（REPL の代入）。
 //   - ほかの式は誤り。context が clipboard なら、結果の前に clip: を付ける。
 func (a *adapter) evaluate(m *message) {
 	var args struct {
@@ -1001,6 +1001,9 @@ func (a *adapter) evaluate(m *message) {
 		body = map[string]any{"result": "7", "variablesReference": 0}
 	case e == "multi":
 		body = map[string]any{"result": "line1\nline2", "variablesReference": 0}
+	case e == "crlf":
+		// 多バイト文字と CRLF を含み、改行で終わる結果（ウォッチ式の c のテスト。FR-311）。
+		body = map[string]any{"result": "値1\r\n値2\n", "variablesReference": 0}
 	case strings.HasPrefix(e, "x = "):
 		if a.overrides == nil {
 			a.overrides = map[string]string{}

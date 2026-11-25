@@ -78,6 +78,8 @@ type host struct {
 	appends chan ext.ViewAppendParams
 	// popups は、拡張機能が popup/open で開いた部品である（ウォッチ式の区画の値のヤンク）。
 	popups chan ext.PopupOpenParams
+	// registers は、拡張機能が register/set で入れた値である（ウォッチ式の区画の c。FR-311）。
+	registers chan ext.RegisterSetParams
 
 	mu       sync.Mutex
 	versions map[ext.BufferID]ext.Version
@@ -152,6 +154,7 @@ func newHostState(t *testing.T) *host {
 		updates:      make(chan ext.ViewUpdateParams, 4096),
 		appends:      make(chan ext.ViewAppendParams, 4096),
 		popups:       make(chan ext.PopupOpenParams, 16),
+		registers:    make(chan ext.RegisterSetParams, 16),
 		versions:     map[ext.BufferID]ext.Version{},
 		ids:          map[string]ext.BufferID{},
 		workDir:      t.TempDir(),
@@ -232,6 +235,10 @@ func (h *host) request(_ context.Context, req *rpc.Request, reply rpc.Replier) {
 		h.mu.Unlock()
 		_ = reply(ext.PopupOpenResult{View: id}, nil)
 		h.popups <- p
+		return
+	case ext.MethodRegisterSet:
+		_ = reply(ext.RegisterSetResult{}, nil)
+		h.registers <- decode[ext.RegisterSetParams](h.t, req.Params)
 		return
 	case ext.MethodChoiceAsk:
 		p := decode[ext.ChoiceAskParams](h.t, req.Params)

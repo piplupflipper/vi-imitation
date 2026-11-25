@@ -108,6 +108,8 @@ func (e *Editor) handleEvent(ev exthost.Event) {
 		e.optionSetRequest(ev)
 	case *exthost.OptionGetRequest:
 		e.optionGetRequest(ev)
+	case *exthost.RegisterSetRequest:
+		e.registerSetRequest(ev) // 拡張機能がレジスターへ入れる口（regset.go。FR-315）
 	case *exthost.ViewUpdate:
 		e.viewUpdate(ev)
 	case *exthost.ViewClose:

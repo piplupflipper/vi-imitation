@@ -262,6 +262,29 @@ func runFakeExt(mode string) int {
 			}
 			return ext.CommandExecuteResult{OK: true}, nil
 		})
+		// fake.setreg は、引数 "<名前> <c か l> <テキスト>" で register/set を送る（FR-315）。名前の - は省くことを表す。
+		// テキストは Go の引用符付きの文字列（"値\n"）か、big:<N>（N バイトの x）である。誤りなら "setreg err=<誤り>" を出す。
+		s.Command("fake.setreg", func(_ context.Context, _ *server.Buffer, p *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
+			var a struct{ Text string }
+			_ = json.Unmarshal(p.Args, &a)
+			name, rest, _ := strings.Cut(a.Text, " ")
+			kind, text, _ := strings.Cut(rest, " ")
+			if name == "-" {
+				name = ""
+			}
+			if n, ok := strings.CutPrefix(text, "big:"); ok {
+				size, _ := strconv.Atoi(n)
+				text = strings.Repeat("x", size)
+			} else if u, err := strconv.Unquote(text); err == nil {
+				text = u
+			}
+			go func() {
+				if err := s.SetRegister(hostCtx, ext.RegisterSetParams{Register: name, Text: text, Linewise: kind == "l"}); err != nil {
+					_ = s.ShowMessage(ext.MessageInfo, "setreg err="+err.Error())
+				}
+			}()
+			return ext.CommandExecuteResult{OK: true}, nil
+		})
 		// fake.list は、引数の一覧（tabs、commands、keys、registers、jumps）を editor/list で問い合わせ、結果の JSON を出す（FR-107）。
 		s.Command("fake.list", func(_ context.Context, _ *server.Buffer, p *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
 			var a struct{ Text string }
@@ -284,7 +307,19 @@ func runFakeExt(mode string) int {
 			if e.Child != "" {
 				msg += " child=" + e.Child
 			}
+			if e.Register != "" {
+				msg += " register=" + e.Register
+			}
 			_ = s.ShowMessage(ext.MessageInfo, msg)
+			if e.Kind == server.ViewKey && e.Key == "fake.yank" {
+				// ポップアップの中の zy は、カーソルの項目を、キーの前に付けたレジスターへ入れる（DAP のウォッチ式の c の形。FR-315）。
+				p := ext.RegisterSetParams{Register: e.Register, Text: "yank:" + e.Item}
+				go func() {
+					if err := s.SetRegister(hostCtx, p); err != nil {
+						_ = s.ShowMessage(ext.MessageInfo, "setreg err="+err.Error())
+					}
+				}()
+			}
 			if e.Child != "" && fakeSwitcherEvent(s, e) {
 				return
 			}
@@ -885,7 +920,7 @@ func fakeSpecs(t *testing.T) []exthost.Spec {
 				act(ext.ActivationCommand, "fake.popup"), act(ext.ActivationCommand, "fake.headdiff"),
 				act(ext.ActivationCommand, "fake.pane"), act(ext.ActivationCommand, "fake.list"), act(ext.ActivationCommand, "fake.exec"),
 				act(ext.ActivationCommand, "fake.input"), act(ext.ActivationCommand, "fake.inputcancel"),
-				act(ext.ActivationCommand, "fake.inputseq"),
+				act(ext.ActivationCommand, "fake.inputseq"), act(ext.ActivationCommand, "fake.setreg"),
 			},
 			Contributes: ext.Contributes{
 				TextObjects: []ext.Contribution{contrib("fake.line", "il"), contrib("fake.slow", "is"), contrib("fake.hang", "ih")},
@@ -899,7 +934,7 @@ func fakeSpecs(t *testing.T) []exthost.Spec {
 					contrib("fake.write", ""), contrib("fake.touch", ""), contrib("fake.ft", `\y`),
 					contrib("fake.popup", ""), contrib("fake.headdiff", ""), contrib("fake.pane", ""), contrib("fake.list", ""),
 					contrib("fake.exec", ""), contrib("fake.input", `\i`), contrib("fake.mixed", `\m`), contrib("fake.inputexit", `\x`),
-					contrib("fake.inputcancel", ""), contrib("fake.inputseq", ""),
+					contrib("fake.inputcancel", ""), contrib("fake.inputseq", ""), contrib("fake.setreg", ""),
 				},
 				// ポップアップの中だけで効くキー（FR-69）。x は本体では文字を消すキーで、ポップアップの中ではこちらが先に効く。
 				// gx は g で始まるので、gg はキーの列が当たらずに本体の gg として動く。
@@ -907,6 +942,7 @@ func fakeSpecs(t *testing.T) []exthost.Spec {
 				// d と zs は、一覧の子 list の中でだけ効く（FR-271）。
 				PopupKeys: []ext.Contribution{
 					contrib("fake.pick", "x"), contrib("fake.two", "zq"), contrib("fake.gx", "gx"), contrib("fake.watch", "zw"),
+					contrib("fake.yank", "zy"),
 					{ID: "fake.next", Keys: "<Tab>", Action: ext.PopupKeyChildNext, Children: fakeSwitcherChildren},
 					{ID: "fake.prev", Keys: "<S-Tab>", Action: ext.PopupKeyChildPrev, Children: fakeSwitcherChildren},
 					{ID: "fake.del", Keys: "d", Children: []string{"list"}},

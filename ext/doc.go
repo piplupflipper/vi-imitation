@@ -124,4 +124,8 @@ package ext
 // 0.24.0 で、console の部品の入力の行の補完を引き受ける印（ViewComponent.Complete）と、その候補を問い合わせる console/complete
 // （ConsoleCompleteParams、ConsoleCompleteResult。consolecomplete.go）を足した（#427。FR-297）。
 // 古い本体は Complete を読まずに捨て、console/complete を送らない（補完の一覧を出さない）。
-const APIVersion = "0.24.0"
+// 0.25.0 で、拡張機能が本体のレジスターへテキストを入れる register/set（RegisterSetParams。register.go）と、
+// 利用者がキーの前に付けたレジスターの名前を知らせる view/key の Register（ViewKeyParams）を足した（#432。FR-315）。
+// 古い本体は register/set に method not found で応答し、"a の後のキーを popupKeys に当てずに本体のキーとして解釈する。
+// 使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
+const APIVersion = "0.25.0"

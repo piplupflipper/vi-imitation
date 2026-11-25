@@ -16,7 +16,7 @@
       { "id": "dap.watches.edit", "keys": "e", "children": ["watches"], "description": "式を書き換える" },
       { "id": "dap.watches.delete", "keys": "d", "children": ["watches"], "description": "式を消す" },
       { "id": "dap.watches.setValue", "keys": "s", "children": ["watches"], "description": "式か変数の値を書き換える" },
-      { "id": "dap.watches.copyValue", "keys": "c", "children": ["watches"], "description": "値をヤンクできるようポップアップに出す" },
+      { "id": "dap.watches.copyValue", "keys": "c", "children": ["watches"], "description": "値をレジスターへ入れる（\"ac で a へ）" },
       { "id": "dap.scopes.parent", "keys": "[[", "children": ["scopes"], "description": "親の項目へ移る" },
       { "id": "dap.scopes.setValue", "keys": "s", "children": ["scopes"], "description": "変数の値を書き換える" },
       { "id": "dap.threads.toggleSubtle", "keys": "t", "children": ["threads"], "description": "subtle のフレームを出すかを切り替える" },

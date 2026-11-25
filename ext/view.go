@@ -835,4 +835,9 @@ type ViewKeyParams struct {
 	// Child は、切り替えの部品（ViewSwitcher）の中の知らせなら、キーを打ったときに出していた子の ID である。
 	// ほかの部品では省く（FR-271。API 0.23.0 で足した）。
 	Child string `json:"child,omitempty"`
+	// Register は、利用者がキーの前に付けたレジスターの名前（"ac の "a"）である。付けなければ省く（FR-315。API 0.25.0 で足した）。
+	// 本体は、ノーマルモードで回数を付けずに " と名前だけを打った後のキーにだけ付ける。名前は FR-50 で使えるもの（a〜z、A〜Z、_）に限り、
+	// 使えない名前を付けたキーは、本体が E354 をメッセージの行に出して view/key を送らない。
+	// 拡張機能は、レジスターへ入れるキー（DAP のウォッチ式の c）では、これを register/set の Register に入れる（register.go）。
+	Register string `json:"register,omitempty"`
 }

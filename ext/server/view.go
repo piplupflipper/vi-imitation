@@ -101,6 +101,9 @@ type ViewEvent struct {
 	// Child は、切り替えの部品（ext.ViewSwitcher）の中の知らせ（ViewSelected、ViewInputChanged、ViewKey、ViewExpanded）なら、
 	// その子の ID である。ViewChildSelected では選んだ子の ID である。ほかでは空である（API 0.23.0 で足した）。
 	Child string
+	// Register は、ViewKey のときの、利用者がキーの前に付けたレジスターの名前（"ac の "a"）である。付けなければ空である
+	// （ext.ViewKeyParams.Register。API 0.25.0 で足した）。レジスターへ入れるキーは、これを SetRegister の Register に入れる。
+	Register string
 }
 
 // ListEditor は、本体へ editor/list を送り、本体が持つ一覧（タブ、コマンド、キーの一覧、レジスターの履歴、ジャンプリスト）の 1 つを
@@ -153,7 +156,7 @@ func (s *Server) viewNotification(ctx context.Context, n *rpc.Notification) {
 	case ext.MethodViewKey:
 		var p ext.ViewKeyParams
 		err = decodeParams(n, &p)
-		e = ViewEvent{Kind: ViewKey, View: p.View, Item: p.Item, Key: p.ID, Input: p.Input, Child: p.Child}
+		e = ViewEvent{Kind: ViewKey, View: p.View, Item: p.Item, Key: p.ID, Input: p.Input, Child: p.Child, Register: p.Register}
 	case ext.MethodViewExpand:
 		var p ext.ViewExpandParams
 		err = decodeParams(n, &p)

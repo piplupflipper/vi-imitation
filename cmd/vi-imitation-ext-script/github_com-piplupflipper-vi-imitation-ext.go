@@ -12,7 +12,7 @@ import (
 func init() {
 	Symbols["github.com/piplupflipper/vi-imitation/ext/ext"] = map[string]reflect.Value{
 		// function, constant and variable definitions
-		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.24.0\"", token.STRING, 0)),
+		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.25.0\"", token.STRING, 0)),
 		"ActivationCommand":          reflect.ValueOf(ext.ActivationCommand),
 		"ActivationFileType":         reflect.ValueOf(ext.ActivationFileType),
 		"ActivationMotion":           reflect.ValueOf(ext.ActivationMotion),
@@ -84,6 +84,7 @@ func init() {
 		"MethodPopupShow":            reflect.ValueOf(constant.MakeFromLiteral("\"popup/show\"", token.STRING, 0)),
 		"MethodProgressReport":       reflect.ValueOf(constant.MakeFromLiteral("\"progress/report\"", token.STRING, 0)),
 		"MethodProviderInvoke":       reflect.ValueOf(constant.MakeFromLiteral("\"provider/invoke\"", token.STRING, 0)),
+		"MethodRegisterSet":          reflect.ValueOf(constant.MakeFromLiteral("\"register/set\"", token.STRING, 0)),
 		"MethodShutdown":             reflect.ValueOf(constant.MakeFromLiteral("\"shutdown\"", token.STRING, 0)),
 		"MethodSignSet":              reflect.ValueOf(constant.MakeFromLiteral("\"sign/set\"", token.STRING, 0)),
 		"MethodStatusLineSet":        reflect.ValueOf(constant.MakeFromLiteral("\"statusline/set\"", token.STRING, 0)),
@@ -277,6 +278,8 @@ func init() {
 		"ProviderInvokeParams":    reflect.ValueOf((*ext.ProviderInvokeParams)(nil)),
 		"ProviderInvokeResult":    reflect.ValueOf((*ext.ProviderInvokeResult)(nil)),
 		"Range":                   reflect.ValueOf((*ext.Range)(nil)),
+		"RegisterSetParams":       reflect.ValueOf((*ext.RegisterSetParams)(nil)),
+		"RegisterSetResult":       reflect.ValueOf((*ext.RegisterSetResult)(nil)),
 		"ShutdownParams":          reflect.ValueOf((*ext.ShutdownParams)(nil)),
 		"Sign":                    reflect.ValueOf((*ext.Sign)(nil)),
 		"SignKind":                reflect.ValueOf((*ext.SignKind)(nil)),
