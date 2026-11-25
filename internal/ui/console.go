@@ -175,5 +175,50 @@ func (r *Renderer) drawConsole(g *Grid, theme Theme, fl *Float) (Cursor, bool) {
 	cur := inner.Cursor
 	cur.Row += inRow
 	cur.Col += x0 + 1 + promptW
+	if con.Menu != nil {
+		r.drawConsoleMenu(g, theme, con.Menu, fl.View, cur.Col, inRow, top, x0, x0+boxW)
+	}
 	return cur, true
 }
+
+// drawConsoleMenu は、書き足すテキストと入力の行の組の入力の行の補完の候補の一覧 m（Console.Menu。FR-297）を、入力の行（inRow 行目）の
+// 真上に描く。項目は、入力の行の m.Start の文字の列から並べる（カーソルの列 curCol から、m.Start からカーソルまでの表示幅を引いた列）。
+// 一覧は、窓の中（top 行目から inRow 行目の手前までの行と、left 列から right 列の手前までの列）に収め、出力、見出しの行、
+// 切り替えの部品の見出しの行の上に重ねる。描き方（選んでいる項目、打った語の色、スクロールバー、種類の欄）はコマンドラインの一覧と
+// 同じだが、選んでいない項目は StylePopup でなく、バッファの本文と同じ色（端末の既定の色）で描く。組の窓の全体が StylePopup の色なので、
+// 同じ色で描くと一覧と出力の境目が見えないためである（#427 の画面の確認で見つけた。Neovim で浮かべた窓の上に出す補完の一覧が、
+// 窓の NormalFloat と違う Pmenu の色になるのと同じく、窓と違う色にする）。
+//
+// req: FR-297
+func (r *Renderer) drawConsoleMenu(g *Grid, theme Theme, m *CompletionMenu, view *Frame, curCol, inRow, top, left, right int) {
+	col := curCol
+	if view != nil && view.Text != nil && view.Text.LineCount() > 0 {
+		line, at := view.Text.Line(0), view.Cursor.Byte
+		if start := m.Start; start >= 0 && start <= at && at <= len(line) {
+			col -= StringWidth(line[start:at], tabStopOr(view.TabStop))
+		}
+	}
+	p, ok := r.placeCompletionIn(m, inRow, col, top, left, right)
+	if !ok {
+		r.pum.valid = false
+		return
+	}
+	l := p.col
+	if p.col > left {
+		l = p.col - 1 // 項目の左の空白
+	}
+	rt := p.col + p.width
+	if p.scrollbar {
+		rt++
+	}
+	r.drawCompletionRows(g, theme, m, p, l, rt, Attr{})
+	// 選んでいる候補は、色だけでなく、項目の左の空白の列の印 consoleMenuMark でも示す（色を出せない端末でも見分けるため。
+	// PR #428 のレビューの推奨 4）。項目が窓の左の端から始まり、左の空白の列が無ければ印を置かない。
+	first := max(min(r.pum.first, len(m.Items)-p.height), 0)
+	if i := m.Selected - first; m.Selected >= 0 && i >= 0 && i < p.height && l < p.col {
+		g.set(p.top+i, l, Cell{Text: consoleMenuMark, Width: 1, Attr: theme.attr(StylePopupSelected)})
+	}
+}
+
+// consoleMenuMark は、書き足すテキストと入力の行の組の補完の一覧で、選んでいる候補の左に置く印である（仮）。
+const consoleMenuMark = ">"

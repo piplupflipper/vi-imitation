@@ -12,7 +12,7 @@ import (
 func init() {
 	Symbols["github.com/piplupflipper/vi-imitation/ext/ext"] = map[string]reflect.Value{
 		// function, constant and variable definitions
-		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.23.0\"", token.STRING, 0)),
+		"APIVersion":                 reflect.ValueOf(constant.MakeFromLiteral("\"0.24.0\"", token.STRING, 0)),
 		"ActivationCommand":          reflect.ValueOf(ext.ActivationCommand),
 		"ActivationFileType":         reflect.ValueOf(ext.ActivationFileType),
 		"ActivationMotion":           reflect.ValueOf(ext.ActivationMotion),
@@ -60,6 +60,7 @@ func init() {
 		"MethodCancel":               reflect.ValueOf(constant.MakeFromLiteral("\"$/cancel\"", token.STRING, 0)),
 		"MethodChoiceAsk":            reflect.ValueOf(constant.MakeFromLiteral("\"choice/ask\"", token.STRING, 0)),
 		"MethodCommandExecute":       reflect.ValueOf(constant.MakeFromLiteral("\"command/execute\"", token.STRING, 0)),
+		"MethodConsoleComplete":      reflect.ValueOf(constant.MakeFromLiteral("\"console/complete\"", token.STRING, 0)),
 		"MethodDecorationSet":        reflect.ValueOf(constant.MakeFromLiteral("\"decoration/set\"", token.STRING, 0)),
 		"MethodDiagnosticList":       reflect.ValueOf(constant.MakeFromLiteral("\"diagnostic/list\"", token.STRING, 0)),
 		"MethodDiagnosticSet":        reflect.ValueOf(constant.MakeFromLiteral("\"diagnostic/set\"", token.STRING, 0)),
@@ -207,6 +208,9 @@ func init() {
 		"ChoiceAskResult":         reflect.ValueOf((*ext.ChoiceAskResult)(nil)),
 		"CommandExecuteParams":    reflect.ValueOf((*ext.CommandExecuteParams)(nil)),
 		"CommandExecuteResult":    reflect.ValueOf((*ext.CommandExecuteResult)(nil)),
+		"ConsoleCompleteParams":   reflect.ValueOf((*ext.ConsoleCompleteParams)(nil)),
+		"ConsoleCompleteResult":   reflect.ValueOf((*ext.ConsoleCompleteResult)(nil)),
+		"ConsoleCompletionItem":   reflect.ValueOf((*ext.ConsoleCompletionItem)(nil)),
 		"Contributes":             reflect.ValueOf((*ext.Contributes)(nil)),
 		"Contribution":            reflect.ValueOf((*ext.Contribution)(nil)),
 		"Decoration":              reflect.ValueOf((*ext.Decoration)(nil)),

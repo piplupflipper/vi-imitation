@@ -229,6 +229,45 @@ ext/server の WaitBuffer で、応答のバージョン番号以降の複製が
   写しのポップアップを :tabopen でタブへ広げると、本物のファイルを開いて Position へ移る。
   応答の Buffer は写しのバッファの番号、Moved は false である。
 
+#### `ConsoleCompleteParams`
+
+console/complete の params である。
+
+- `view`（`ViewID`）
+- `child`（`string`、省ける）: 切り替えの部品（ViewSwitcher（switcher））の子の ViewConsole（console） なら、その子の ID である。ほかの部品では省く。
+- `text`（`string`）: 入力の行の中身である（前置き Prompt を含めない。改行を含まない）。
+- `cursor`（`int`）: 入力の行のカーソルの位置（Text の中のバイトの位置。0 から len(Text)）である。
+- `seq`（`uint64`）: その部品の補完の問い合わせごとに 1 から 1 ずつ増やす番号である（切り替えの部品の子では子ごとに数える）。
+  本体は、最後に送った Seq の答えだけを使う。拡張機能は、古い Seq の計算を捨ててよい。
+
+#### `ViewID`
+
+JSON の整数である。
+
+本体が開いたポップアップに付けた番号である。本体の中で一意で、使い回さない。0 は使わない。
+
+
+#### `ConsoleCompleteResult`
+
+console/complete の result である。
+
+- `ok`（Go では `OK`、`bool`）: 候補を求められたかである。求められなかった（デバッグのセッションが無い、問い合わせ先が失敗した）なら false にする。
+  本体は、false の答えでは一覧を出さない。候補が 0 件のときは、OK を true にして Items を空にする。
+- `items`（`[]ConsoleCompletionItem`、省ける）: 候補である。並べた順に出す。本体は Validate を通らない候補を捨てて、残りを出す。
+
+#### `ConsoleCompletionItem`
+
+入力の行の補完の候補 1 つである。
+
+- `label`（`string`）: 一覧に出す文字列である。改行を含めない。
+- `text`（`string`、省ける）: 選んだときに入れる文字列である。空なら Label を入れる。本体は、改行を空白に替え、タブ文字の他の制御文字を捨てて入れる
+  （入力の行の貼り付けと同じ）。
+- `start`（`int`）: Start と End は、選んだときに Text で置き換える、問い合わせの Text の中のバイトの範囲 [Start, End) である。
+  Start は Cursor 以下にする。カーソルの前の語の一部だけを置き換えるなら、その語の始まりを Start に、Cursor を End にする。
+  一覧は Start の文字の列から並べ、Text の [Start, Cursor) に当たる候補の先頭を色で示す。
+- `end`（`int`）
+- `kind`（`string`、省ける）: 候補の種類（DAP の CompletionItemType の "function"、"variable" など）である。省ける。一覧の項目の右に出す。改行を含めない。
+
 #### `InitializeParams`
 
 initialize の params である。
@@ -257,13 +296,6 @@ input/change の params である。
   本体は、前の入力への一覧が届いていなくても次の input/change を送るので、拡張機能は古い入力への計算を捨ててよい。
   切り替えの部品の子では、子ごとに数える。
 - `child`（`string`、省ける）: 切り替えの部品（ViewSwitcher（switcher））の中の知らせなら、その子の ID である。ほかの部品では省く（API 0.23.0 で足した）。
-
-#### `ViewID`
-
-JSON の整数である。
-
-本体が開いたポップアップに付けた番号である。本体の中で一意で、使い回さない。0 は使わない。
-
 
 #### `MotionResolveParams`
 
@@ -1139,6 +1171,11 @@ Placement が PaneCenter（center） のときと、端末多重化ソフトの�
   view/update で置き換える。
 - `history`（`[]string`、省ける）: ViewConsole（console） の入力の履歴の最初の中身（古い順）である（API 0.22.0 で足した）。どの項目も改行を含めない。
   ConsoleHistoryMax（1000） を超える分は、本体が古いものから捨てる。view/update では読まない。
+- `complete`（`bool`、省ける）: ViewConsole（console） で、入力の行の補完を拡張機能が引き受けることを表す（API 0.24.0 で足した）。
+  真なら、本体はインサートモードで入力の行が変わるたびと補完のキーで console/complete（ConsoleCompleteParams）を問い合わせ、
+  返った候補を補完の候補の一覧に出す。開いたとき（popup/open、pane/open、切り替えの部品の新しい子）だけ読み、
+  view/update では読まない。偽か省いた部品は、今までどおり補完しない（<Tab> はタブ文字として入る）。他の種類では持てない。
+  古い本体は読まずに捨て、問い合わせない。
 - `children`（`[]ViewChild`、省ける）: ViewSwitcher（switcher） の子の列である（API 0.23.0 で足した）。1 つ以上を持つ。他の種類では持てない。
 - `selected`（`string`、省ける）: ViewSwitcher（switcher） で選ぶ子の ID である（API 0.23.0 で足した）。開いたとき（popup/open、pane/open）に省くと最初の子、
   部品の全体を置き換える view/update で省くと、選んでいる子を保つ（選んでいた子が無くなったら最初の子）。他の種類では持てない。
@@ -1170,6 +1207,7 @@ JSON の文字列である。
   履歴は部品ごとに本体が持ち、閉じたら捨てる。拡張機能は、開き直すときに受けた中身を History で渡す（AppendConsoleHistory）。
   インサートモードの <Esc> はノーマルモードへ戻り、閉じない。<C-w>w で出力と入力の行の間でフォーカスを移す。
   view/update は出力（Text、Highlights）と Prompt だけを置き換え、Input と History は読まない（利用者が打っているため）。
+  Complete を真にして開くと、入力の行を拡張機能が console/complete で返す候補で補う（API 0.24.0 から）。
 - `"switcher"`（ViewSwitcher）: ほかの種類の部品を子（Children）として並べ、見出しの行で選んだ 1 つの子だけを出す部品である
   （API 0.23.0 で足した。nvim-dap-view の見出しの行に当たる）。子にできるのは ViewText（text）、ViewList（list）、ViewTree（tree）、ViewConsole（console） で、
   ViewSwitcher（switcher）、ViewInput（input）、ViewFinder（finder） は子にできない。Selected は選ぶ子の ID で、省くと最初の子である。

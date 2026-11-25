@@ -121,4 +121,7 @@ package ext
 // 子を切り替える action（PopupKeyChildNext など）を足した（#416。FR-269〜FR-271、FR-301）。
 // 古い本体は switcher を知らない部品の種類として、その popup/open と pane/open を誤りで断り、popupKeys の children を読まずに
 // どの部品でも効かせ、知らない action は警告にして view/key を送る。使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
-const APIVersion = "0.23.0"
+// 0.24.0 で、console の部品の入力の行の補完を引き受ける印（ViewComponent.Complete）と、その候補を問い合わせる console/complete
+// （ConsoleCompleteParams、ConsoleCompleteResult。consolecomplete.go）を足した（#427。FR-297）。
+// 古い本体は Complete を読まずに捨て、console/complete を送らない（補完の一覧を出さない）。
+const APIVersion = "0.24.0"

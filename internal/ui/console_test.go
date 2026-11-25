@@ -120,3 +120,86 @@ func TestConsoleNarrow(t *testing.T) {
 	r = &Renderer{Width: 2, Height: 3, Theme: testTheme()}
 	_ = r.Render(&Frame{Float: fl}) // 描けない幅でも panic しない
 }
+
+// 入力の行の補完の候補の一覧は、入力の行の真上に、置き換える語の始まり（Menu.Start）の文字の列から並べ、項目の右に種類を出す。
+// 40 桁 8 行のペイン（部品の client の画面）でも、窓の中に収め、項目が窓の行より多ければスクロールバーを描いて送る。
+// 右の端に収まらなければ左へ寄せる。出力にフォーカスを移しているときは描かない。
+//
+// req: FR-297
+func TestConsoleMenu(t *testing.T) {
+	r := &Renderer{Width: 40, Height: 8, Theme: completionTheme}
+	in := "x = obj.ab"
+	fl := consoleFloat("o1\no2\no3\no4", in, pos(3, 0), pos(0, len(in)))
+	fl.Title, fl.Fill = "repl", true
+	fl.Console.Menu = &CompletionMenu{ID: 1, Items: []string{"abc", "abd"}, Kinds: []string{"method", "variable"}, Selected: 1, Start: 8, Match: "ab"}
+	s := r.Render(&Frame{Float: fl})
+	rows := rowTexts(s, 8)
+	// 表示領域は 6 行。見出し、出力の 4 行、入力の行。入力の "ab" は 11 列目から（前置きの左の 1 列と "> " の後）。
+	if got := rows[3][10:]; !strings.HasPrefix(got, " abc method") {
+		t.Errorf("一覧の 1 行目 = %q（画面:\n%s）", got, s.Grid.String())
+	}
+	// 選んでいる候補（2 行目）は、左の空白の列に印を置く。
+	if got := rows[4][10:]; !strings.HasPrefix(got, ">abd variable") {
+		t.Errorf("一覧の 2 行目 = %q", got)
+	}
+	if rows[2] != " o2" || !strings.HasPrefix(rows[5], " > x = obj.ab") {
+		t.Errorf("一覧の外の行 = %q, %q", rows[2], rows[5])
+	}
+	if a := s.Grid.At(4, 11).Attr; a != completionTheme[StylePopupSelected].Over(Attr{Bold: true}) {
+		t.Errorf("選んだ項目の打った語の色 = %+v", a)
+	}
+	// 選んでいない項目は、窓の色（popup）でなく、本文と同じ既定の色で描く（窓と一覧の境目を見せるため）。
+	if a, w := s.Grid.At(3, 13).Attr, s.Grid.At(2, 13).Attr; a != (Attr{}) || w != completionTheme[StylePopup] {
+		t.Errorf("選んでいない項目の色 = %+v、窓の色 = %+v", a, w)
+	}
+	if c := s.Cursor; c.Row != 5 || c.Col != 13 {
+		t.Errorf("カーソル = %+v", c)
+	}
+
+	// 項目が窓の行より多ければ、見出しの行まで使い、スクロールバーを描く。一覧は窓の外へ出ない。
+	items := make([]string, 10)
+	for i := range items {
+		items[i] = "ab" + string(rune('0'+i))
+	}
+	fl.Console.Menu = &CompletionMenu{ID: 2, Items: items, Selected: -1, Start: 8}
+	s = r.Render(&Frame{Float: fl})
+	rows = rowTexts(s, 8)
+	for i := range 5 {
+		if got := rows[i][11:14]; got != items[i] {
+			t.Errorf("%d 行目 = %q, want %s（画面:\n%s）", i, rows[i], items[i], s.Grid.String())
+		}
+	}
+	if a := s.Grid.At(0, 26).Attr; a != completionTheme[StylePopupThumb] {
+		t.Errorf("スクロールバーのつまみ = %+v", a)
+	}
+
+	// 右の端に収まらなければ、窓の右の端に寄せる。
+	long := strings.Repeat("y", 30) + ".a"
+	fl.View = &Frame{Text: buffer.New(long), Cursor: pos(0, len(long)), Mode: ModeInsert}
+	fl.Console.Menu = &CompletionMenu{ID: 3, Items: []string{"abc"}, Selected: -1, Start: len(long) - 1}
+	s = r.Render(&Frame{Float: fl})
+	if got := s.Grid.RowText(4)[23:]; got != " abc"+strings.Repeat(" ", 13) {
+		t.Errorf("右に寄せた一覧 = %q（画面:\n%s）", s.Grid.RowText(4), s.Grid.String())
+	}
+
+	// 出力にフォーカスを移していれば描かない。
+	fl.Console.OutputFocused = true
+	if s = r.Render(&Frame{Float: fl}); strings.Contains(s.Grid.String(), "abc") {
+		t.Errorf("出力のフォーカスで一覧を描いた:\n%s", s.Grid.String())
+	}
+}
+
+// 種類の欄が窓に入らなければ、種類を省いて項目だけを出す。
+//
+// req: FR-297
+func TestConsoleMenuNarrowKind(t *testing.T) {
+	r := &Renderer{Width: 18, Height: 8, Theme: completionTheme}
+	fl := consoleFloat("", "a", pos(0, 0), pos(0, 1))
+	fl.Fill = true
+	fl.Console.Menu = &CompletionMenu{ID: 1, Items: []string{"abcdefghijkl"}, Kinds: []string{"function"}, Selected: -1, Start: 0}
+	s := r.Render(&Frame{Float: fl})
+	got := s.Grid.RowText(4)
+	if strings.Contains(got, "function") || !strings.Contains(got, "abcdefghijkl") {
+		t.Errorf("狭い一覧 = %q（画面:\n%s）", got, s.Grid.String())
+	}
+}

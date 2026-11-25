@@ -224,6 +224,10 @@ type Console struct {
 	Prompt string
 	// OutputFocused は、キーを出力のバッファが受けていることを表す。Float.Focused なら、端末のカーソルを出力のカーソルに置く。
 	OutputFocused bool
+	// Menu は、入力の行の補完の候補の一覧（FR-297）である。nil なら出さない。Start は入力の行（Float.View の最初の行）の中の
+	// バイトの位置で、一覧の項目をその文字と同じ列から並べる。窓の中の入力の行の上に、窓からはみ出さずに描く（drawConsoleMenu）。
+	// Float.Focused で、OutputFocused でないときだけ描く。
+	Menu *CompletionMenu
 }
 
 // SignKind は、行の印の種類である。値は sign/set の kind と同じ文字列である（基本設計 6.7）。

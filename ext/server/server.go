@@ -67,6 +67,7 @@ const codeRequestCancelled = -32800
 //   - buffer/open、buffer/change、buffer/close: 複製を作る、更新する、捨てる
 //   - buffer/willSave: BufferWillSave で登録したハンドラーを呼ぶ。登録していなければ、編集無しを応答する
 //   - buffer/didSave: OnBufferDidSave で登録したフックを呼ぶ
+//   - console/complete: ConsoleComplete で登録したハンドラーを呼ぶ。登録していなければ、OK を false にした結果を応答する
 //   - window/change: OnWindowChange で登録したフックを呼ぶ
 //   - shutdown: OnShutdown で登録したフックを呼び、送信の列を書き出してから接続を閉じ、Serve から nil を返す
 //
@@ -121,6 +122,8 @@ type Server struct {
 	windows windowLatest
 	// willSave は、buffer/willSave のハンドラーである。登録は 1 つだけで、キーは空文字列である。
 	willSave map[string]entry[ext.BufferWillSaveParams, ext.BufferWillSaveResult]
+	// consoleComplete は、console/complete のハンドラーである（consolecomplete.go）。nil なら登録していない。
+	consoleComplete AsyncConsoleCompleteHandler
 
 	started atomic.Bool
 	conn    atomic.Pointer[rpc.Conn]
@@ -370,6 +373,8 @@ func (s *Server) handleRequest(ctx context.Context, req *rpc.Request, reply rpc.
 				r.Transaction.BaseVersion = v
 			}
 		})
+	case ext.MethodConsoleComplete:
+		s.consoleCompleteRequest(ctx, req, reply)
 	default:
 		s.reply(req.Method, reply, nil, &rpc.Error{Code: rpc.CodeMethodNotFound, Message: "method not found: " + req.Method})
 	}

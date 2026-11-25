@@ -435,6 +435,10 @@ func (e *Editor) closeFloat(notify bool) {
 	}
 	e.closePreview(f)
 	for _, ct := range f.contents() {
+		if ct.con != nil {
+			// 答えを待っている補完の問い合わせを取り消す（consolecomplete.go。FR-297）。
+			e.cancelCompletion(ct.con)
+		}
 		// 切り替えの部品の見えていない子のバッファも閉じる（switcher.go）。
 		e.closeContent(f, ct)
 	}
@@ -931,6 +935,8 @@ func (e *Editor) afterFloatKey() {
 	}
 	e.notifyInputChange(f)
 	if f.kind == floatConsole {
+		// 補完を引き受けた組は、中身が変わっていれば候補を問い合わせる（consolecomplete.go。FR-297）。
+		e.completeAfterKey(f)
 		// 書き足すテキストと入力の行の組の入力の行は、保存するものではないので、未保存の変更として数えない。
 		// 数えると、ペインを閉じる :q が E37 で断られ、ステータス行に [+] が出続ける（#413 の画面の確認で見つけた）。
 		f.bs.buf.MarkSaved()

@@ -86,6 +86,15 @@ b が nil になる場合は CommandHandler と同じである。
 `type AsyncCommandHandler func(ctx context.Context, b *Buffer, p *ext.CommandExecuteParams, reply func(ext.CommandExecuteResult, error))`
 
 
+#### `server.AsyncConsoleCompleteHandler`
+
+console/complete に後から答えるハンドラーである。
+デバッグアダプターの completions のように、答えに時間のかかる問い合わせ先へ問うときに使う。守ることは他の非同期のハンドラーと同じである。
+本体は、入力の行が変わるたびに前の問い合わせを $/cancel で取り消すので、ctx が取り消されたら ctx.Err() で reply してよい。
+
+`type AsyncConsoleCompleteHandler func(ctx context.Context, p *ext.ConsoleCompleteParams, reply func(ext.ConsoleCompleteResult, error))`
+
+
 #### `server.AsyncMotionHandler`
 
 motion/resolve に後から答えるハンドラーである。
@@ -195,6 +204,15 @@ b は p.Buffer の複製で、そのバージョン番号は p.Version と一致
 `type CommandHandler func(ctx context.Context, b *Buffer, p *ext.CommandExecuteParams) (ext.CommandExecuteResult, error)`
 
 
+#### `server.ConsoleCompleteHandler`
+
+console/complete に答えるハンドラーである（API 0.24.0 から）。
+部品を開くときに ext.ViewComponent.Complete を真にした console の部品で、本体が入力の行の中身 p.Text とカーソル p.Cursor への候補を問う。
+候補を求められないとき（デバッグのセッションが無いなど）は、誤りでなく OK を false にした結果を返す。
+
+`type ConsoleCompleteHandler func(ctx context.Context, p *ext.ConsoleCompleteParams) (ext.ConsoleCompleteResult, error)`
+
+
 #### `server.InitializeEvent`
 
 initialize を受け取ったことを表す。
@@ -260,6 +278,10 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
 - `func (s *Server) Command(id string, h CommandHandler)`: 宣言ファイルの contributes.commands に書いた id のコマンドのハンドラーを登録する。
   同じ id を 2 回登録するか（CommandAsync との重複を含む）、Serve の後に呼ぶと panic する。
 - `func (s *Server) CommandAsync(id string, h AsyncCommandHandler)`: Command の非同期版である。
+- `func (s *Server) ConsoleComplete(h ConsoleCompleteHandler)`: console/complete のハンドラーを登録する。登録は 1 つだけで、拡張機能が開いたどの console の部品の
+  問い合わせも届く（p.View と p.Child で見分ける）。2 回登録するか（ConsoleCompleteAsync との重複を含む）、Serve の後に呼ぶと panic する。
+  登録していなければ、Server は OK を false にした結果を応答する。
+- `func (s *Server) ConsoleCompleteAsync(h AsyncConsoleCompleteHandler)`: ConsoleComplete の非同期版である。
 - `func (s *Server) CreateBuffer(ctx context.Context, p ext.BufferCreateParams) (ext.BufferCreateResult, error)`: 本体へ buffer/create を送り、p のテキストでファイルでないバッファを作らせる。応答は作ったバッファの番号である。
   p が ext.BufferCreateParams.Validate を通らなければ、送らずにその誤りを返す。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。

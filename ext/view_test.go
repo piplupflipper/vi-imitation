@@ -41,6 +41,16 @@ func TestViewComponentValidate(t *testing.T) {
 		{"組の前置きの改行", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, Prompt: ">\n"}}, "prompt が改行"},
 		{"組の履歴の改行", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, History: []string{"a", "b\rc"}}}, "history[1]"},
 		{"組の項目", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, Items: []ViewItem{item("a", "A")}}}, "items"},
+		{"補完する組", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, Complete: true}}, ""},
+		{"組でない部品の補完", PopupOpenParams{Component: ViewComponent{Kind: ViewText, Complete: true}}, "complete は console"},
+		{"切り替えの部品の補完", PopupOpenParams{Placement: PopupCenter, Component: ViewComponent{
+			Kind: ViewSwitcher, Complete: true,
+			Children: []ViewChild{{ID: "r", Title: "R", Component: ViewComponent{Kind: ViewConsole, Complete: true}}},
+		}}, "complete"},
+		{"切り替えの部品の子の補完", PopupOpenParams{Placement: PopupCenter, Component: ViewComponent{
+			Kind:     ViewSwitcher,
+			Children: []ViewChild{{ID: "r", Title: "R", Component: ViewComponent{Kind: ViewConsole, Complete: true}}},
+		}}, ""},
 	}
 	for _, tt := range tests {
 		err := tt.p.Validate()
@@ -67,6 +77,12 @@ func TestViewMessageJSON(t *testing.T) {
 		`{"view":3,"component":{"kind":"finder","items":[{"id":"a","label":"A"}]},"seq":2}`)
 	roundTrip(t, PaneOpenParams{Component: ViewComponent{Kind: ViewConsole, Text: "o", Input: "i", Prompt: "$ ", History: []string{"h"}}},
 		`{"component":{"kind":"console","text":"o","input":"i","prompt":"$ ","history":["h"]}}`)
+	roundTrip(t, PaneOpenParams{Component: ViewComponent{Kind: ViewConsole, Complete: true}}, `{"component":{"kind":"console","complete":true}}`)
+	roundTrip(t, ConsoleCompleteParams{View: 3, Child: "repl", Text: "obj.a", Cursor: 5, Seq: 2},
+		`{"view":3,"child":"repl","text":"obj.a","cursor":5,"seq":2}`)
+	roundTrip(t, ConsoleCompleteResult{OK: true, Items: []ConsoleCompletionItem{{Label: "abc", Text: "abc()", Start: 4, End: 5, Kind: "method"}}},
+		`{"ok":true,"items":[{"label":"abc","text":"abc()","start":4,"end":5,"kind":"method"}]}`)
+	roundTrip(t, ConsoleCompleteResult{}, `{"ok":false}`)
 	roundTrip(t, ViewSelectParams{View: 3, Item: "a", Input: "q"}, `{"view":3,"item":"a","input":"q"}`)
 	roundTrip(t, ViewKeyParams{View: 3, ID: "k", Item: "a", Input: "q"}, `{"view":3,"id":"k","item":"a","input":"q"}`)
 	roundTrip(t, EditorListParams{List: ListTabs}, `{"list":"tabs"}`)
