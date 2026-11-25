@@ -95,7 +95,9 @@ func TestViewSwitcherValidate(t *testing.T) {
 	sw := func(sel string, ch ...ViewChild) ViewComponent {
 		return ViewComponent{Kind: ViewSwitcher, Title: "dap", Selected: sel, Children: ch}
 	}
-	child := func(id, key string, c ViewComponent) ViewChild { return ViewChild{ID: id, Title: id, Key: key, Component: c} }
+	child := func(id, key string, c ViewComponent) ViewChild {
+		return ViewChild{ID: id, Title: id, Key: key, Component: c}
+	}
 	tests := []struct {
 		name string
 		c    ViewComponent

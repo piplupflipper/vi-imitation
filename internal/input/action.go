@@ -53,7 +53,7 @@ func Actions() []Action {
 			add(Action{ID: s.id, Kind: t.kind, Modes: modes, Description: s.desc, takesChar: s.takesChar, takesChar2: s.takesChar2, next: s.next})
 		}
 	}
-	for _, ss := range [][]providerSpec{providerKeys, previewKeys} {
+	for _, ss := range [][]providerSpec{providerKeys, previewKeys, viewChildKeys} {
 		for _, s := range ss {
 			modes := s.modes
 			if modes == 0 {

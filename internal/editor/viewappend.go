@@ -17,18 +17,39 @@ import (
 const appendLostNote = "（書き足しの一部を捨てました）"
 
 // viewAppend は、拡張機能の view/append を処理する。テキストの部品と、書き足すテキストと入力の行の組の出力（FR-274）に書き足す。
-// 知らない部品、閉じた部品、それ以外の部品への書き足しと、切り替えの部品の子（Child）を指す書き足しは捨てる
-// （切り替えの部品はまだ無いので、子はどれも知らない子である）。
+// 切り替えの部品の子（Child）を指す書き足しは、見えていない子でもその場でその子の中身に当てる（FR-270）。
+// 知らない部品、閉じた部品、知らない子、それ以外の部品への書き足しと、切り替えの部品でない部品の子を指す書き足しは捨てる。
+//
+// req: FR-270
 func (e *Editor) viewAppend(ev *exthost.ViewAppend) {
 	ev.Flush() // 取っておく列でつないだ中身を params に入れる
-	if ev.Params.Child != "" {
+	c, f, ct := e.appendTarget(appendKey{ext: ev.Extension, view: ev.Params.View, child: ev.Params.Child})
+	if ct == nil {
 		return
 	}
-	c, f := e.findViewFloat(ev.Extension, ev.Params.View)
-	if f == nil || !f.appendable() {
-		return
+	e.withView(c, func() {
+		f.withContent(ct, func() { e.appendFloatText(f, ev.Params.Text, ev.Params.Highlights) })
+	})
+}
+
+// appendTarget は、書き足す先 k の部品を出している client と部品と、書き足す中身（切り替えの部品なら子の中身）を返す。
+// 書き足せない（知らない部品か子、テキストと組でない部品）なら ct が nil である。
+func (e *Editor) appendTarget(k appendKey) (*clientView, *floatState, *floatContent) {
+	c, f := e.findViewFloat(k.ext, k.view)
+	switch {
+	case f == nil:
+		return nil, nil, nil
+	case f.sw != nil:
+		if i := f.sw.index(k.child); i >= 0 {
+			if ct := f.sw.children[i].content; ct.appendable() {
+				return c, f, ct
+			}
+		}
+		return nil, nil, nil
+	case k.child != "" || !f.appendable():
+		return nil, nil, nil
 	}
-	e.withView(c, func() { e.appendFloatText(f, ev.Params.Text, ev.Params.Highlights) })
+	return c, f, f.floatContent
 }
 
 // appendFloatText は、テキストの部品 f の中身（書き足すテキストと入力の行の組なら出力。floatState.textBuf）の末尾へ
@@ -241,28 +262,16 @@ func (e *Editor) flushAppendLost() {
 	lost := e.appendLost
 	e.appendLost = nil
 	for _, k := range lost {
-		f := e.floatOrNil(k)
-		if f == nil {
+		_, _, ct := e.appendTarget(k)
+		if ct == nil {
 			continue
 		}
 		text := appendLostNote + "\n"
-		if !f.textEOL {
+		if !ct.textEOL {
 			text = "\n" + text
 		}
 		e.viewAppend(&exthost.ViewAppend{Extension: k.ext, Params: ext.ViewAppendParams{View: k.view, Child: k.child, Text: text, Highlights: []ext.ViewSpan{{Start: strings.Index(text, appendLostNote), End: strings.Index(text, appendLostNote) + len(appendLostNote), Style: "comment"}}}})
 	}
-}
-
-// floatOrNil は、部品 k を出しているテキストの部品を返す。無ければ nil である。
-func (e *Editor) floatOrNil(k appendKey) *floatState {
-	if k.child != "" {
-		return nil
-	}
-	_, f := e.findViewFloat(k.ext, k.view)
-	if f == nil || !f.appendable() {
-		return nil
-	}
-	return f
 }
 
 // appendKey は、書き足す先の部品（拡張機能、部品の ID、切り替えの部品の子の ID の組）である。

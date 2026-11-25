@@ -400,6 +400,10 @@ Vim の `ggVG` と違い、カーソルは動かず、画面もスクロール�
 | `preview.page-up` | 操作 | `normal`、`insert` | プレビューを 1 画面上へスクロールする |
 | `preview.down` | 操作 | `normal`、`insert` | プレビューを 1 行下へスクロールする |
 | `preview.up` | 操作 | `normal`、`insert` | プレビューを 1 行上へスクロールする |
+| `view.child-next` | 操作 | `normal` | 切り替えの部品の次の子へ切り替える |
+| `view.child-prev` | 操作 | `normal` | 切り替えの部品の前の子へ切り替える |
+| `view.child-first` | 操作 | `normal` | 切り替えの部品の最初の子へ切り替える |
+| `view.child-last` | 操作 | `normal` | 切り替えの部品の最後の子へ切り替える |
 <!-- action-ids:end -->
 
 ### 拡張機能の設定と設定の誤り

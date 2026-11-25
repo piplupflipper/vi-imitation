@@ -65,7 +65,7 @@ const (
 //
 // req: FR-274
 func (e *Editor) newConsoleFloat(c ext.ViewComponent, extID string) *floatState {
-	f := &floatState{kind: floatConsole, ext: extID, title: c.Title, scratch: true, input: c.Input}
+	f := &floatState{floatContent: &floatContent{kind: floatConsole, input: c.Input}, ext: extID, title: c.Title, scratch: true}
 	h := c.History
 	if d := len(h) - ext.ConsoleHistoryMax; d > 0 {
 		h = h[d:]
@@ -77,7 +77,7 @@ func (e *Editor) newConsoleFloat(c ext.ViewComponent, extID string) *floatState 
 	f.bs.state.SetCursor(buffer.Position{Byte: len(c.Input)})
 	lines, _, decs := floatLines(c, nil, nil)
 	con.out = e.newPopupBuffer(consoleOutputName, floatBufferText(lines), "", true)
-	con.out.state.Viewport = consoleOutViewport{f: f, r: e.renderer}
+	con.out.state.Viewport = consoleOutViewport{f: f, r: e.renderer, ct: f.floatContent}
 	if len(decs) > 0 {
 		e.setPopupDecorations(con.out, decs)
 	}
@@ -217,7 +217,7 @@ func (e *Editor) consoleOutputKey(f *floatState, k editcmd.Key, insert bool) (bo
 func (e *Editor) submitConsole(f *floatState) {
 	e.notifyInputChange(f)
 	text := f.bs.buf.Line(0)
-	e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: text})
+	e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: text, Child: f.child})
 	con := f.con
 	con.history = ext.AppendConsoleHistory(con.history, text)
 	con.histPos, con.histEdits = len(con.history), nil
@@ -394,17 +394,17 @@ func (e *Editor) uiConsole(f *floatState) *ui.Console {
 // consoleOutViewport は、書き足すテキストと入力の行の組の出力のバッファのページ単位のスクロール（command.State.Viewport）と、
 // 書き足しで古い行を捨てたときの見ている行のずらし（appendFloatText）を、出力の表示領域につなぐ口である。
 // まだ描いていなければ、1 行の表示領域として扱う。部品の client が描く部品（floatState.remote）では、その client の画面の窓を使う。
+// ct は、その組の中身である（切り替えの部品の子なら、その子を描いた子の Renderer を使う。floatViewport と同じ）。
 type consoleOutViewport struct {
-	f *floatState
-	r *ui.Renderer
+	f  *floatState
+	r  *ui.Renderer
+	ct *floatContent
 }
 
 // sub は、出力を描く子の Renderer を返す。まだ描いていなければ nil である。
 func (v consoleOutViewport) sub() *ui.Renderer {
-	if c := v.f.remote; c != nil {
-		return c.r.ConsoleOutputRenderer()
-	}
-	return v.r.ConsoleOutputRenderer()
+	_, s := v.f.childRenderers(v.r, v.ct)
+	return s
 }
 
 func (v consoleOutViewport) Top() int {

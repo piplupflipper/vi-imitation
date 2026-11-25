@@ -255,6 +255,8 @@ input/change の params である。
 - `seq`（`uint64`、省ける）: そのポップアップの入力の行が変わるたびに 1 から 1 ずつ増やす番号である（API 0.9.0 で足した）。
   ViewFinder（finder） の拡張機能は、この入力への一覧を view/update の Seq に同じ値を入れて返す。
   本体は、前の入力への一覧が届いていなくても次の input/change を送るので、拡張機能は古い入力への計算を捨ててよい。
+  切り替えの部品の子では、子ごとに数える。
+- `child`（`string`、省ける）: 切り替えの部品（ViewSwitcher（switcher））の中の知らせなら、その子の ID である。ほかの部品では省く（API 0.23.0 で足した）。
 
 #### `ViewID`
 
@@ -389,6 +391,16 @@ textObject/resolve の result である。
   false（省略を含む）なら、Vim の組み込みのテキストオブジェクトと同じく、選択の動く側の端から Range の終わりまで選択を広げる。
   オペレーターの後では読まない。足したのは API 0.18.0 である。古い本体は読まずに捨て、選択を広げる。
 
+#### `ViewChildSelectParams`
+
+view/childSelect の params である（API 0.23.0 で足した）。
+利用者の操作（本体の操作 view.child-*、子の Key、見出しの行のクリック、popupKeys の子を切り替える action）で、
+切り替えの部品の選ぶ子が替わったことを知らせる。拡張機能の view/update の Selected で替えたときは送らない。
+拡張機能は、見えていない子の中身を作らずにおき、この知らせを受けてから作ってよい。
+
+- `view`（`ViewID`）
+- `child`（`string`）: 選んだ子の ID である。
+
 #### `ViewClosedParams`
 
 view/closed の params である。
@@ -403,6 +415,7 @@ view/expand の params である。
 - `view`（`ViewID`）
 - `item`（`string`）: 開閉した項目の ID である。
 - `expanded`（`bool`）: 開いたなら true、閉じたなら false である。
+- `child`（`string`、省ける）: 切り替えの部品（ViewSwitcher（switcher））の中の知らせなら、その子の ID である。ほかの部品では省く（API 0.23.0 で足した）。
 
 #### `ViewKeyParams`
 
@@ -412,6 +425,8 @@ view/key の params である。
 - `id`（Go では `ID`、`string`）: 打ったキーの contributes.popupKeys の項目の ID である。
 - `item`（`string`、省ける）: 一覧、木、ViewFinder（finder） ではカーソルの行の項目の ID、入力の行と ViewConsole（console） では入力の行の中身、テキストでは空である。
 - `input`（`string`、省ける）: ViewFinder（finder） の入力の行の中身である。他の部品では省く。
+- `child`（`string`、省ける）: 切り替えの部品（ViewSwitcher（switcher））の中の知らせなら、キーを打ったときに出していた子の ID である。
+  ほかの部品では省く（API 0.23.0 で足した）。
 
 #### `ViewSelectParams`
 
@@ -424,6 +439,7 @@ view/select の params である。
 - `selection`（`uint64`、省ける）: ViewList（list）、ViewTree（tree）、ViewFinder（finder） の項目の選択に本体が付ける番号である（1 から。API 0.9.0 で足した）。
   拡張機能は、この選択への応答として、同じ番号を付けた editor/execute（EditorExecuteParams.Selection）を 1 回だけ送れる。
   ViewInput（input） では省く。
+- `child`（`string`、省ける）: 切り替えの部品（ViewSwitcher（switcher））の中の知らせなら、その子の ID である。ほかの部品では省く（API 0.23.0 で足した）。
 
 #### `ViewTabChangeParams`
 
@@ -1123,6 +1139,9 @@ Placement が PaneCenter（center） のときと、端末多重化ソフトの�
   view/update で置き換える。
 - `history`（`[]string`、省ける）: ViewConsole（console） の入力の履歴の最初の中身（古い順）である（API 0.22.0 で足した）。どの項目も改行を含めない。
   ConsoleHistoryMax（1000） を超える分は、本体が古いものから捨てる。view/update では読まない。
+- `children`（`[]ViewChild`、省ける）: ViewSwitcher（switcher） の子の列である（API 0.23.0 で足した）。1 つ以上を持つ。他の種類では持てない。
+- `selected`（`string`、省ける）: ViewSwitcher（switcher） で選ぶ子の ID である（API 0.23.0 で足した）。開いたとき（popup/open、pane/open）に省くと最初の子、
+  部品の全体を置き換える view/update で省くと、選んでいる子を保つ（選んでいた子が無くなったら最初の子）。他の種類では持てない。
 
 #### `ViewKind`
 
@@ -1151,6 +1170,14 @@ JSON の文字列である。
   履歴は部品ごとに本体が持ち、閉じたら捨てる。拡張機能は、開き直すときに受けた中身を History で渡す（AppendConsoleHistory）。
   インサートモードの <Esc> はノーマルモードへ戻り、閉じない。<C-w>w で出力と入力の行の間でフォーカスを移す。
   view/update は出力（Text、Highlights）と Prompt だけを置き換え、Input と History は読まない（利用者が打っているため）。
+- `"switcher"`（ViewSwitcher）: ほかの種類の部品を子（Children）として並べ、見出しの行で選んだ 1 つの子だけを出す部品である
+  （API 0.23.0 で足した。nvim-dap-view の見出しの行に当たる）。子にできるのは ViewText（text）、ViewList（list）、ViewTree（tree）、ViewConsole（console） で、
+  ViewSwitcher（switcher）、ViewInput（input）、ViewFinder（finder） は子にできない。Selected は選ぶ子の ID で、省くと最初の子である。
+  本体は子ごとに中身（カーソル、スクロール、木の開閉、入力の行と履歴）を持ち、切り替えても捨てない。
+  子を切り替える本体の操作は view.child-next、view.child-prev、view.child-first、view.child-last（既定のキーは ]v、[v、[V、]V）で、
+  子の Key、見出しの行の子の名前のクリック、contributes.popupKeys の子を切り替える action でも切り替える。
+  利用者が切り替えたら view/childSelect で知らせる。拡張機能が view/update の Selected で替えたときは知らせない。
+  置き場所は pane/open の split と center、popup/open の center で、popup/open の cursor は断る。
 
 #### `PopupFormat`
 
@@ -1220,6 +1247,19 @@ ViewItem.Preview（カーソルがあるときに何を見せるか）とは別�
 - `path`（`string`）: ファイルかディレクトリのパスである。本体は、名前と拡張子からファイルの種類を決める（設定の fileTypes を含む）。
   本体はパスの先を調べないので、相対パスでも、無いファイルでもよい。
 - `dir`（`bool`、省ける）: ディレクトリなら true である。木では、開いたディレクトリと閉じたディレクトリでアイコンを分ける。
+
+#### `ViewChild`
+
+切り替えの部品（ViewSwitcher（switcher））の子 1 つである（API 0.23.0 で足した）。
+
+- `id`（Go では `ID`、`string`）: 部品の中で一意な空でない文字列で、改行を含めない。子を指す view/update と view/append、子を指す知らせ、
+  宣言ファイルの popupKeys の children で使う。
+- `title`（`string`）: 見出しの行に出す子の名前である。改行を含めない。
+- `key`（`string`、省ける）: その子へ直に切り替えるノーマルモードの 1 つのキー（"S"、"<C-x>" など。キーの表記は popupKeys と同じ）である。省ける。
+  部品の中のノーマルモードでだけ効き、contributes.popupKeys と本体の既定のキーより先に引く。見出しの行の名前の後に [S] の形で出す。
+  本体は、キーとして読めない表記、2 つ以上のキー、本体の部品の操作と重なるキー（<CR>、<Esc>、:、<C-w>）を持つ部品を、
+  popup/open と pane/open では誤りで断り、view/update では捨てる（キーの表記は本体が読むので、Validate では確かめない）。
+- `component`（`ViewComponent`）: 子の部品である。Title は読まない（子の名前は ViewChild.Title で出す）。
 
 #### `PanePlacement`
 
@@ -1367,7 +1407,8 @@ Format が Markdown の部品へ書き足したテキストは、コードの囲
 閉じた部品を開き直したときに中身を戻すには、拡張機能の側で写しを持つ（ext/server の TextLog）。
 
 - `view`（`ViewID`）
-- `child`（`string`、省ける）: 切り替えの部品の子の ID である。切り替えの部品はまだ無いので、空でなければ本体は知らない子として捨てる。
+- `child`（`string`、省ける）: 切り替えの部品（ViewSwitcher（switcher））の子の ID である。見えていない子にも書き足す（API 0.23.0 から。
+  古い本体は空でない Child の書き足しを捨てる）。知らない子と、テキストと ViewConsole（console） でない子への書き足しは捨てる。
 - `text`（`string`）: 書き足すテキストである。改行を含んでよい。不正な UTF-8 を含む通知は、本体がログに残して捨てる。
 - `highlights`（`[]ViewSpan`、省ける）: Text の中の色を付ける範囲である。位置は Text の中のバイトの位置で、Text の外を指せない。
   色の違う断片を 1 件の中に並べて持てる（DAP の stdout と stderr）。
@@ -1396,9 +1437,15 @@ ViewFinder（finder） 以外では Seq を読まない。
 ViewConsole（console） では、出力（Text、Highlights）と前置き（Prompt）だけを置き換え、入力の行（Input）と履歴（History）は読まない
 （利用者が打っているため）。出力のカーソルは、テキストと同じく最後の行にあれば（Tail なら常に）新しい中身の最後の行へ置く。
 
+ViewSwitcher（switcher）（API 0.23.0）では、Child があれば Component をその子の部品として、その子だけを置き換える（見えていない子でもよい）。
+子の部品の種類が開いたときと違うか、知らない子なら捨てる。Child が無ければ部品の全体を置き換え、同じ ID の子は状態を保ったまま
+中身を置き換え、無くなった ID の子は捨て、新しい ID の子は作る。Selected を書けばその子を選び（view/childSelect は送らない）、
+書かなければ選んでいる子を保つ。子を並べ直したときは、見出しの行の並びも替える。
+
 - `view`（`ViewID`）
 - `component`（`ViewComponent`）
 - `seq`（`uint64`、省ける）
+- `child`（`string`、省ける）: ViewSwitcher（switcher） の子の ID である（API 0.23.0 で足した）。あれば Component はその子の部品である。
 
 #### `VirtualTextSetParams`
 

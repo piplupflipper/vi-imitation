@@ -233,4 +233,8 @@ LSP と DAP の操作（`hover`、`debug.continue` など）は、その操作�
 | `preview.page-up` | 操作 | normal、insert | `<S-Up>` | プレビューを 1 画面上へスクロールする |
 | `preview.down` | 操作 | normal、insert | `<A-S-Down>` | プレビューを 1 行下へスクロールする |
 | `preview.up` | 操作 | normal、insert | `<A-S-Up>` | プレビューを 1 行上へスクロールする |
+| `view.child-next` | 操作 | normal | `]v` | 切り替えの部品の次の子へ切り替える |
+| `view.child-prev` | 操作 | normal | `[v` | 切り替えの部品の前の子へ切り替える |
+| `view.child-first` | 操作 | normal | `[V` | 切り替えの部品の最初の子へ切り替える |
+| `view.child-last` | 操作 | normal | `]V` | 切り替えの部品の最後の子へ切り替える |
 <!-- generated:actions:end -->

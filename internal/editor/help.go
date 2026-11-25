@@ -113,7 +113,7 @@ func (e *Editor) openHelpFloat(text string, line int) {
 		}
 		lines = append(lines, w...)
 	}
-	f := &floatState{kind: floatText, title: helpTitle, scratch: true, center: true, focused: true}
+	f := &floatState{floatContent: &floatContent{kind: floatText}, title: helpTitle, scratch: true, center: true, focused: true}
 	f.bs = e.newPopupBuffer(helpTitle, strings.Join(lines, "\n"), "", true)
 	f.bs.state.SetCursor(buffer.Position{Line: min(at, f.bs.buf.LineCount()-1)})
 	e.openFloat(f)
@@ -697,7 +697,7 @@ func (e *Editor) openKeyList(group string, prefix []editcmd.Key) error {
 		return fmt.Errorf("%s で始まるキーはありません", editcmd.KeysString(prefix))
 	}
 	head, lines := keyListLines(group, prefix, rows)
-	f := &floatState{kind: floatList, title: head, scratch: true, center: true, focused: true}
+	f := &floatState{floatContent: &floatContent{kind: floatList}, title: head, scratch: true, center: true, focused: true}
 	f.bs = e.newPopupBuffer(keyListTitle, strings.Join(lines, "\n"), "", true)
 	f.rows = make([]floatRow, len(rows))
 	f.onSelect = func(i int) { e.selectKeyRow(rows[i]) }

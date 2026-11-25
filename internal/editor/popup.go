@@ -15,6 +15,7 @@ import (
 	"github.com/piplupflipper/vi-imitation/internal/command/ex"
 	"github.com/piplupflipper/vi-imitation/internal/editcmd"
 	"github.com/piplupflipper/vi-imitation/internal/exthost"
+	"github.com/piplupflipper/vi-imitation/internal/input"
 	"github.com/piplupflipper/vi-imitation/internal/option"
 	"github.com/piplupflipper/vi-imitation/internal/ui"
 )
@@ -81,13 +82,53 @@ type floatRow struct {
 	preview *ext.ViewPreview
 }
 
+// floatContent は、ポップアップに出す部品 1 つの中身（バッファ、カーソルのある項目、木の開閉、入力の行、プレビュー、書き足しの状態）である。
+// 切り替えの部品（floatSwitcher。switcher.go）は子ごとに 1 つ持ち、選んでいる子の中身を floatState.floatContent に置く。
+// ほかの部品では、floatState が 1 つだけ持つ。
+type floatContent struct {
+	kind floatKind
+	// child は、切り替えの部品の子の ID（ext.ViewChild.ID）である。ほかの部品では空である。
+	// 部品の中の知らせ（view/select、view/key、view/expand、input/change）の Child に入れる（FR-271）。
+	child string
+	// bs は、ポップアップに出すバッファである（書き足すテキストと入力の行の組では入力の行、ファインダーでは入力の行）。
+	bs *bufferState
+	// rows は、一覧と木の行ごとの項目である。tree と expanded は、木の元の項目と開閉の状態である。
+	rows     []floatRow
+	tree     []ext.ViewItem
+	expanded map[string]bool
+	// input は、入力の行の、最後に input/change で知らせた（または開いたときの）中身である。
+	input string
+	// inputSeq は、最後に送った input/change の番号（ext.InputChangeParams.Seq）である。開いたときは 0 である。
+	inputSeq uint64
+	// list は、ファインダー（floatFinder）の一覧のバッファである（編集を禁止したファイルでないバッファ。1 項目を 1 行）。
+	// rows は、この一覧の行ごとの項目である。listSeq は、いま出している一覧が答えた入力の番号（ext.ViewUpdateParams.Seq）である。
+	list    *bufferState
+	listSeq uint64
+	// pendingSelect は、今の入力に答えた一覧が届く前に <CR> を打ったので、届いたら選ぶことを表す（finderKey）。
+	pendingSelect bool
+	// hasPreview は、部品がプレビューの欄を持つこと（ext.ViewComponent.HasPreview。FR-149）を表す。
+	// 開いたときと view/update のたびに決め直す。preview は、カーソルの項目のプレビューの状態である（preview.go）。
+	hasPreview bool
+	preview    previewState
+	// iconColumn は、一覧と木の行にアイコンの列を置くこと（FR-152）を表す。開いてから一度でもファイルを指す項目が来たら true にし、
+	// その後は戻さない（iconColumnFor）。
+	iconColumn bool
+	// tailState は、末尾へ書き足す部品（テキストと、書き足すテキストと入力の行の組の出力）の書き足しと追従の状態である（viewappend.go）。
+	tailState
+	// con は、書き足すテキストと入力の行の組（floatConsole）の、入力の行（bs）のほかの状態である（console.go）。ほかの部品では nil である。
+	con *consoleState
+}
+
 // floatState は、client が出しているポップアップである。
 type floatState struct {
 	// id は、ポップアップの番号である（ext.ViewID と ui.Float.ID）。server の中で一意で、使い回さない。
-	id   uint64
-	kind floatKind
-	// bs は、ポップアップに出すバッファ、base は開いたときのカーソルのあるタブである。
-	bs, base *bufferState
+	id uint64
+	// floatContent は、出している部品の中身である。切り替えの部品では、選んでいる子の中身である（sw）。
+	*floatContent
+	// sw は、切り替えの部品（ext.ViewSwitcher。FR-269）の子の並びである。ほかの部品では nil である（switcher.go）。
+	sw *floatSwitcher
+	// base は開いたときのカーソルのあるタブである。
+	base *bufferState
 	// anchor は、開いたときの base のカーソルである。transient のポップアップは、base のカーソルがここから動いたら閉じる。
 	anchor buffer.Position
 	// keys と trackKeys は、popup/show（ホバー）のポップアップで、base の State が解釈したキーの数（command.State.KeysFed）が
@@ -110,30 +151,16 @@ type floatState struct {
 	peek *ext.EditorOpenParams
 	// ext と view は、拡張機能の popup/open で開いたポップアップの、持ち主の拡張機能の ID とポップアップの ID である。
 	ext string
-	// rows は、一覧と木の行ごとの項目である。tree と expanded は、木の元の項目と開閉の状態である。
-	rows     []floatRow
-	tree     []ext.ViewItem
-	expanded map[string]bool
 	// onSelect は、本体が出した一覧（キーの一覧）で、行 row を選んだときに呼ぶ関数である。nil なら拡張機能へ view/select を送る。
 	onSelect func(row int)
 	// pending は、contributes.popupKeys のキーの列の途中まで打ったキーである。
 	pending []editcmd.Key
-	// input は、入力の行の、最後に input/change で知らせた（または開いたときの）中身である。
-	input string
 	// pane は、拡張機能の pane/open で、端末多重化ソフトのペインに開いた部品であることを表す（component.go）。
 	// viewFields.float ではなく viewFields.panes に置く。<Esc> では閉じない。
 	pane bool
 	// remote は、この部品を描いている部品の client（端末多重化ソフトのポップアップかペインの中）である。
 	// nil なら、まだ繋いでいないか、編集の client の画面の中に描く（component.go）。
 	remote *component
-	// inputSeq は、最後に送った input/change の番号（ext.InputChangeParams.Seq）である。開いたときは 0 である。
-	inputSeq uint64
-	// list は、ファインダー（floatFinder）の一覧のバッファである（編集を禁止したファイルでないバッファ。1 項目を 1 行）。
-	// rows は、この一覧の行ごとの項目である。listSeq は、いま出している一覧が答えた入力の番号（ext.ViewUpdateParams.Seq）である。
-	list    *bufferState
-	listSeq uint64
-	// pendingSelect は、今の入力に答えた一覧が届く前に <CR> を打ったので、届いたら選ぶことを表す（finderKey）。
-	pendingSelect bool
 	// closeOnSelect は、pane/open の CloseOnSelect で、中央のポップアップに出したときに、項目を選んだら閉じることを表す
 	// （FR-147。selectFloat）。分割したペイン（pane）では読まない。
 	closeOnSelect bool
@@ -141,22 +168,11 @@ type floatState struct {
 	// タブとそのパスである（view/tabChange。notifyPaneTabs）。
 	shownTab  *bufferState
 	shownPath string
-	// hasPreview は、部品がプレビューの欄を持つこと（ext.ViewComponent.HasPreview。FR-149）を表す。
-	// 開いたときと view/update のたびに決め直す。preview は、カーソルの項目のプレビューの状態である（preview.go）。
-	hasPreview bool
-	preview    previewState
-	// iconColumn は、一覧と木の行にアイコンの列を置くこと（FR-152）を表す。開いてから一度でもファイルを指す項目が来たら true にし、
-	// その後は戻さない（iconColumnFor）。
-	iconColumn bool
 	// screen は、中央のポップアップを端末多重化ソフトのポップアップに出すときに、その幅の百分率を数えた端末の列数である
 	// （Config.PopupScreenWidth。requestPopup）。0 なら、編集の client の画面に描く窓として、その画面の幅で数える。
 	// screenPending は、端末の列数を問い合わせている間であることを表す。その間はプレビューを出さない（previewShown）。
 	screen        int
 	screenPending bool
-	// tailState は、末尾へ書き足す部品（テキストと、書き足すテキストと入力の行の組の出力）の書き足しと追従の状態である（viewappend.go）。
-	tailState
-	// con は、書き足すテキストと入力の行の組（floatConsole）の、入力の行（bs）のほかの状態である（console.go）。ほかの部品では nil である。
-	con *consoleState
 }
 
 // tailState は、末尾へ書き足す部品の書き足しと追従の状態である（FR-272）。
@@ -177,7 +193,7 @@ type tailState struct {
 }
 
 // consoleOut は、書き足すテキストと入力の行の組 f の出力のバッファを返す。組でなければ nil である。
-func (f *floatState) consoleOut() *bufferState {
+func (f *floatContent) consoleOut() *bufferState {
 	if f.con == nil {
 		return nil
 	}
@@ -185,7 +201,7 @@ func (f *floatState) consoleOut() *bufferState {
 }
 
 // textBuf は、末尾へ書き足す部品 f の、書き足す先のバッファを返す。テキストの部品なら bs、書き足すテキストと入力の行の組なら出力である。
-func (f *floatState) textBuf() *bufferState {
+func (f *floatContent) textBuf() *bufferState {
 	if f.con != nil {
 		return f.con.out
 	}
@@ -193,7 +209,7 @@ func (f *floatState) textBuf() *bufferState {
 }
 
 // appendable は、部品 f が view/append で書き足せる部品（テキストか、書き足すテキストと入力の行の組）かを返す。
-func (f *floatState) appendable() bool {
+func (f *floatContent) appendable() bool {
 	return f.kind == floatText || f.kind == floatConsole
 }
 
@@ -212,17 +228,17 @@ func (e *Editor) tab() *bufferState {
 // floatViewport は、ポップアップのバッファのページ単位のスクロール（command.State.Viewport）を、窓の表示領域につなぐ口である。
 // 窓をまだ描いていなければ、1 行の表示領域として扱う。
 // 部品の client が描く部品（floatState.remote）では、その client の画面の窓を使う。
+// ct は、そのバッファの中身である。切り替えの部品の子なら、見えていない子でも、その子を描いた子の Renderer を使う（childRenderers）。
 type floatViewport struct {
-	f *floatState
-	r *ui.Renderer
+	f  *floatState
+	r  *ui.Renderer
+	ct *floatContent
 }
 
 // sub は、窓の中を描く子の Renderer を返す。まだ描いていなければ nil である。
 func (v floatViewport) sub() *ui.Renderer {
-	if c := v.f.remote; c != nil {
-		return c.r.FloatRenderer()
-	}
-	return v.r.FloatRenderer()
+	s, _ := v.f.childRenderers(v.r, v.ct)
+	return s
 }
 
 func (v floatViewport) Top() int {
@@ -281,7 +297,7 @@ func (e *Editor) openFloat(f *floatState) {
 	}
 	f.base = e.cur
 	f.anchor = e.cur.state.Cursor()
-	f.bs.state.Viewport = floatViewport{f: f, r: e.renderer}
+	e.bindViewports(f)
 	focus := f.focused
 	f.focused = false
 	e.float = f
@@ -416,6 +432,10 @@ func (e *Editor) closeFloat(notify bool) {
 		e.closeBufferState(out)
 	}
 	e.closePreview(f)
+	for _, ct := range f.contents() {
+		// 切り替えの部品の見えていない子のバッファも閉じる（switcher.go）。
+		e.closeContent(f, ct)
+	}
 	if notify && f.ext != "" {
 		e.noteViewClient(f, false)
 		if err := e.host.Notify(f.ext, ext.MethodViewClosed, ext.ViewClosedParams{View: ext.ViewID(f.id)}); err != nil {
@@ -451,11 +471,11 @@ func (e *Editor) closeFloatsOf(bs *bufferState) {
 		if c.detached {
 			continue
 		}
-		if f := e.viewOf(c).float; f != nil && (f.bs == bs || f.base == bs || (f.list != nil && f.list == bs) || (f.con != nil && f.con.out == bs)) {
+		if f := e.viewOf(c).float; f != nil && (f.base == bs || f.hasBuffer(bs)) {
 			e.withView(c, func() { e.closeFloat(true) })
 		}
 		for _, p := range slices.Clone(e.viewOf(c).panes) {
-			if p.bs == bs || (p.con != nil && p.con.out == bs) {
+			if p.hasBuffer(bs) {
 				e.withView(c, func() { e.closePane(p, true) })
 			}
 		}
@@ -663,8 +683,16 @@ func floatItem(f *floatState) string {
 // k を解釈する（command.State.KeyHook。Vim のマッピングの途中で当たらなかったキーと同じ扱い。PR #242 の再レビューの必須）。
 // このため、g で始まる popupKeys（gx）を宣言しても、gg は先頭へ移る。
 //
-// req: FR-69
+// 切り替えの部品（FR-269）では、キーの列の途中でなければ、先に子の直に切り替えるキー（ext.ViewChild.Key）を引く（childKey）。
+// children を並べた項目は、その子を出しているときだけ引き、切り替えの部品でない部品では引かない（FR-271）。
+// action が子を切り替える操作（ext.PopupKeyChildNext など）のキーは、拡張機能を呼ばずに子を切り替える（切り替えの部品でなければ何もしない）。
+// view/key の Child には、キーを打ったときに出していた子の ID を入れる。
+//
+// req: FR-69, FR-269, FR-271
 func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
+	if e.childKey(f, k) {
+		return true, nil
+	}
 	keys := e.popupKeys[f.ext]
 	if len(keys) == 0 {
 		return false, nil
@@ -672,7 +700,15 @@ func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
 	seq := append(slices.Clone(f.pending), k)
 	prefix := false
 	for _, pk := range keys {
+		if len(pk.children) > 0 && !slices.Contains(pk.children, f.child) {
+			continue
+		}
 		switch {
+		case slices.Equal(pk.keys, seq) && pk.child != "":
+			// 子を切り替える action（DAP の <Tab> と <S-Tab>）。拡張機能を呼ばない。
+			f.pending = nil
+			e.moveChild(f, pk.child, 1)
+			return true, nil
 		case slices.Equal(pk.keys, seq) && pk.selects:
 			// action が select のキー（ファイラの l）は、<CR> と同じく選ぶか開閉する（ext.PopupKeySelect。FR-105）。
 			f.pending = nil
@@ -684,7 +720,7 @@ func (e *Editor) popupKey(f *floatState, k editcmd.Key) (bool, []editcmd.Key) {
 			return true, nil
 		case slices.Equal(pk.keys, seq):
 			f.pending = nil
-			p := ext.ViewKeyParams{View: ext.ViewID(f.id), ID: pk.id}
+			p := ext.ViewKeyParams{View: ext.ViewID(f.id), ID: pk.id, Child: f.child}
 			switch f.kind {
 			case floatInput, floatConsole:
 				p.Item = f.bs.buf.Line(0)
@@ -714,6 +750,11 @@ type popupKeyBinding struct {
 	id   string
 	// selects は、action が select（ext.PopupKeySelect）で、view/key の代わりに <CR> と同じく選ぶことを表す。
 	selects bool
+	// child は、action が子を切り替える操作（ext.PopupKeyChildNext など）のときの向き（next、prev、first、last）である。
+	// 空なら子を切り替える操作でない（moveChild）。
+	child string
+	// children は、キーを効かせる切り替えの部品の子の ID の列（ext.Contribution.Children）である。空なら、どの部品でも効く（FR-271）。
+	children []string
 }
 
 // loadPopupKeys は、拡張機能の宣言ファイルの contributes.popupKeys を、拡張機能ごとのキーの列の表にする（FR-69）。
@@ -732,7 +773,11 @@ func loadPopupKeys(specs []exthost.Spec, leader []editcmd.Key) (map[string][]pop
 				errs = append(errs, fmt.Errorf("拡張機能 %s の popupKeys の %s のキー %q を読めない: %w", m.ID, c.ID, c.Keys, err))
 				continue
 			}
-			out[m.ID] = append(out[m.ID], popupKeyBinding{keys: ks, id: c.ID, selects: c.Action == ext.PopupKeySelect})
+			b := popupKeyBinding{keys: ks, id: c.ID, selects: c.Action == ext.PopupKeySelect, children: c.Children}
+			if how, ok := strings.CutPrefix(string(c.Action), input.ViewChildPrefix); ok && c.Action.Known() {
+				b.child = how
+			}
+			out[m.ID] = append(out[m.ID], b)
 		}
 	}
 	return out, errs
@@ -746,7 +791,7 @@ func (e *Editor) selectFloat(f *floatState) {
 		return
 	}
 	if f.kind == floatInput {
-		e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: f.bs.buf.Line(0)})
+		e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: f.bs.buf.Line(0), Child: f.child})
 		return
 	}
 	if f.kind == floatFinder {
@@ -767,14 +812,14 @@ func (e *Editor) selectFloat(f *floatState) {
 		open := !f.expanded[r.id]
 		f.expanded[r.id] = open
 		e.drawFloatContent(f, ext.ViewComponent{Kind: ext.ViewTree, Items: f.tree})
-		e.notifyView(f, ext.MethodViewExpand, ext.ViewExpandParams{View: ext.ViewID(f.id), Item: r.id, Expanded: open})
+		e.notifyView(f, ext.MethodViewExpand, ext.ViewExpandParams{View: ext.ViewID(f.id), Item: r.id, Expanded: open, Child: f.child})
 		return
 	}
 	if f.onSelect != nil {
 		f.onSelect(row)
 		return
 	}
-	e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: r.id, Selection: e.selectionFor(f)})
+	e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: r.id, Selection: e.selectionFor(f), Child: f.child})
 	e.closeSelected(f)
 }
 
@@ -852,7 +897,7 @@ func (e *Editor) notifyInputChange(f *floatState) {
 	if text := f.bs.buf.Line(0); text != f.input {
 		f.input = text
 		f.inputSeq++
-		e.notifyView(f, ext.MethodInputChange, ext.InputChangeParams{View: ext.ViewID(f.id), Text: text, Seq: f.inputSeq})
+		e.notifyView(f, ext.MethodInputChange, ext.InputChangeParams{View: ext.ViewID(f.id), Text: text, Seq: f.inputSeq, Child: f.child})
 	}
 }
 
@@ -1129,7 +1174,7 @@ func (e *Editor) setPopupDecorations(bs *bufferState, decs []ext.Decoration) {
 // newComponentFloat は、部品 c を中身にしたポップアップを作る。ext は持ち主の拡張機能の ID（本体の部品なら空）である。
 // 開くのは呼び出し側が openFloat で行う。
 func (e *Editor) newComponentFloat(c ext.ViewComponent, extID string) *floatState {
-	f := &floatState{ext: extID, title: c.Title, scratch: true, hasPreview: c.HasPreview()}
+	f := &floatState{floatContent: &floatContent{hasPreview: c.HasPreview()}, ext: extID, title: c.Title, scratch: true}
 	switch c.Kind {
 	case ext.ViewList:
 		f.kind = floatList
@@ -1145,6 +1190,8 @@ func (e *Editor) newComponentFloat(c ext.ViewComponent, extID string) *floatStat
 		return e.newFinderFloat(c, extID)
 	case ext.ViewConsole:
 		return e.newConsoleFloat(c, extID)
+	case ext.ViewSwitcher:
+		return e.newSwitcherFloat(c, extID)
 	case ext.ViewText:
 		f.textEOL = strings.HasSuffix(c.Text, "\n")
 	}
@@ -1188,7 +1235,7 @@ const finderBufferName = "[ファインダー]"
 // 入力の行のバッファ（bs。編集できる）と一覧のバッファ（list。編集を禁止したファイルでないバッファ）の 2 つを作る。
 // キーを受けるのは入力の行で、一覧のカーソルは finderKey が動かす。置き場所は常に中央で、開いた時点でフォーカスを入れる（popupOpenRequest）。
 func (e *Editor) newFinderFloat(c ext.ViewComponent, extID string) *floatState {
-	f := &floatState{kind: floatFinder, ext: extID, title: c.Title, scratch: true, input: c.Text, hasPreview: c.HasPreview()}
+	f := &floatState{floatContent: &floatContent{kind: floatFinder, input: c.Text, hasPreview: c.HasPreview()}, ext: extID, title: c.Title, scratch: true}
 	// バッファの名前（ステータス行に出る）は、件数を含みうる見出しにせず、決まった名前にする（見出しは view/update で変わるため。
 	// PR #249 のレビューの推奨 7）。
 	f.bs = e.newPopupBuffer(finderBufferName, c.Text, "", false)
@@ -1260,6 +1307,10 @@ func (e *Editor) popupOpenRequest(ev *exthost.PopupOpenRequest) {
 		_ = ev.ReplyError(errFocusedPopup)
 		return
 	}
+	if err := checkComponentKeys(p.Component); err != nil {
+		_ = ev.ReplyError(invalidParams("%v", err))
+		return
+	}
 	f := e.newComponentFloat(p.Component, ev.Extension)
 	f.center = center
 	f.focused = f.center || p.Focus
@@ -1303,9 +1354,24 @@ func (e *Editor) findViewFloat(extID string, id ext.ViewID) (*clientView, *float
 }
 
 // viewUpdate は、拡張機能の view/update を処理する。部品の種類が開いたときと違うか、知らないポップアップなら捨てる。
+// 切り替えの部品では、Child があればその子だけを（childUpdate）、無ければ部品の全体を（switcherUpdate）置き換える（FR-270）。
+// 切り替えの部品でない部品への Child のある更新と、切り替えの部品への Child の無い switcher でない更新は捨てる。
 func (e *Editor) viewUpdate(ev *exthost.ViewUpdate) {
 	c, f := e.findViewFloat(ev.Extension, ev.Params.View)
-	if f == nil || componentKind(ev.Params.Component.Kind) != f.kind {
+	if f == nil {
+		return
+	}
+	if f.sw != nil || ev.Params.Child != "" {
+		switch {
+		case f.sw == nil:
+		case ev.Params.Child != "":
+			e.withView(c, func() { e.childUpdate(f, ev.Params.Child, ev.Params.Component) })
+		case ev.Params.Component.Kind == ext.ViewSwitcher:
+			e.withView(c, func() { e.switcherUpdate(f, ev.Params.Component) })
+		}
+		return
+	}
+	if ev.Params.Component.Kind == ext.ViewSwitcher || componentKind(ev.Params.Component.Kind) != f.kind {
 		return
 	}
 	if f.kind == floatFinder {
@@ -1360,7 +1426,7 @@ func (e *Editor) openLinesFloat(title string, lines []string, center bool) *floa
 		e.showError(errFocusedPopup)
 		return nil
 	}
-	f := &floatState{kind: floatText, title: title, scratch: true, center: center, focused: center, transient: !center}
+	f := &floatState{floatContent: &floatContent{kind: floatText}, title: title, scratch: true, center: center, focused: center, transient: !center}
 	f.bs = e.newPopupBuffer(cmp.Or(title, "[ポップアップ]"), strings.Join(lines, "\n"), "", true)
 	e.openFloat(f)
 	return f
@@ -1466,7 +1532,7 @@ func (e *Editor) peekOpen(p ext.EditorOpenParams) (*bufferState, error) {
 		id := src.id
 		target.Buffer = &id
 	}
-	f := &floatState{kind: floatText, bs: bs, title: title, scratch: true, transient: true, peek: &target}
+	f := &floatState{floatContent: &floatContent{kind: floatText, bs: bs}, title: title, scratch: true, transient: true, peek: &target}
 	e.openFloat(f)
 	return bs, nil
 }
@@ -1534,7 +1600,7 @@ func (e *Editor) shrinkTab(bs *bufferState) error {
 	}
 	e.enter(next)
 	c.tabs = slices.Delete(c.tabs, i, i+1)
-	f := &floatState{kind: floatText, bs: bs, title: e.bufferName(bs), shrunk: true, tabIndex: i, center: true, focused: true}
+	f := &floatState{floatContent: &floatContent{kind: floatText, bs: bs}, title: e.bufferName(bs), shrunk: true, tabIndex: i, center: true, focused: true}
 	e.openFloat(f)
 	return nil
 }
@@ -1554,8 +1620,8 @@ func (e *Editor) expandFloat() error {
 	if f == nil {
 		return errors.New("ポップアップがありません")
 	}
-	if f.kind != floatText {
-		return errors.New("一覧、木、入力の行、出力と入力の行の組のポップアップはタブへ広げられません")
+	if f.kind != floatText || f.sw != nil {
+		return errors.New("一覧、木、入力の行、出力と入力の行の組、切り替えの部品のポップアップはタブへ広げられません")
 	}
 	switch {
 	case f.peek != nil:
@@ -1602,6 +1668,7 @@ func (e *Editor) floatFrame(f *floatState) *ui.Float {
 		ID: f.id, View: view, Title: f.title, Center: f.center, Focused: f.focused,
 		CursorLine: f.kind == floatList || f.kind == floatTree,
 		Wide:       f.kind == floatInput || f.kind == floatFinder,
+		Switcher:   f.uiSwitcher(),
 	}
 	if f.kind == floatFinder {
 		fl.List = &ui.Frame{Text: f.list.buf, LineLayout: e.lineLayout(f.list, false), Cursor: f.list.state.Cursor(), Decorations: f.list.decoView}

@@ -136,12 +136,17 @@ func (r *Renderer) drawFloat(g *Grid, theme Theme, fl *Float, curRow, curCol int
 	for i := range min(n, floatScanLines) {
 		width = max(width, StringWidth(text.Line(i), tabStop))
 	}
-	if fl.Wide || fl.Fill || preview {
+	if fl.Wide || fl.Fill || preview || fl.Switcher != nil {
 		width = maxW
 	}
-	head := 0
+	// head は、窓の中の最初の行から置く行（枠線が無いときの見出しの行と、切り替えの部品の見出しの行）の数である。
+	titleRows := 0
 	if fl.Title != "" && !bordered {
-		head = 1
+		titleRows = 1
+	}
+	head := titleRows
+	if fl.Switcher != nil {
+		head++
 	}
 	textRows := r.textRows()
 	// 上と下に本文を置ける行数は、枠線の 2 行と見出しの行を除いて数える（PR #206 のレビュー）。
@@ -155,8 +160,9 @@ func (r *Renderer) drawFloat(g *Grid, theme Theme, fl *Float, curRow, curCol int
 		space = above
 	}
 	h := min(n, space)
-	if fl.Fill || preview {
+	if fl.Fill || preview || fl.Switcher != nil {
 		// 中身が短くても、表示領域の全体を窓にする。プレビューを出す窓も、一覧の行数に依らずプレビューの行を取る。
+		// 切り替えの部品も、子を切り替えるたびに窓が伸び縮みしないよう、子の行数に依らず置ける最大の行数にする。
 		h = space
 	} else if !fl.Center {
 		h = min(h, popupMaxRows-2*b-head)
@@ -190,10 +196,7 @@ func (r *Renderer) drawFloat(g *Grid, theme Theme, fl *Float, curRow, curCol int
 	if preview {
 		outerW = boxW + 1 + pw
 	}
-	if r.float == nil || r.floatID != fl.ID {
-		r.float = &Renderer{}
-		r.floatID = fl.ID
-	}
+	r.useFloatSubs(fl)
 	sub := r.float
 	sub.Width, sub.Height = max(boxW-2, 1), h+2
 	sub.Theme, sub.Symbols = theme, r.Symbols
@@ -236,8 +239,10 @@ func (r *Renderer) drawFloat(g *Grid, theme Theme, fl *Float, curRow, curCol int
 			g.set(row, x0+c, blank(base))
 		}
 		switch {
-		case i < head:
+		case i < titleRows:
 			r.drawText(g, row, x0+1, x0+boxW-1, fl.Title, a.Over(Attr{Bold: true}))
+		case i < head:
+			r.drawSwitcher(g, theme, fl.Switcher, row, x0, x0+boxW, a)
 		case i == boxH-1 && note != "":
 			r.drawText(g, row, x0+1, x0+boxW-1, note, a)
 		case preview && sub.Top()+i-head >= n:

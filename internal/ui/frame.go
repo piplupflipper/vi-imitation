@@ -191,6 +191,29 @@ type Float struct {
 	// Console は、書き足すテキストと入力の行の組（FR-274）の出力と入力の行の前置きである。nil でなければ、View を入力の行として
 	// 窓の最後の行に描き、出力をその上に描く（drawConsole）。List と Preview は読まない。
 	Console *Console
+	// Switcher は、切り替えの部品（FR-269）の見出しの行である。nil でなければ、窓の中の最初の行（枠線が無ければ見出しの次の行）に
+	// 子の名前を並べ、その下に選んでいる子（View、Console など）を描く。窓は中身の行数と幅に依らず、置ける最大の大きさにする
+	// （子を切り替えるたびに窓が伸び縮みしないため）。窓の中を描く子の Renderer は子ごと（SwitcherChild.ID）に持ち、
+	// 子ごとのスクロールの位置を保つ（FloatChildRenderers）。
+	Switcher *Switcher
+}
+
+// Switcher は、切り替えの部品（Float.Switcher。FR-269）の見出しの行である。
+type Switcher struct {
+	// Children は、子の名前とキーを、並べる順に持つ。
+	Children []SwitcherChild
+	// Selected は、選んでいる子の Children の添字である。
+	Selected int
+}
+
+// SwitcherChild は、見出しの行に出す子 1 つである。
+type SwitcherChild struct {
+	// ID は、子の ID である。窓の中を描く子の Renderer を子ごとに持つ鍵にする。
+	ID string
+	// Title は、子の名前である。
+	Title string
+	// Key は、その子へ直に切り替えるキーの表記である。空でなければ、名前の後に [Key] の形で添える（nvim-dap-view の show_keymap_hints）。
+	Key string
 }
 
 // Console は、書き足すテキストと入力の行の組（Float.Console。FR-274）の、入力の行のほかの部分である。
