@@ -24,6 +24,14 @@ func startAdapter(cmd *exec.Cmd) error {
 	return onSpawnThread(cmd.Start)
 }
 
+// killGroup は、startAdapter で起動した cmd のプロセスグループへ SIGKILL を送る（resolveCommand の取り消しと期限。FR-282）。
+// コマンドが起こした子プロセスも同じプロセスグループにいるので、一緒に止まる。
+func killGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}
+
 var (
 	spawnOnce sync.Once
 	spawnReqs chan func()
