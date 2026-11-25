@@ -153,6 +153,15 @@ type floatState struct {
 	// screenPending は、端末の列数を問い合わせている間であることを表す。その間はプレビューを出さない（previewShown）。
 	screen        int
 	screenPending bool
+	// tailState は、末尾へ書き足す部品（テキストと、書き足すテキストと入力の行の組の出力）の書き足しと追従の状態である（viewappend.go）。
+	tailState
+	// con は、書き足すテキストと入力の行の組（floatConsole）の、入力の行（bs）のほかの状態である（console.go）。ほかの部品では nil である。
+	con *consoleState
+}
+
+// tailState は、末尾へ書き足す部品の書き足しと追従の状態である（FR-272）。
+// 切り替えの部品（FR-269）では子ごとに持つので、floatState に直に並べずに 1 つにまとめた。
+type tailState struct {
 	// textEOL は、テキストの部品（floatText）の中身の末尾が改行で終わっていることを表す（ext.SplitViewText の eol）。
 	// バッファの行は末尾の改行の後の空の行を持たないので、次の view/append を最後の行に続けるか、新しい行から始めるかをここで覚える
 	// （viewappend.go。FR-272）。開いたときと view/update のたびに決め直す。
@@ -165,23 +174,20 @@ type floatState struct {
 	// heldLine にあれば、最後の行へ戻して追従を続ける（resumeFollow。FR-272）。
 	followHeld bool
 	heldLine   int
-	// out は、書き足すテキストと入力の行の組（floatConsole）の出力のバッファである（編集を禁止したファイルでないバッファ）。
-	// 書き足し（view/append）と末尾の追従（textEOL、decsOwned、followHeld）は、テキストの部品の bs の代わりに out に当てる（textBuf）。
-	// outFocus は、フォーカスを出力へ移している（キーを out が受ける）ことを表す。prompt は入力の行の前置きである。
-	// history は入力の履歴（古い順）で、histPos はたどっている位置（len(history) ならたどっていない）、histDraft はたどり始めたときの
-	// 打ちかけの中身である（console.go）。
-	out       *bufferState
-	outFocus  bool
-	prompt    string
-	history   []string
-	histPos   int
-	histDraft string
 }
 
-// textBuf は、末尾へ書き足す部品 f の、書き足す先のバッファを返す。テキストの部品なら bs、書き足すテキストと入力の行の組なら出力の out である。
+// consoleOut は、書き足すテキストと入力の行の組 f の出力のバッファを返す。組でなければ nil である。
+func (f *floatState) consoleOut() *bufferState {
+	if f.con == nil {
+		return nil
+	}
+	return f.con.out
+}
+
+// textBuf は、末尾へ書き足す部品 f の、書き足す先のバッファを返す。テキストの部品なら bs、書き足すテキストと入力の行の組なら出力である。
 func (f *floatState) textBuf() *bufferState {
-	if f.kind == floatConsole {
-		return f.out
+	if f.con != nil {
+		return f.con.out
 	}
 	return f.bs
 }
@@ -341,9 +347,9 @@ func (e *Editor) focusFloat() {
 		// プレビューにフォーカスを入れていたペインの部品（paneInput はキーのたびにフォーカスを入れ直す）。FR-149。
 		e.switchFocus(pv)
 	}
-	if f.kind == floatConsole && f.outFocus && slices.Contains(e.bufs, f.out) {
+	if f.con != nil && f.con.outFocus && slices.Contains(e.bufs, f.con.out) {
 		// 出力へフォーカスを移していた書き足すテキストと入力の行の組（FR-274）。
-		e.switchFocus(f.out)
+		e.switchFocus(f.con.out)
 	}
 }
 
@@ -406,8 +412,8 @@ func (e *Editor) closeFloat(notify bool) {
 	if f.list != nil && slices.Contains(e.bufs, f.list) {
 		e.closeBufferState(f.list)
 	}
-	if f.out != nil && slices.Contains(e.bufs, f.out) {
-		e.closeBufferState(f.out)
+	if out := f.consoleOut(); out != nil && slices.Contains(e.bufs, out) {
+		e.closeBufferState(out)
 	}
 	e.closePreview(f)
 	if notify && f.ext != "" {
@@ -445,11 +451,11 @@ func (e *Editor) closeFloatsOf(bs *bufferState) {
 		if c.detached {
 			continue
 		}
-		if f := e.viewOf(c).float; f != nil && (f.bs == bs || f.base == bs || (f.list != nil && f.list == bs) || (f.out != nil && f.out == bs)) {
+		if f := e.viewOf(c).float; f != nil && (f.bs == bs || f.base == bs || (f.list != nil && f.list == bs) || (f.con != nil && f.con.out == bs)) {
 			e.withView(c, func() { e.closeFloat(true) })
 		}
 		for _, p := range slices.Clone(e.viewOf(c).panes) {
-			if p.bs == bs || (p.out != nil && p.out == bs) {
+			if p.bs == bs || (p.con != nil && p.con.out == bs) {
 				e.withView(c, func() { e.closePane(p, true) })
 			}
 		}
@@ -521,7 +527,7 @@ func (e *Editor) popupStateKey(bs *bufferState, k editcmd.Key, insert bool) (boo
 		e.leavePreview(f)
 		return true, nil, command.ErrBufferSwitched
 	}
-	if f != nil && f.focused && f.kind == floatConsole && f.out == bs {
+	if f != nil && f.focused && f.con != nil && f.con.out == bs {
 		// 書き足すテキストと入力の行の組の出力（フォーカスを移したとき。FR-274）。
 		done, held := e.consoleOutputKey(f, k, insert)
 		switch {
@@ -821,6 +827,10 @@ func (e *Editor) afterFloatKey() {
 	f := e.float
 	if f == nil || (f.kind != floatInput && f.kind != floatFinder && f.kind != floatConsole) || !slices.Contains(e.bufs, f.bs) {
 		return
+	}
+	if f.con != nil && f.bs.buf.LineCount() > 1 {
+		// 書き足すテキストと入力の行の組は、2 行目から後ろを捨てずに、行の間を空白にした 1 行へ戻す（console.go。PR #415 のレビューの必須 1）。
+		e.joinConsoleInput(f)
 	}
 	if f.bs.buf.LineCount() > 1 {
 		// 入力の行は 1 行だけにする（o や行単位の p で増えた行を捨てる。PR #242 のレビューの推奨 3）。

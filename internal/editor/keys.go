@@ -361,6 +361,8 @@ func (e *Editor) handlePaste(text string) {
 		return
 	}
 	bs := e.cur
+	// 書き足すテキストと入力の行の組の入力の行へは、改行を空白にして入れる（console.go の consoleInputText。FR-274）。
+	text = e.consolePaste(bs, text)
 	_ = e.handleResult(bs, bs.state.Paste(text)) // 失敗は handleResult が知らせる
 }
 

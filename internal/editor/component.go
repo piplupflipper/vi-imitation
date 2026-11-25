@@ -601,9 +601,9 @@ func (e *Editor) paneComponentFrame(p *floatState) *ui.Frame {
 	if pv := p.preview.bs; p.preview.focus && pv != nil && slices.Contains(e.bufs, pv) {
 		bs = pv
 	}
-	if p.kind == floatConsole && p.outFocus && slices.Contains(e.bufs, p.out) {
+	if p.con != nil && p.con.outFocus && slices.Contains(e.bufs, p.con.out) {
 		// 書き足すテキストと入力の行の組で、フォーカスを出力へ移している（FR-274）。
-		bs = p.out
+		bs = p.con.out
 	}
 	st := bs.state
 	focused := p.focused

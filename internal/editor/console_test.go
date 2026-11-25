@@ -26,8 +26,8 @@ type consoleInfo struct {
 // consoleOf は、組 f の状態を返す。イベントループの goroutine で呼ぶ。
 func consoleOf(f *floatState) consoleInfo {
 	return consoleInfo{
-		input: f.bs.buf.Text(), output: f.out.buf.Text(), cursor: f.bs.state.Cursor().Byte, mode: f.bs.state.Mode(),
-		outLine: f.out.state.Cursor().Line, outFocus: f.outFocus, history: f.history,
+		input: f.bs.buf.Text(), output: f.con.out.buf.Text(), cursor: f.bs.state.Cursor().Byte, mode: f.bs.state.Mode(),
+		outLine: f.con.out.state.Cursor().Line, outFocus: f.con.outFocus, history: f.con.history,
 	}
 }
 
@@ -45,7 +45,7 @@ func (h *harness) console() (ci consoleInfo, ok bool) {
 // （eventually の中で使う）。
 func consoleOutput(e *Editor) string {
 	if f := e.float; f != nil && f.kind == floatConsole {
-		return f.out.buf.Text()
+		return f.con.out.buf.Text()
 	}
 	return ""
 }
@@ -164,10 +164,10 @@ func TestConsoleAppendWhileTyping(t *testing.T) {
 		if ci.input != "abcd" || ci.cursor != 2 || ci.mode != command.ModeInsert {
 			t.Errorf("書き足しの後の入力の行: %+v", ci)
 		}
-		if n := f.out.buf.LineCount(); ci.outLine != n-1 || f.out.buf.Line(n-1) != "out 49" {
-			t.Errorf("出力の末尾の追従: line %d of %d (%q)", ci.outLine, n, f.out.buf.Line(n-1))
+		if n := f.con.out.buf.LineCount(); ci.outLine != n-1 || f.con.out.buf.Line(n-1) != "out 49" {
+			t.Errorf("出力の末尾の追従: line %d of %d (%q)", ci.outLine, n, f.con.out.buf.Line(n-1))
 		}
-		if f.out.buf.CanUndo() {
+		if f.con.out.buf.CanUndo() {
 			t.Errorf("書き足しがアンドゥの履歴に入った")
 		}
 		if e.cur != f.bs {
@@ -195,7 +195,7 @@ func TestConsoleOutputFocus(t *testing.T) {
 	h.keys("<Esc><C-w>w")
 	h.settle()
 	var onOut bool
-	h.e.do(func() { onOut = h.e.cur == h.e.float.out })
+	h.e.do(func() { onOut = h.e.cur == h.e.float.con.out })
 	if ci, _ := h.console(); !ci.outFocus || !onOut {
 		t.Fatalf("<C-w>w で出力へ移らない: %+v %v", ci, onOut)
 	}
@@ -218,7 +218,7 @@ func TestConsoleOutputFocus(t *testing.T) {
 	h.e.do(func() {
 		f := h.e.float
 		appendTo(h.e, f, "gamma\n")
-		if c := f.out.state.Cursor(); c.Line != 1 {
+		if c := f.con.out.state.Cursor(); c.Line != 1 {
 			t.Errorf("上の行を見ている間に追従した: %v", c)
 		}
 	})
@@ -227,7 +227,7 @@ func TestConsoleOutputFocus(t *testing.T) {
 	h.e.do(func() {
 		f := h.e.float
 		appendTo(h.e, f, "delta\n")
-		if c, n := f.out.state.Cursor(), f.out.buf.LineCount(); c.Line != n-1 {
+		if c, n := f.con.out.state.Cursor(), f.con.out.buf.LineCount(); c.Line != n-1 {
 			t.Errorf("最後の行へ戻した後に追従しない: %v of %d", c, n)
 		}
 	})
@@ -236,7 +236,7 @@ func TestConsoleOutputFocus(t *testing.T) {
 	}
 	h.keys("<C-w>w")
 	h.settle()
-	h.e.do(func() { onOut = h.e.cur == h.e.float.out })
+	h.e.do(func() { onOut = h.e.cur == h.e.float.con.out })
 	if ci, _ := h.console(); ci.outFocus || onOut || ci.mode != command.ModeNormal {
 		t.Errorf("入力の行へ戻らない: %+v %v", ci, onOut)
 	}
@@ -296,6 +296,103 @@ func TestConsoleMultibyte(t *testing.T) {
 	h.eventually("書き足した全角文字", func() bool { return strings.HasSuffix(consoleOutput(h.e), "全角"+ga) })
 }
 
+// 入力の行へ貼った改行と、行を増やす編集（行単位の p）で入った改行は空白にし、2 行目から後ろを捨てない（PR #415 のレビューの必須 1）。
+//
+// req: FR-274
+func TestConsoleNewlines(t *testing.T) {
+	h := start(t, Config{Extensions: fakeSpecs(t)})
+	openConsole(t, h)
+	h.keys("say ")
+	h.paste("first line\nsecond\r\nthird\x01")
+	h.settle()
+	if ci, _ := h.console(); ci.input != "say first line second third" || ci.cursor != len(ci.input) || ci.mode != command.ModeInsert {
+		t.Errorf("貼り付けの後: %+v", ci)
+	}
+	h.keys("<CR>")
+	h.waitSeen("kind=1 item=say first line second third key=")
+	// 行単位のヤンクを入力の行の行頭へ貼る（P）と、元の中身の前に空白でつなぐ。
+	h.e.do(func() {
+		_ = h.e.cur.state.Registers().Set('a', command.Register{Text: "x\ny", Linewise: true})
+	})
+	h.keys("abc<Esc>\"aP")
+	h.settle()
+	if ci, _ := h.console(); ci.input != "x y abc" {
+		t.Errorf("行単位の P の後: %+v", ci)
+	}
+}
+
+// 履歴から出して直した中身と打ちかけの中身は、さらにたどって戻っても残る。送ったら捨てる（シェルの履歴と同じ）。
+//
+// req: FR-274
+func TestConsoleHistoryEdits(t *testing.T) {
+	h := start(t, Config{})
+	h.e.do(func() {
+		e := h.e
+		f := e.newComponentFloat(ext.ViewComponent{Kind: ext.ViewConsole, History: []string{"a", "b"}}, "fake")
+		f.center, f.focused = true, true
+		e.openFloat(f)
+		e.startConsoleInsert(f)
+		e.setConsoleInput(f, "draft")
+		e.consoleHistory(f, -1) // b
+		e.setConsoleInput(f, "bX")
+		e.consoleHistory(f, -1) // a
+		if got := f.bs.buf.Line(0); got != "a" {
+			t.Errorf("1 つ前 = %q", got)
+		}
+		e.consoleHistory(f, 1)
+		if got := f.bs.buf.Line(0); got != "bX" {
+			t.Errorf("直した中身へ戻る = %q", got)
+		}
+		e.consoleHistory(f, 1)
+		if got := f.bs.buf.Line(0); got != "draft" {
+			t.Errorf("打ちかけの中身へ戻る = %q", got)
+		}
+		e.consoleHistory(f, -1)
+		e.submitConsole(f)
+		if got := strings.Join(f.con.history, ","); got != "a,b,bX" {
+			t.Errorf("送った後の履歴 = %q", got)
+		}
+		e.consoleHistory(f, -2)
+		if got := f.bs.buf.Line(0); got != "b" {
+			t.Errorf("送った後は直しを捨てる = %q", got)
+		}
+		e.closeFloat(false)
+	})
+}
+
+// 出力を上へ動かして読み返した後でも、入力の行で送ると出力を末尾へ戻して追従を続ける（PR #415 のレビューの裁定要 2）。
+// 組の中では、書き出し（:w）とファイルを開く :e {ファイル} を断る（PR #415 のレビューの推奨 2）。
+//
+// req: FR-274
+func TestConsoleSubmitFollowsAndRefusesFiles(t *testing.T) {
+	h := start(t, Config{Extensions: fakeSpecs(t)})
+	openConsole(t, h)
+	h.keys("say a<CR>say b<CR>")
+	h.eventually("書き足した出力", func() bool { return consoleOutput(h.e) == "welcome\na\nb" })
+	h.keys("<Esc><C-w>wgg<C-w>wA")
+	h.settle()
+	h.keys("say c<CR>")
+	h.eventually("書き足した出力", func() bool { return consoleOutput(h.e) == "welcome\na\nb\nc" })
+	if ci, _ := h.console(); ci.outLine != 3 {
+		t.Errorf("送った後に出力が末尾へ追従しない: %+v", ci)
+	}
+	h.keys("<Esc>:w! x.txt<CR>")
+	h.settle()
+	if msg := h.message(); msg != errConsoleWrite.Error() {
+		t.Errorf(":w {ファイル}: message %q", msg)
+	}
+	h.keys(":e x.txt<CR>")
+	h.settle()
+	var name string
+	h.e.do(func() { name = h.e.bufferName(h.e.cur) })
+	if msg := h.message(); msg != errConsoleEdit.Error() || name != consoleInputName {
+		t.Errorf(":e {ファイル}: message %q, buffer %q", msg, name)
+	}
+	if _, ok := h.console(); !ok {
+		t.Errorf(":e で組を閉じた")
+	}
+}
+
 // view/update は出力と前置きだけを置き換え、入力の行の中身と履歴は読まない。部品の種類の違う view/update は捨てる。
 // 開くときの履歴は、新しい方から上限の件数だけを持つ。
 //
@@ -312,29 +409,29 @@ func TestConsoleUpdate(t *testing.T) {
 		f.center, f.focused = true, true
 		e.openFloat(f)
 		e.startConsoleInsert(f)
-		if len(f.history) != ext.ConsoleHistoryMax || f.history[0] != "3" {
-			t.Errorf("開いたときの履歴: %d 件, 最初 %q", len(f.history), f.history[0])
+		if len(f.con.history) != ext.ConsoleHistoryMax || f.con.history[0] != "3" {
+			t.Errorf("開いたときの履歴: %d 件, 最初 %q", len(f.con.history), f.con.history[0])
 		}
 		if ci := consoleOf(f); ci.output != "a\nb" || ci.outLine != 1 || ci.input != "typed" || ci.cursor != 5 || ci.mode != command.ModeInsert {
 			t.Errorf("開いたとき: %+v", ci)
 		}
 		e.setFloatContent(f, ext.ViewComponent{Kind: ext.ViewConsole, Text: "x\ny\nz", Input: "ignored", Prompt: "$ ", History: []string{"q"}})
-		if ci := consoleOf(f); ci.output != "x\ny\nz" || ci.outLine != 2 || ci.input != "typed" || len(ci.history) != ext.ConsoleHistoryMax || f.prompt != "$ " {
-			t.Errorf("view/update の後: %+v prompt %q", ci, f.prompt)
+		if ci := consoleOf(f); ci.output != "x\ny\nz" || ci.outLine != 2 || ci.input != "typed" || len(ci.history) != ext.ConsoleHistoryMax || f.con.prompt != "$ " {
+			t.Errorf("view/update の後: %+v prompt %q", ci, f.con.prompt)
 		}
 		// 上の行を見ていれば、行の番号を保つ。
-		f.out.state.SetCursor(buffer.Position{Line: 0})
+		f.con.out.state.SetCursor(buffer.Position{Line: 0})
 		e.setFloatContent(f, ext.ViewComponent{Kind: ext.ViewConsole, Text: "1\n2\n3\n4"})
-		if c := f.out.state.Cursor(); c.Line != 0 {
+		if c := f.con.out.state.Cursor(); c.Line != 0 {
 			t.Errorf("上の行を見ていたときの view/update: %v", c)
 		}
 		// 部品の種類の違う view/update は捨てる。
 		e.viewUpdate(&exthost.ViewUpdate{Extension: "fake", Params: ext.ViewUpdateParams{View: ext.ViewID(f.id), Component: ext.ViewComponent{Kind: ext.ViewText, Text: "t"}}})
-		if got := f.out.buf.Text(); got != "1\n2\n3\n4" {
+		if got := f.con.out.buf.Text(); got != "1\n2\n3\n4" {
 			t.Errorf("種類の違う view/update を当てた: %q", got)
 		}
 		e.closeFloat(false)
-		if e.float != nil || slices.Contains(e.bufs, f.out) || slices.Contains(e.bufs, f.bs) {
+		if e.float != nil || slices.Contains(e.bufs, f.con.out) || slices.Contains(e.bufs, f.bs) {
 			t.Errorf("閉じた後にバッファが残った")
 		}
 	})
@@ -375,7 +472,7 @@ func TestConsolePane(t *testing.T) {
 	comp.keys("typing while flooding")
 	h.waitShown("flooded")
 	h.settle()
-	h.eventually("流した出力", func() bool { return strings.HasSuffix(pane.out.buf.Text(), "line 399") })
+	h.eventually("流した出力", func() bool { return strings.HasSuffix(pane.con.out.buf.Text(), "line 399") })
 	if ci := paneConsole(); ci.input != "typing while flooding" || ci.mode != command.ModeInsert {
 		t.Errorf("流している間に打った入力の行: %+v", ci)
 	}
@@ -396,7 +493,7 @@ func TestConsolePane(t *testing.T) {
 	comp.waitScreen("[出力]")
 	comp.keys("k")
 	h.settle()
-	if ci := paneConsole(); ci.outLine >= pane.out.buf.LineCount()-1 {
+	if ci := paneConsole(); ci.outLine >= pane.con.out.buf.LineCount()-1 {
 		t.Errorf("ペインの出力で k が効かない: %+v", ci)
 	}
 	// 入力の行に打ちかけの中身があっても、:q でペインを閉じられる（入力の行は未保存の変更に数えない）。

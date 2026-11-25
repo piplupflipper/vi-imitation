@@ -1,19 +1,23 @@
 package editor
 
 import (
+	"errors"
 	"slices"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
 	"github.com/piplupflipper/vi-imitation/internal/command"
+	"github.com/piplupflipper/vi-imitation/internal/command/ex"
 	"github.com/piplupflipper/vi-imitation/internal/editcmd"
 	"github.com/piplupflipper/vi-imitation/internal/ui"
 )
 
 // 書き足すテキストと入力の行の組（ext.ViewConsole。基本設計 1.4 の「書き足すテキストと入力の行の組」。FR-274）。
 //
-// 出力（floatState.out）と入力の行（floatState.bs）を、それぞれ本体のバッファにする。出力は編集を禁止したファイルでないバッファで、
+// 出力（consoleState.out）と入力の行（floatState.bs）を、それぞれ本体のバッファにする。出力は編集を禁止したファイルでないバッファで、
 // view/append（viewappend.go）で書き足す。入力の行は、ファインダーの入力の行と同じく編集できる 1 行のバッファである。
 // キーは、フォーカスのある方のバッファの State が受け、どちらの KeyHook も popupStateKey を通る（consoleKey、consoleOutputKey）。
 //
@@ -23,7 +27,30 @@ import (
 // （consoleKey）。横のスクロールは、入力の行を描く子の Renderer が行う（ui.drawConsole）。
 //
 // 切り替えの部品（FR-269）の子にしたときの規則（子を初めて出したときのモード、切り替え直したときにフォーカスとモードを戻すこと）は、
-// 切り替えの部品の実装で足す。そのときは、フォーカスのある方（outFocus）を子ごとに覚え、consoleFocusBuffer で戻す先を決める。
+// 切り替えの部品の実装で足す。そのときは、子ごとに consoleState と tailState を持ち、フォーカスのある方（outFocus）から
+// consoleFocusBuffer で戻す先を決める。
+//
+// 入力の行の改行は持たない。貼り付けと、行を増やす編集（行単位の p、o）で入った改行は、consoleInputText で空白に替える
+// （input/ask の貼り付けと同じ。PR #415 のレビューの必須 1）。ACP のプロンプトで改行を保つ形（記号で見せて送るときに戻す、
+// 複数行の欄にする）にするときは、consoleInputText と submitConsole の 2 か所を替える。
+
+// consoleState は、書き足すテキストと入力の行の組の、入力の行（floatState.bs）のほかの状態である（floatState.con）。
+// 切り替えの部品（FR-269）では子ごとに持つので、floatState に直に並べずに 1 つにまとめた。
+type consoleState struct {
+	// out は、出力のバッファである（編集を禁止したファイルでないバッファ）。書き足し（view/append）と末尾の追従（tailState）は、
+	// テキストの部品の bs の代わりに out に当てる（floatState.textBuf）。
+	out *bufferState
+	// outFocus は、フォーカスを出力へ移している（キーを out が受ける）ことを表す。
+	outFocus bool
+	// prompt は、入力の行の前置きである。
+	prompt string
+	// history は、入力の履歴（古い順）である。histPos はたどっている位置で、len(history) ならたどっていない（打ちかけの中身）。
+	history []string
+	histPos int
+	// histEdits は、たどっている間に直した中身を、履歴の位置ごとに覚えたものである。len(history) の位置は打ちかけの中身である。
+	// 送るまで保ち、送ったら捨てる（シェルの履歴と同じ。PR #415 のレビューの推奨 3）。履歴そのものは書き換えない。
+	histEdits map[int]string
+}
 
 // consoleInputName と consoleOutputName は、書き足すテキストと入力の行の組の入力の行と出力のバッファの名前（ステータス行に出る）である（仮）。
 // 見出しは view/update で変わりうるので、ファインダーと同じく決まった名前にする。
@@ -38,22 +65,23 @@ const (
 //
 // req: FR-274
 func (e *Editor) newConsoleFloat(c ext.ViewComponent, extID string) *floatState {
-	f := &floatState{kind: floatConsole, ext: extID, title: c.Title, scratch: true, input: c.Input, prompt: c.Prompt}
+	f := &floatState{kind: floatConsole, ext: extID, title: c.Title, scratch: true, input: c.Input}
 	h := c.History
 	if d := len(h) - ext.ConsoleHistoryMax; d > 0 {
 		h = h[d:]
 	}
-	f.history = slices.Clone(h)
-	f.histPos = len(f.history)
+	con := &consoleState{prompt: c.Prompt, history: slices.Clone(h)}
+	con.histPos = len(con.history)
+	f.con = con
 	f.bs = e.newPopupBuffer(consoleInputName, c.Input, "", false)
 	f.bs.state.SetCursor(buffer.Position{Byte: len(c.Input)})
 	lines, _, decs := floatLines(c, nil, nil)
-	f.out = e.newPopupBuffer(consoleOutputName, floatBufferText(lines), "", true)
-	f.out.state.Viewport = consoleOutViewport{f: f, r: e.renderer}
+	con.out = e.newPopupBuffer(consoleOutputName, floatBufferText(lines), "", true)
+	con.out.state.Viewport = consoleOutViewport{f: f, r: e.renderer}
 	if len(decs) > 0 {
-		e.setPopupDecorations(f.out, decs)
+		e.setPopupDecorations(con.out, decs)
 	}
-	f.out.state.SetCursor(buffer.Position{Line: f.out.buf.LineCount() - 1})
+	con.out.state.SetCursor(buffer.Position{Line: con.out.buf.LineCount() - 1})
 	f.textEOL = len(c.Text) > 0 && c.Text[len(c.Text)-1] == '\n'
 	return f
 }
@@ -62,7 +90,7 @@ func (e *Editor) newConsoleFloat(c ext.ViewComponent, extID string) *floatState 
 // 出力（Text、Highlights）と前置き（Prompt）だけを置き換え、入力の行の中身と履歴は読まない（利用者が打っているため）。
 // 出力のカーソルは、テキストの部品と同じく、最後の行にあれば（c.Tail なら常に）新しい中身の最後の行へ置き、そうでなければ行の番号を保つ。
 func (e *Editor) setConsoleContent(f *floatState, c ext.ViewComponent) {
-	out := f.out
+	out := f.con.out
 	cursor := out.state.Cursor()
 	follow := cursor.Line >= out.buf.LineCount()-1 || c.Tail
 	lines, _, decs := floatLines(c, nil, nil)
@@ -76,7 +104,7 @@ func (e *Editor) setConsoleContent(f *floatState, c ext.ViewComponent) {
 	f.textEOL = len(c.Text) > 0 && c.Text[len(c.Text)-1] == '\n'
 	f.decsOwned, f.followHeld = false, false
 	e.setPopupDecorations(out, decs)
-	f.prompt = c.Prompt
+	f.con.prompt = c.Prompt
 }
 
 // startConsoleInsert は、開いた書き足すテキストと入力の行の組 f の入力の行を、行末から打てるインサートモードにする（FR-274）。
@@ -181,37 +209,105 @@ func (e *Editor) consoleOutputKey(f *floatState, k editcmd.Key, insert bool) (bo
 // 中身が変わっていれば先に input/change で知らせてから、view/select（Item は中身。空でも送る）を送る。
 // 空でない中身を履歴の末尾に積み（直前と同じなら積まない。ext.AppendConsoleHistory）、履歴をたどる位置を戻し、入力の行を空にする。
 // モードは変えない（インサートモードなら続けて打てる）。
+// 出力のカーソルを最後の行へ戻して末尾への追従を続ける。出力を上へ動かして読み返した後に送っても、送った結果（返事）が見えるように
+// するためである（PR #415 のレビューの裁定要 2 へのオーケストレータの決め。FR-272 の、利用者が上へ動かしている間は追従しない規則の例外）。
+// 改行を持たない入力の行の中身をそのまま送る（consoleInputText の取り決め。改行を保つ形にするときは、ここで戻す）。
 //
 // req: FR-274
 func (e *Editor) submitConsole(f *floatState) {
 	e.notifyInputChange(f)
 	text := f.bs.buf.Line(0)
 	e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: text})
-	f.history = ext.AppendConsoleHistory(f.history, text)
-	f.histPos, f.histDraft = len(f.history), ""
+	con := f.con
+	con.history = ext.AppendConsoleHistory(con.history, text)
+	con.histPos, con.histEdits = len(con.history), nil
 	e.setConsoleInput(f, "")
+	out := con.out
+	last := out.buf.LineCount() - 1
+	out.state.SetCursor(buffer.Position{Line: last, Byte: min(out.state.Cursor().Byte, len(out.buf.Line(last)))})
+	f.followHeld = false
 }
 
 // consoleHistory は、書き足すテキストと入力の行の組 f の入力の行に、入力の履歴の d 件先（-1 は前、1 は後）の中身を入れる（FR-274）。
-// たどり始めるときに打ちかけの中身を覚え、最後より後へ進むと打ちかけの中身に戻す。最初より前と、たどっていないときの後へは進まない。
+// 離れる位置の今の中身を覚えておき（打ちかけの中身と、履歴から出して直した中身。consoleState.histEdits）、その位置へ戻ると覚えた中身を出す。
+// 送るまで覚え、履歴そのものは書き換えない（シェルの履歴と同じ）。最初より前と、たどっていないときの後へは進まない。
 // カーソルは中身の末尾に置く。
 //
 // req: FR-274
 func (e *Editor) consoleHistory(f *floatState, d int) {
-	n := len(f.history)
-	pos := f.histPos + d
-	if pos < 0 || pos > n || pos == f.histPos {
+	con := f.con
+	n := len(con.history)
+	pos := con.histPos + d
+	if pos < 0 || pos > n || pos == con.histPos {
 		return
 	}
-	if f.histPos >= n {
-		f.histDraft = f.bs.buf.Line(0)
+	cur := f.bs.buf.Line(0)
+	if con.histPos >= n || cur != con.history[con.histPos] {
+		if con.histEdits == nil {
+			con.histEdits = map[int]string{}
+		}
+		con.histEdits[con.histPos] = cur
+	} else {
+		delete(con.histEdits, con.histPos)
 	}
-	f.histPos = pos
-	text := f.histDraft
-	if pos < n {
-		text = f.history[pos]
+	con.histPos = pos
+	text, ok := con.histEdits[pos]
+	if !ok && pos < n {
+		text = con.history[pos]
 	}
 	e.setConsoleInput(f, text)
+}
+
+// consoleInputText は、書き足すテキストと入力の行の組の入力の行へ入れるテキスト s を、入力の行の中身の形（1 行）にする。
+// 改行（\r\n、\r、\n）は空白に替え、タブ文字の他の制御文字は捨てる（input/ask の貼り付けの inputPaste と同じ。PR #415 のレビューの必須 1）。
+// 貼り付け（handlePaste）と、行を増やす編集の後（afterFloatKey）の両方がここを通る。入力の行の改行の扱いを替えるとき
+// （ACP のプロンプトで改行を保つ）は、ここと送る側（submitConsole）を替える。
+func consoleInputText(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ReplaceAll(s, "\r\n", "\n") {
+		switch {
+		case r == '\n' || r == '\r':
+			b.WriteByte(' ')
+		case r == '\t':
+			b.WriteRune(r)
+		case unicode.IsControl(r):
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// consolePaste は、キーを受けているバッファ bs が、読み込んでいる client のフォーカスのある組の入力の行なら、貼り付けるテキスト text を
+// 入力の行の中身の形にして返す（consoleInputText）。ほかのバッファなら text のまま返す。handlePaste から呼ぶ。
+func (e *Editor) consolePaste(bs *bufferState, text string) string {
+	if f := e.float; f != nil && f.focused && f.con != nil && bs == f.bs {
+		return consoleInputText(text)
+	}
+	return text
+}
+
+// joinConsoleInput は、行を増やす編集（行単位の p、o）で 2 行以上になった組 f の入力の行を、行の間を空白にした 1 行に戻す。
+// 2 行目から後ろを捨てずに残す（PR #415 のレビューの必須 1）。カーソルは、元の行と列から 1 行の中の位置へ移す。
+func (e *Editor) joinConsoleInput(f *floatState) {
+	buf := f.bs.buf
+	c := f.bs.state.Cursor()
+	var b strings.Builder
+	at := 0
+	for i := range buf.LineCount() {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		line := buf.Line(i)
+		if i == c.Line {
+			at = b.Len() + min(c.Byte, len(line))
+		}
+		b.WriteString(line)
+	}
+	raw := b.String()
+	text := consoleInputText(raw)
+	e.reload(f.bs, buffer.New(text))
+	f.bs.state.SetCursor(buffer.Position{Byte: min(len(consoleInputText(raw[:at])), len(text))})
 }
 
 // deleteConsoleInput は、書き足すテキストと入力の行の組 f の入力の行の [from, to) のバイトを消し、カーソルを from に置く。
@@ -222,6 +318,29 @@ func (e *Editor) deleteConsoleInput(f *floatState, from, to int) {
 	}
 	e.reload(f.bs, buffer.New(text[:from]+text[to:]))
 	f.bs.state.SetCursor(buffer.Position{Byte: from})
+}
+
+// errConsoleWrite と errConsoleEdit は、書き足すテキストと入力の行の組の中で、書き出しとファイルを開く Ex コマンドを断る誤りである。
+var (
+	errConsoleWrite = errors.New("出力と入力の行の組のバッファは書き出せません")
+	errConsoleEdit  = errors.New("出力と入力の行の組の中からはファイルを開けません（:q で閉じてから開きます）")
+)
+
+// consoleFileAction は、書き足すテキストと入力の行の組 f の中で打った Ex コマンド a が、書き出し（:w、:w {ファイル}）か
+// ファイルを開く操作（:e {ファイル}）なら、断る誤りを返す（doAction から呼ぶ）。組でなければ nil を返す。
+// :w {ファイル} を通すと、入力の行のバッファがそのファイルの名前になり、ステータス行の名前が替わって、以後の中身も保存済みに見える
+// （PR #415 のレビューの推奨 2）。:e {ファイル} は、ほかの部品のようにポップアップを閉じて開くと、打ちかけの入力と出力を黙って失うので断る。
+func consoleFileAction(f *floatState, a ex.Action) error {
+	if f.con == nil {
+		return nil
+	}
+	switch {
+	case a.Kind == ex.ActionWrite:
+		return errConsoleWrite
+	case a.Kind == ex.ActionEdit && a.File != "":
+		return errConsoleEdit
+	}
+	return nil
 }
 
 // setConsoleInput は、書き足すテキストと入力の行の組 f の入力の行の中身を text にし、カーソルを末尾に置く。
@@ -238,21 +357,22 @@ func (e *Editor) setConsoleInput(f *floatState, text string) {
 //
 // req: FR-274
 func (e *Editor) toggleConsoleFocus(f *floatState) {
-	f.outFocus = !f.outFocus
+	f.con.outFocus = !f.con.outFocus
 	e.switchFocus(e.consoleFocusBuffer(f))
 }
 
 // consoleFocusBuffer は、書き足すテキストと入力の行の組 f で、キーを受ける方のバッファ（出力か入力の行）を返す。
 func (e *Editor) consoleFocusBuffer(f *floatState) *bufferState {
-	if f.outFocus && slices.Contains(e.bufs, f.out) {
-		return f.out
+	if f.con.outFocus && slices.Contains(e.bufs, f.con.out) {
+		return f.con.out
 	}
 	return f.bs
 }
 
 // uiConsole は、書き足すテキストと入力の行の組 f の、入力の行のほかの描画の入力を作る（floatFrame）。
 func (e *Editor) uiConsole(f *floatState) *ui.Console {
-	out := f.out
+	con := f.con
+	out := con.out
 	st := out.state
 	view := &ui.Frame{
 		Text:        out.buf,
@@ -261,14 +381,14 @@ func (e *Editor) uiConsole(f *floatState) *ui.Console {
 		Cursor:      st.Cursor(),
 		Decorations: out.decoView,
 	}
-	if f.focused && f.outFocus {
+	if f.focused && con.outFocus {
 		view.Mode = uiMode(st.Mode())
 		view.OperatorPending = st.Mode() == command.ModeNormal && st.Pending()
 		if start, end, linewise, ok := st.Selection(); ok {
 			view.Selection = ui.Selection{Active: true, Start: start, End: end, Linewise: linewise}
 		}
 	}
-	return &ui.Console{Output: view, Prompt: f.prompt, OutputFocused: f.outFocus}
+	return &ui.Console{Output: view, Prompt: con.prompt, OutputFocused: con.outFocus}
 }
 
 // consoleOutViewport は、書き足すテキストと入力の行の組の出力のバッファのページ単位のスクロール（command.State.Viewport）と、
