@@ -107,6 +107,8 @@ type fakeOptions struct {
 	ANSI bool `json:"ansi"`
 	// EvaluateDelayMs は、最初の evaluate（context が watch）の応答を遅らせる時間（ミリ秒）である。受け取ったら "evaluate requested" を出す。
 	EvaluateDelayMs int `json:"evaluateDelayMs"`
+	// EvaluateDelayRepl は、EvaluateDelayMs を context が repl の evaluate にも当てる。
+	EvaluateDelayRepl bool `json:"evaluateDelayRepl"`
 }
 
 type message struct {
@@ -980,7 +982,7 @@ func (a *adapter) evaluate(m *message) {
 	default:
 		fail = "could not evaluate " + e
 	}
-	delay := args.Context == "watch" && a.opts.EvaluateDelayMs > 0 && !a.evalDelayed
+	delay := (args.Context == "watch" || args.Context == "repl" && a.opts.EvaluateDelayRepl) && a.opts.EvaluateDelayMs > 0 && !a.evalDelayed
 	a.evalDelayed = a.evalDelayed || delay
 	a.stateMu.Unlock()
 	if fail != "" {

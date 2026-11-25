@@ -88,18 +88,28 @@ func anyStopping(ss []sessionSnap) bool {
 // nvim-dap-view も、続けたときにスコープとウォッチ式の区画を描き直さない（listeners.lua）。
 const runningShowDelay = 150 * time.Millisecond
 
-// runningHold は、動き出してから runningShowDelay が経っていないセッションがあれば、その残りの時間を返す（無ければ 0）。
+// settleDelay は、止まった位置を出し始めてから、区画（スレッド、スコープ、ウォッチ式）を読み始めるまでの待ちである（仮。PR #425 のレビューの
+// 必須 1 へのオーケストレータの決め）。ステップ実行を続けて打つと、前の停止の区画の読み込み（vscode-js-debug でウォッチ式に 2 万の要素の列を
+// 置くと約 0.5 秒）がアダプターに送ってある間に次の next が届き、その後ろに並んで遅れた。待ちの間に次のステップ実行か続行が来れば、
+// その停止の区画は読まない（runningHold の間は読まないため）。0.1 秒の間でステップ実行を打つと、止まった位置を出してから次の next まで
+// 約 100 ms なので、それより長くした（PR #425 の測り）。
+const settleDelay = 120 * time.Millisecond
+
+// runningHold は、区画を読み始めるのを待つ残りの時間を返す（無ければ 0）。動き出してから runningShowDelay が経っていないセッションか、
+// 止まった位置を出し始めてから settleDelay が経っていない止まっているセッションがあれば、その残りである。
 func (d *debugger) runningHold() time.Duration {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var hold time.Duration
 	for _, s := range d.sessions {
-		if s.halted || s.resumedAt.IsZero() {
-			continue
+		var left time.Duration
+		switch {
+		case !s.halted && !s.resumedAt.IsZero():
+			left = runningShowDelay - time.Since(s.resumedAt)
+		case s.halted && !s.shownAt.IsZero():
+			left = settleDelay - time.Since(s.shownAt)
 		}
-		if left := runningShowDelay - time.Since(s.resumedAt); left > hold {
-			hold = left
-		}
+		hold = max(hold, left)
 	}
 	return hold
 }
@@ -129,6 +139,8 @@ type threadsView struct {
 	cache map[*session]*threadCache
 	// frames は、フレームの項目の ID から、そのフレームへの対応である（項目を選んだとき）。
 	frames map[string]frameRef
+	// last は、最後に作った木である（区画に切り替えた直後に、読み直していることを添えて出す。pane.markReloading）。
+	last ext.ViewComponent
 }
 
 // threadCache は、1 つのセッションの、1 つの世代のスレッドとフレームである。
@@ -310,7 +322,8 @@ func (p *pane) buildThreads() (ext.ViewComponent, error) {
 		id := sessionItemID(x.s)
 		items = append(items, ext.ViewItem{ID: id, Label: label, Highlights: hs, Children: children, Expanded: p.threads.open(id, true)})
 	}
-	return ext.ViewComponent{Kind: ext.ViewTree, Items: items}, nil
+	p.threads.last = ext.ViewComponent{Kind: ext.ViewTree, Items: items}
+	return p.threads.last, nil
 }
 
 // runningItem は、動いている間に区画の先頭に足す項目である。
@@ -628,7 +641,9 @@ type varInfo struct {
 	scope bool
 	// watch は、ウォッチ式の項目（式そのもの）かである。v.Name と v.EvaluateName は式、v.Value は評価の結果である。
 	watch bool
-	v     variable
+	// failure は、ウォッチ式の評価の誤りの全文である（誤りの項目の c で出す）。
+	failure string
+	v       variable
 }
 
 // varsOf は、木 sv の鍵 k の子の変数を返す（同じ世代で読んだものは読み直さない）。読む前と読んでいる間に世代が進んだら errStale を返す。
@@ -930,6 +945,10 @@ func (p *pane) askSetValue(sv *varTree, item string) {
 		return
 	}
 	x := sv.snap
+	if x.s == nil {
+		p.d.showError("デバッグしていないので、値を書き換えられない")
+		return
+	}
 	if !x.halted {
 		p.d.showError("動いている間は、変数の値を書き換えられない")
 		return

@@ -371,7 +371,8 @@ func newDebugger() *debugger {
 	d.pane = newPane(d)
 	// 今のセッションが替わったら、出力の区画に出すセッションを合わせる。スレッドとスコープの区画の印は、選び直し（choose）と、
 	// 止まった位置を出した後（showStopped）で付ける（止まったときにここで付けると、止まった位置の stackTrace より先に読む）。
-	d.onSelect = func(selection) { d.pane.markDirty(secConsole) }
+	// 例外の区画は今のセッションのアダプターのフィルターを出すので、今のセッションが替わったら作り直す（PR #425 のレビューの推奨 5）。
+	d.onSelect = func(selection) { d.pane.markDirty(secConsole, secExceptions) }
 	go d.pane.run()
 	return d
 }
@@ -1448,6 +1449,7 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focu
 	s.exec = &execPoint{path: path, line: line}
 	s.frame, s.hasFrame = frame, true
 	s.stopGen = 0
+	s.shownAt = time.Now()
 	// ペインの区画は、止まった位置への移動（editor/open か再生の応答）を済ませた後に作り直す（markStopped の doc）。
 	defer d.pane.markDirty(secThreads, secScopes, secWatches)
 	d.publishLocked(path)
@@ -1568,6 +1570,7 @@ func (d *debugger) stoppedWithoutSource(s *session, gen uint64, reason string) {
 		return
 	}
 	s.stopGen = 0
+	s.shownAt = time.Now()
 	defer d.pane.markDirty(secThreads, secScopes, secWatches)
 	w := d.takeStopWaiterForLocked(s)
 	multi := len(d.sessions) > 1

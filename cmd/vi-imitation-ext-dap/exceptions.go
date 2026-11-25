@@ -173,6 +173,10 @@ func (p *pane) toggleException(item string) {
 			// nvim-dap-view の exceptions/init.lua も、delve の動いているセッションには送らない）。次に止まったときに送り直す。
 			s.excPending.Store(true)
 			d.showInfo(fmt.Sprintf("動いている間は例外のフィルターを送れなかった（%s）。次に止まったときに送る", s.label()))
+			// 印を立てる前に止まり、送り直しの機会を過ぎていたら、ここで送る（送り直しは 1 回だけ）。
+			ctx, cancel := p.ctx()
+			s.resendExceptionBreakpoints(ctx)
+			cancel()
 			continue
 		}
 		d.showError(fmt.Sprintf("例外のフィルターを送れない（%s）: %s", s.label(), adapterMessage(err)))
@@ -183,6 +187,9 @@ func (p *pane) toggleException(item string) {
 //
 // req: FR-294
 func (s *session) resendExceptionBreakpoints(ctx context.Context) {
+	if !s.excPending.Load() || !s.d.sessionHalted(s) {
+		return // 止まっていなければ、次に止まったときに送る
+	}
 	if !s.excPending.Swap(false) {
 		return
 	}

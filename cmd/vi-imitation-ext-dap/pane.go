@@ -500,8 +500,7 @@ func leafTree(label string) ext.ViewComponent {
 	return ext.ViewComponent{Kind: ext.ViewTree, Items: []ext.ViewItem{{ID: "none", Label: label}}}
 }
 
-// refresh は、ペインを開いていれば、作り直しの印の付いた区画のうち、選んでいる区画と、ブレークポイントと例外の区画（request を送らない）を
-// 作り直し、出力の区画に出す写しを今のセッションに合わせる（基本設計 6.4 の「表示の更新」）。見えていないスレッド、スコープ、ウォッチ式の区画は
+// refresh は、ペインを開いていれば、作り直しの印の付いた区画のうち、選んでいる区画だけを作り直し、出力の区画に出す写しを今のセッションに合わせる（基本設計 6.4 の「表示の更新」）。見えていないスレッド、スコープ、ウォッチ式の区画は
 // 印を残し、アダプターへ request を送らない（#424 の裁定。ウォッチ式を 10 個置いても、見えていなければステップ実行を遅らせない）。
 // スレッド、スコープ、ウォッチ式の区画は、止まった位置を出し終えるまで読まない（PR #423 のレビューの必須 1）。
 func (p *pane) refresh() {
@@ -523,7 +522,9 @@ func (p *pane) refresh() {
 			}
 			continue
 		}
-		if !reads && sec != secBreakpoints && sec != secExceptions {
+		if !reads && (sec != secBreakpoints && sec != secExceptions || !visible) {
+			// ブレークポイントと例外の区画も、見えているときだけ作り直して送る。止まるたびに実行位置の印でブレークポイントの区画に
+			// 印が付き、見えていなくても送っていたので、本体がその描き直しをする分、止まった位置への移動が約 5 ms 遅れていた（#424 の測り）。
 			continue
 		}
 		if !p.isDirty(sec) {
@@ -546,6 +547,57 @@ func (p *pane) refresh() {
 		if err := p.d.srv.UpdateView(ext.ViewUpdateParams{View: view, Child: sec, Component: c}); err != nil {
 			p.d.logf("view/update %s: %v", sec, err)
 		}
+	}
+}
+
+// reloadingLabel と reloadingID は、区画に切り替えた直後、読み直すまでの間に、最後に作った木の先頭に足す 1 行とその ID である。
+const (
+	reloadingLabel = "読み直しています（下は前に読んだ中身）"
+	reloadingID    = "\x1freloading"
+)
+
+// markReloading は、作り直しの印の付いた区画 sec（スレッド、スコープ、ウォッチ式）に切り替えたとき、読み直すまでの間、
+// 最後に作った木の先頭に読み直していることを示す 1 行を足して送る（PR #425 のレビューの推奨 1）。本体は切り替えた子の最後の中身を
+// そのまま出すので、前の停止の値が、最新の値と見分けられずに見えていた。同じ項目の ID で送るので、本体はカーソルと開閉を保つ。
+func (p *pane) markReloading(sec string) {
+	view := ext.ViewID(p.view.Load())
+	if view == 0 || !p.isDirty(sec) {
+		return
+	}
+	var last ext.ViewComponent
+	switch sec {
+	case secThreads:
+		last = p.threads.last
+	case secScopes:
+		last = p.scopes.last
+		if p.scopes.lastFor == nil {
+			// 見えていない間に止まり直した（forgetShown）か、まだ読んでいない。前の停止の値を出さない。
+			p.sendReloading(view, sec, leafTree("読み直しています"))
+			return
+		}
+	case secWatches:
+		last = p.watches.last
+		if p.watches.lastFor == nil && len(p.watches.exprs) > 0 {
+			p.sendReloading(view, sec, p.watches.plain("（読み直しています）"))
+			return
+		}
+	default:
+		return
+	}
+	if last.Kind != ext.ViewTree || len(last.Items) == 0 || last.Items[0].ID == reloadingID {
+		return
+	}
+	c := last
+	items := slices.DeleteFunc(slices.Clone(c.Items), func(it ext.ViewItem) bool { return it.ID == runningID })
+	c.Items = append([]ext.ViewItem{{ID: reloadingID, Label: reloadingLabel, Highlights: []ext.ViewSpan{{Start: 0, End: len(reloadingLabel), Style: "comment"}}}}, items...)
+	c.Cursor = ""
+	p.sendReloading(view, sec, c)
+}
+
+// sendReloading は、区画 sec の読み直すまでの中身 c を送る。
+func (p *pane) sendReloading(view ext.ViewID, sec string, c ext.ViewComponent) {
+	if err := p.d.srv.UpdateView(ext.ViewUpdateParams{View: view, Child: sec, Component: c}); err != nil {
+		p.d.logf("view/update %s: %v", sec, err)
 	}
 }
 
@@ -589,6 +641,7 @@ func (p *pane) onEvent(e server.ViewEvent) {
 		p.console = nil
 	case server.ViewChildSelected:
 		p.selected = e.Child
+		p.markReloading(e.Child)
 	case server.ViewSelected:
 		switch e.Child {
 		case secThreads:

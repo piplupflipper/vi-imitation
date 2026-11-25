@@ -145,6 +145,9 @@ type session struct {
 	// resumedAt は、最後に動き出した（続行、ステップ実行、restart を送った、continued の event を受けた）時刻である。
 	// ペインは、動き出してから runningShowDelay の間は、区画を「動いている」に作り直さない（pane.refresh）。
 	resumedAt time.Time
+	// shownAt は、最後に止まった位置を出し始めた（showStopped、stoppedWithoutSource）時刻である。ペインは、そこから settleDelay の間は
+	// 区画を読み始めない（pane.refresh）。その間に次のステップ実行か続行が来れば、その停止の区画は読まない。
+	shownAt time.Time
 	// stopGen は、止まった位置を出し終える前（markStopped の後、showStopped か stoppedWithoutSource の前）の世代である。
 	// 0 なら出し終えた。世代が進めば（続けた、選び直した）意味を失う。ペインは、この間は区画を読まない（stopping）。
 	stopGen uint64
@@ -1171,6 +1174,8 @@ func (s *session) stopped(body *stoppedEvent) {
 	gen, focus := s.d.markStopped(s, body.ThreadID)
 	ctx, cancel := context.WithTimeout(s.eventCtx, s.d.timeouts.request)
 	defer cancel()
+	// 動いている間に送れなかった例外のフィルターは、止まった位置を出した後に送り直す（どの道で戻っても）。
+	defer s.resendExceptionBreakpoints(ctx)
 	tid, err := s.threadID(ctx)
 	if err != nil {
 		s.d.logf("threads: %v", err)
@@ -1205,7 +1210,6 @@ func (s *session) stopped(body *stoppedEvent) {
 		// 例外の中身は、止まった位置を出し終えた後に読む（止まった位置の stackTrace を先に送る取り決め。PR #423）。
 		s.showException(ctx, gen, tid, body)
 	}
-	s.resendExceptionBreakpoints(ctx)
 }
 
 // dapEvent は、受け取った 1 件の event か、逆向きの request である。

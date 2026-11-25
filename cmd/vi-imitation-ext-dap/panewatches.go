@@ -341,7 +341,7 @@ func (p *pane) watchItem(x sessionSnap, e watchExpr) (ext.ViewItem, error) {
 	id := watchItemID(e.id)
 	name := oneLine(e.expr)
 	if r.failure != "" {
-		w.info[id] = varInfo{watch: true, v: variable{Name: e.expr, EvaluateName: e.expr}}
+		w.info[id] = varInfo{watch: true, failure: r.failure, v: variable{Name: e.expr, EvaluateName: e.expr}}
 		label := name + " = " + oneLine(r.failure)
 		return ext.ViewItem{ID: id, Label: label, Highlights: []ext.ViewSpan{
 			{Start: 0, End: len(name), Style: "variable"}, {Start: len(name) + 3, End: len(label), Style: "diagnostic.error"},
@@ -463,7 +463,7 @@ func (p *pane) deleteWatch(item string) {
 // copyWatchValue は、カーソルの項目の値を、ヤンクできるよう中央のポップアップのテキストに出す（c）。
 // アダプターが supportsClipboardContext を示し、項目に式（式そのものか、変数の evaluateName）があれば、evaluate の context を
 // clipboard にした結果を、そうでなければ表示している値（切る前の値）を出す（基本設計 6.4 の capabilities の表）。
-// 本体の拡張機能 API に、拡張機能がレジスターへ値を入れる口が無いので、利用者がポップアップの中で y でヤンクする
+// 本体の拡張機能 API に、拡張機能がレジスターへ値を入れる口が無いので、利用者がポップアップの中でヤンクする
 // （nvim-dap-view は + のレジスターへ直に入れる。FR-311 で、口ができたら直に入れる）。
 //
 // req: FR-292
@@ -474,8 +474,16 @@ func (p *pane) copyWatchValue(item string) {
 		return
 	}
 	x := w.snap
-	if !x.halted {
+	switch {
+	case x.s == nil:
+		p.d.showError("デバッグしていないので、値を読めない")
+		return
+	case !x.halted:
 		p.d.showError("動いている間は、値を読めない")
+		return
+	case info.failure != "":
+		// 評価の誤りの行は、誤りの全文を出す（狭いペインでは行が切れて読めないため。PR #425 のレビューの推奨 3）。
+		p.openValuePopup(oneLine(info.v.Name)+" の評価の誤り", info.failure)
 		return
 	}
 	value := info.v.Value
@@ -499,12 +507,28 @@ func (p *pane) copyWatchValue(item string) {
 			value = res.Result
 		}
 	}
-	title := oneLine(info.v.Name) + " の値（y でヤンク、<Esc> で閉じる）"
+	if value == "" {
+		p.d.showInfo("コピーする値が無い")
+		return
+	}
+	p.openValuePopup(oneLine(info.v.Name)+" の値", value)
+}
+
+// openValuePopup は、text をヤンクできるよう中央のポップアップのテキストに出す。題には、ヤンクのキーを添える。
+// 1 行なら、元の行の中へ文字単位で貼れる 0y$ を、2 行以上なら全体を行単位でヤンクする ggyG を案内する（PR #425 のレビューの推奨 7。
+// yy は行単位なので、p で元のペインの次の行に貼る。nvim-dap-view の c は文字単位で + のレジスターへ入れる）。
+func (p *pane) openValuePopup(name, text string) {
+	text = strings.TrimRight(strings.ToValidUTF8(normalizeNewlines(text), "�"), "\n")
+	hint := "0y$ で文字単位にヤンク、<Esc> で閉じる"
+	if strings.Contains(text, "\n") {
+		hint = "ggyG で全体をヤンク、<Esc> で閉じる"
+	}
+	title := name + "（" + hint + "）"
 	go func() {
 		ctx, cancel := p.ctx()
 		defer cancel()
 		_, err := p.d.srv.OpenPopup(ctx, ext.PopupOpenParams{
-			Component: ext.ViewComponent{Kind: ext.ViewText, Title: title, Text: strings.ToValidUTF8(normalizeNewlines(value), "�")},
+			Component: ext.ViewComponent{Kind: ext.ViewText, Title: title, Text: text},
 			Placement: ext.PopupCenter,
 		})
 		if err != nil {

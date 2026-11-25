@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/piplupflipper/vi-imitation/ext"
@@ -25,6 +26,13 @@ const replPrompt = "> "
 
 // maxReplChildren は、構造を持つ結果の子を REPL に書き足す数の上限である（仮。ウォッチ式の区画の 100 個ずつの読み込みと同じ数）。
 const maxReplChildren = pageSize
+
+// sessionHalted は、s が動いているセッションで、止まっているかを返す。
+func (d *debugger) sessionHalted(s *session) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return s.halted && slices.Contains(d.sessions, s)
+}
 
 // replWrite は、REPL の写しに text を書き足す。どの goroutine から呼んでもよい。style は 7.1 の色の名前（空なら色を付けない）である。
 func (p *pane) replWrite(text, style string) {
@@ -49,6 +57,10 @@ func (p *pane) replSubmit(text string) {
 		p.replHistory = ext.AppendConsoleHistory(p.replHistory, text)
 		p.replLast = text
 	}
+	// 式は、打った時点の今のセッションと、その停止（世代）とフレームに対して評価する（PR #425 のレビューの推奨 2）。前の評価を待つ間に
+	// ステップ実行すると、止まっていた間に打った式が、動いているデバッグ対象で大域として評価されていた。
+	ss, cur, _ := p.d.snapshot()
+	x, ok := current(ss, cur)
 	prev := p.replDone
 	done := make(chan struct{})
 	p.replDone = done
@@ -57,20 +69,27 @@ func (p *pane) replSubmit(text string) {
 		if prev != nil {
 			<-prev
 		}
-		p.replEval(text)
+		p.replEval(text, x, ok)
 	}()
 }
 
-// replEval は、式 text を評価し、式と結果を REPL に書き足す。今のセッションは評価する時点で引く。
+// replEval は、式 text を、打った時点のセッションの写し x（ok が false ならセッションが無かった）に対して評価し、式と結果を REPL に書き足す。
+// 打った時点で止まっていて、評価を始める前にその停止が無くなっていれば（世代が進んだ）、評価せずにそのことを書き足す。
 // 結果が構造を持てば（variablesReference が 0 でない）、子を 1 段だけ読んで字下げした行で書き足す（nvim-dap の REPL の
 // evaluate_handler も、子を先に読んでから木で出す。この区画はテキストなので開閉はできない）。
 // 止まっている間に評価を送った後で止まった状態が変わったら（続けた、選び直した）、結果を出さずにそのことを書き足す（FR-305）。
-func (p *pane) replEval(text string) {
+func (p *pane) replEval(text string, x sessionSnap, ok bool) {
 	p.replWrite(replPrompt+text+"\n", "keyword")
-	ss, cur, _ := p.d.snapshot()
-	x, ok := current(ss, cur)
 	if !ok || !x.configured {
 		p.replWrite("デバッグしていない\n", "comment")
+		return
+	}
+	if x.halted && x.s.gen.Load() != x.gen {
+		msg := "（打った後に、止まり直したかフレームを選び直したので、評価しなかった）\n"
+		if !p.d.sessionHalted(x.s) {
+			msg = "（止まっていない。打ったときの停止はもう無いので、評価しなかった）\n"
+		}
+		p.replWrite(msg, "comment")
 		return
 	}
 	args := evaluateArguments{Expression: text, Context: "repl"}

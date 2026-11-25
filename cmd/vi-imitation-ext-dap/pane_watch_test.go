@@ -183,9 +183,13 @@ func TestPaneWatchesHidden(t *testing.T) {
 	if strings.Contains(all, "evaluate") || strings.Contains(all, "threads") || strings.Contains(all, "levels=200") {
 		t.Errorf("a hidden section was read: %q", all)
 	}
-	// 止まっている間に切り替えると、最新の停止（2 回目）で評価する。
+	// 止まっている間に切り替えると、まず読み直していることを出し（前の停止の値は出さない）、最新の停止（2 回目）で評価する。
 	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secWatches})
-	h.waitLabel(secWatches, "x = 2")
+	var first []ext.ViewComponent
+	h.waitUpdate(secWatches, func(c ext.ViewComponent) bool { return strings.Contains(labels(c.Items), "x = 2") }, &first)
+	if l := labels(first[0].Items); !strings.Contains(l, "読み直しています") {
+		t.Errorf("the first update after switching = %q", l)
+	}
 	// 見えていない間に止まり直してから、動いている間に切り替えると、前の停止の値（x = 2）を出さない。
 	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secScopes})
 	h.mustExec(cmdNext, 0)
@@ -270,8 +274,25 @@ func TestPaneWatchesSetCopy(t *testing.T) {
 			h.toggleUI()
 			p := h.waitPane()
 			h.addWatch(p.id, keyWatchesAppend, "none", "x")
+			h.waitLabel(secWatches, "x  （デバッグしていない）")
+			// デバッグしていないときは、動いている間ではなく、デバッグしていないことを知らせる。
+			h.key(p.id, secWatches, keyWatchesCopy, "w1")
+			h.waitMessage("デバッグしていないので、値を読めない")
+			h.key(p.id, secWatches, keyWatchesSet, "w1")
+			h.waitMessage("デバッグしていないので、値を書き換えられない")
+			h.addWatch(p.id, keyWatchesAppend, "w1", "bad")
 			h.mustExec(cmdStart, 0)
 			h.waitLabel(secWatches, "x = 1")
+			// 評価の誤りの行の c は、誤りの全文を出す。
+			h.key(p.id, secWatches, keyWatchesCopy, "w2")
+			select {
+			case pp := <-h.popups:
+				if pp.Component.Text != "could not evaluate bad" || !strings.Contains(pp.Component.Title, "bad の評価の誤り") {
+					t.Errorf("popup/open for the error = %+v", pp)
+				}
+			case <-time.After(testTimeout):
+				t.Fatal("popup/open for the error did not arrive")
+			}
 			h.key(p.id, secWatches, keyWatchesSet, "w1")
 			if tc.set {
 				ask := <-h.inputAsks
@@ -292,7 +313,8 @@ func TestPaneWatchesSetCopy(t *testing.T) {
 			h.key(p.id, secWatches, keyWatchesCopy, "w1")
 			select {
 			case pp := <-h.popups:
-				if pp.Component.Kind != ext.ViewText || pp.Component.Text != tc.copyWant || pp.Placement != ext.PopupCenter {
+				if pp.Component.Kind != ext.ViewText || pp.Component.Text != tc.copyWant || pp.Placement != ext.PopupCenter ||
+					!strings.Contains(pp.Component.Title, "0y$ で文字単位にヤンク") {
 					t.Errorf("popup/open = %+v", pp)
 				}
 			case <-time.After(testTimeout):
@@ -353,6 +375,30 @@ func TestPaneRepl(t *testing.T) {
 	h.outputsUntil("hello from debuggee")
 	h.submit(p.id, "x")
 	h.waitOutput("evaluate repl x frame=none")
+	h.stopAndWait()
+}
+
+// TestPaneReplStale は、前の評価の応答を待つ間に打った式を、打った時点の停止に対して評価し、その間にステップ実行して停止が無くなったら、
+// 動いているデバッグ対象で評価せずに、そのことを書き足すことを確かめる（PR #425 のレビューの推奨 2）。
+//
+// req: FR-293, FR-305
+func TestPaneReplStale(t *testing.T) {
+	h := paneHost(t, nil, map[string]any{"evaluateDelayMs": 400, "evaluateDelayRepl": true, "stopDelayMs": 1500}, map[string]any{"defaultSection": "repl"})
+	h.toggleUI()
+	p := h.waitPane()
+	h.mustExec(cmdStart, 0)
+	h.waitSigns(bp2, bp5, exec2)
+	h.submit(p.id, "multi")
+	h.submit(p.id, "x")
+	h.waitOutput("evaluate requested")
+	h.mustExec(cmdNext, 0)
+	all := h.waitRepl("> x\n（止まっていない。打ったときの停止はもう無いので、評価しなかった）\n")
+	if !strings.Contains(all, "> multi\n（止まった状態が変わったので、結果を出さない）\n") {
+		t.Errorf("repl = %q", all)
+	}
+	if out := h.outputsUntil("stopped 2"); strings.Contains(out, "evaluate repl x") {
+		t.Errorf("x was evaluated after the stop was gone: %q", out)
+	}
 	h.stopAndWait()
 }
 
