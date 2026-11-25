@@ -211,6 +211,12 @@ type ViewComponent struct {
 	// History は、ViewConsole の入力の履歴の最初の中身（古い順）である（API 0.22.0 で足した）。どの項目も改行を含めない。
 	// ConsoleHistoryMax を超える分は、本体が古いものから捨てる。view/update では読まない。
 	History []string `json:"history,omitempty"`
+	// Complete は、ViewConsole で、入力の行の補完を拡張機能が引き受けることを表す（FR-297。API 0.24.0 で足した）。
+	// 真なら、本体はインサートモードで入力の行が変わるたびと補完のキーで console/complete（ConsoleCompleteParams）を問い合わせ、
+	// 返った候補を補完の候補の一覧に出す（consolecomplete.go）。開いたとき（popup/open、pane/open、切り替えの部品の新しい子）だけ読み、
+	// view/update では読まない。偽か省いた部品は、今までどおり補完しない（<Tab> はタブ文字として入る）。他の種類では持てない。
+	// 古い本体は読まずに捨て、問い合わせない。
+	Complete bool `json:"complete,omitempty"`
 	// Children は、ViewSwitcher の子の列である（API 0.23.0 で足した）。1 つ以上を持つ。他の種類では持てない。
 	Children []ViewChild `json:"children,omitempty"`
 	// Selected は、ViewSwitcher で選ぶ子の ID である（API 0.23.0 で足した）。開いたとき（popup/open、pane/open）に省くと最初の子、
@@ -365,6 +371,9 @@ func (c *ViewComponent) Validate() error {
 	if len(c.Children) > 0 || c.Selected != "" {
 		return fmt.Errorf("children と selected は switcher でだけ使える")
 	}
+	if c.Complete && c.Kind != ViewConsole {
+		return fmt.Errorf("complete は console でだけ使える")
+	}
 	if (c.Kind == ViewInput || c.Kind == ViewFinder) && containsNewline(c.Text) {
 		return fmt.Errorf("%s の text が改行を含む", c.Kind)
 	}
@@ -429,8 +438,8 @@ func (c *ViewComponent) validateSwitcher() error {
 	switch {
 	case len(c.Children) == 0:
 		return fmt.Errorf("switcher の children が空である")
-	case c.Text != "" || len(c.Highlights) > 0 || len(c.Items) > 0 || c.Input != "" || c.Prompt != "" || len(c.History) > 0:
-		return fmt.Errorf("switcher は text、highlights、items、input、prompt、history を持てない（子の component に書く）")
+	case c.Text != "" || len(c.Highlights) > 0 || len(c.Items) > 0 || c.Input != "" || c.Prompt != "" || len(c.History) > 0 || c.Complete:
+		return fmt.Errorf("switcher は text、highlights、items、input、prompt、history、complete を持てない（子の component に書く）")
 	}
 	ids, keys := map[string]bool{}, map[string]bool{}
 	for i, ch := range c.Children {
