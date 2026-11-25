@@ -32,8 +32,16 @@ type pickers struct {
 	opening int
 }
 
-// onView は、本体からの部品の知らせを、その一覧の受け口へ渡す。ループの上で呼ばれるので待たない。
+// onView は、本体からの部品の知らせを、その一覧の受け口か、デバッグのペイン（pane.go）へ渡す。ループの上で呼ばれるので待たない。
+// ペインを開いている最中（pane/open の応答の前）の知らせは、ペインのものかもしれないので、ペインの列にも積む（ペインは ID で見分ける）。
 func (d *debugger) onView(_ context.Context, e *server.ViewEvent) {
+	if d.pane.owns(e) {
+		ev := *e
+		d.pane.post(func() { d.pane.onEvent(ev) })
+		if !d.pane.opening.Load() {
+			return
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if ch, ok := d.pickers.waiting[e.View]; ok {

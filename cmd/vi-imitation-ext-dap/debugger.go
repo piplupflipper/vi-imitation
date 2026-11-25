@@ -20,11 +20,11 @@ import (
 
 // providedOps は、この拡張機能が引き受ける本体の操作である（基本設計 5.5。FR-94）。
 // 宣言ファイル manifest.json の provides と揃える（TestManifest）。
-// debug.toggleUI（DAP のペイン。FR-108）は、ペインを開く pane/open ができるまで引き受けない。
+// debug.toggleUI は、DAP のペイン（FR-108）を開け閉めする（pane.go）。
 var providedOps = []ext.Operation{
 	ext.OpBreakpointToggle, ext.OpBreakpointConditional, ext.OpBreakpointClear,
 	ext.OpDebugContinue, ext.OpDebugPause, ext.OpDebugTerminate, ext.OpDebugRestart, ext.OpDebugRunLast,
-	ext.OpDebugStepOver, ext.OpDebugStepIn, ext.OpDebugStepOut,
+	ext.OpDebugStepOver, ext.OpDebugStepIn, ext.OpDebugStepOut, ext.OpDebugToggleUI,
 }
 
 // resumeCommands は、続行とステップ実行の操作から、DAP の request の名前への対応である。
@@ -159,6 +159,13 @@ type debugger struct {
 	waitScope *session
 	// waitTree は、waitScope の子孫のセッションの停止でも結果を届けるかである（開始と restart）。
 	waitTree bool
+	// pane は、デバッグの情報を出すペインである（pane.go。FR-108）。作った後は変えない。
+	pane *pane
+	// outLogs は、今のデバッグ（最後に始めた最上位のセッションとその子孫）のセッションを、始めた順に並べたものである。
+	// 終わったセッションも、次に最上位のセッションを始めるまで残し、出力の区画でその出力の写しを読めるようにする（FR-291）。
+	outLogs []*session
+	// outputTap は、テストが、セッションの出力の写しに足したテキストを受け取る関数である。nil なら呼ばない。作った後は変えない。
+	outputTap func(text string)
 }
 
 // bpResult は、1 つのセッションの、1 つのファイルの setBreakpoints の応答である。gen は、送ったときのブレークポイントの列の世代（debugger.gens）である。
@@ -354,6 +361,11 @@ func newDebugger() *debugger {
 		compoundsShown: make(map[string]bool),
 	}
 	d.srv = d.newServer()
+	d.pane = newPane(d)
+	// 今のセッションが替わったら、出力の区画に出すセッションを合わせる。スレッドとスコープの区画の印は、選び直し（choose）と、
+	// 止まった位置を出した後（showStopped）で付ける（止まったときにここで付けると、止まった位置の stackTrace より先に読む）。
+	d.onSelect = func(selection) { d.pane.markDirty(secConsole) }
+	go d.pane.run()
 	return d
 }
 
@@ -378,6 +390,7 @@ func (d *debugger) newServer() *server.Server {
 	for _, op := range []ext.Operation{ext.OpDebugStepOver, ext.OpDebugStepIn, ext.OpDebugStepOut} {
 		s.ProviderAsync(op, d.asyncProvider(d.noArgs(d.resume)))
 	}
+	s.ProviderAsync(ext.OpDebugToggleUI, d.asyncProvider(d.noArgs(d.toggleUI)))
 	s.OnShutdown(func(context.Context, *server.ShutdownEvent) { d.shutdown() })
 	return s
 }
@@ -395,6 +408,7 @@ func (d *debugger) newServer() *server.Server {
 // req: FR-31
 func (d *debugger) shutdown() {
 	d.shutdownOnce.Do(func() {
+		defer d.pane.stop()
 		d.mu.Lock()
 		s := d.rootLocked()
 		if d.preparing != nil {
@@ -474,10 +488,20 @@ func (d *debugger) rootLocked() *session {
 
 // addSessionLocked は、s に番号を振り、動いているセッションに足す。子のセッションは親の children にも足す。
 // 今のセッションが無ければ、s を今のセッションにする。mu を持って呼ぶ。
+//
+// 最上位のセッションなら、前のデバッグのセッションの出力の写しを捨てる（次にデバッグを始めるまで読める。FR-291）。
 func (d *debugger) addSessionLocked(s *session) {
 	d.nextID++
 	s.id = d.nextID
 	d.sessions = append(d.sessions, s)
+	if s.parent == nil {
+		for _, old := range d.outLogs {
+			old.output.Detach()
+		}
+		d.outLogs = nil
+	}
+	d.outLogs = append(d.outLogs, s)
+	d.pane.markDirty(secThreads, secScopes, secConsole)
 	if s.parent != nil {
 		s.parent.children = append(s.parent.children, s)
 	}
@@ -520,8 +544,8 @@ func (d *debugger) selectSession(s *session) bool {
 	return d.choose(s, func() {})
 }
 
-// selectThread は、s を今のセッションにし、そのスレッド thread を選び、フレームの選択を外す
-// （後の issue のスレッドの区画でスレッドを選んだとき）。s の世代を進めるので、それより前に送った stackTrace などの応答は捨てる（FR-287）。
+// selectThread は、s を今のセッションにし、そのスレッド thread を選び（続行、ステップ実行、一時停止の送り先にする）、
+// フレームの選択を外す（スレッドの区画の s で選んだとき。FR-303）。s の世代を進めるので、それより前に送った stackTrace などの応答は捨てる（FR-287）。
 // s が動いていなければ false を返す。
 //
 // req: FR-287
@@ -529,12 +553,23 @@ func (d *debugger) selectThread(s *session, thread int) bool {
 	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, 0, false })
 }
 
-// selectFrame は、s を今のセッションにし、そのスレッド thread とフレーム frame を選ぶ（後の issue のスレッドの区画でフレームを選んだとき）。
+// selectThreadFrame は、selectThread と同じく s のスレッド thread を選び、フレーム frame も選ぶ（スレッドの区画の s で、
+// スレッドかフレームを選んだとき。スコープの区画がそのフレームを出す）。
+//
+// req: FR-287
+func (d *debugger) selectThreadFrame(s *session, thread, frame int) bool {
+	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, frame, true })
+}
+
+// selectFrame は、s を今のセッションにし、フレーム frame を選ぶ（スレッドの区画でフレームを <CR> で選んだとき）。
+// 選んでいるスレッド（続行とステップ実行の送り先）は替えない。別のスレッドのフレームを見るために選んでも、ステップ実行が黙って
+// そのスレッドへ送られないためである（nvim-dap（コミット cfa2d58f4537aca6ca83e2de1a0d9f1491121264）の lua/dap/session.lua の
+// _frame_set は current_frame だけを替え、ステップ実行は stopped_thread_id へ送る。PR #423 のレビューの裁定要 1）。
 // s の世代を進める（FR-287）。s が動いていなければ false を返す。
 //
 // req: FR-287
-func (d *debugger) selectFrame(s *session, thread, frame int) bool {
-	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, frame, true })
+func (d *debugger) selectFrame(s *session, frame int) bool {
+	return d.choose(s, func() { s.frame, s.hasFrame = frame, true })
 }
 
 // choose は、s を今のセッションにし、mu を持って set を呼び、s の世代を進めて、選択が変わったことを知らせる。
@@ -547,6 +582,7 @@ func (d *debugger) choose(s *session, set func()) bool {
 	d.cur = s
 	set()
 	s.gen.Add(1)
+	d.pane.markDirty(secThreads, secScopes)
 	sel := d.selectionLocked()
 	d.mu.Unlock()
 	d.notifySelect(sel)
@@ -571,7 +607,12 @@ func (d *debugger) markStopped(s *session, tid *int) (gen uint64, focus bool) {
 	if tid != nil {
 		s.thread = *tid
 	}
+	s.stoppedThread, s.hasStoppedThread = s.thread, s.hasThread
+	// ペインの区画の作り直しの印は、ここでは付けない。付けると、ペインの読み込み（threads、stackTrace、scopes、variables）が、
+	// 止まった位置を出すための stackTrace より先にアダプターへ届き、カーソルの移動が遅れる（PR #423 のレビューの必須 1）。
+	// 印は、止まった位置を出し終えた後（showStopped と stoppedWithoutSource）で付ける。
 	gen = s.gen.Add(1)
+	s.stopGen = gen
 	cur := d.cur
 	focus = cur == nil || cur == s || !slices.Contains(d.sessions, cur) || !cur.halted
 	if focus && d.stopWaiter != nil && !d.inScopeLocked(s) {
@@ -613,29 +654,32 @@ func (d *debugger) continued(s *session) {
 	d.mu.Lock()
 	s.halted = false
 	s.gen.Add(1)
+	d.pane.markDirty(secThreads, secScopes)
 	d.mu.Unlock()
 	d.clearExecution(s)
 }
 
-// appendOutput は、デバッグ対象の出力を output/append の dap の欄へ書き足す（基本設計 6.4）。
+// toggleUI は、デバッグの情報のペインを開け閉めする（本体の操作 debug.toggleUI。FR-277）。閉じてもデバッグは止めない。
+// pane/open は応答を待つので、ペインの goroutine で行い、受け付けたことだけを応答する（再生中も同じ）。
 //
-// req: FR-31
-func (d *debugger) appendOutput(text string) {
-	if err := d.srv.AppendOutput(outputChannel, text); err != nil {
-		d.logf("output/append: %v", err)
-	}
+// req: FR-277
+func (d *debugger) toggleUI(context.Context, *server.Buffer, *ext.ProviderInvokeParams) (ext.ProviderInvokeResult, *waiter) {
+	d.pane.toggle()
+	return ok()
 }
 
-// minAPIVersion は、この拡張機能が要る本体の拡張機能 API の版である（基本設計 1.4 の「古い本体での標準の拡張機能」。FR-271）。
-// 値は、使うメッセージのうち最後に足したものの版で、今は input/ask（${input:ID} の promptString。FR-298。API 0.21.0）である。
-// progress/report（resolveCommand の進み具合）は 0.14.0、pane/open の center と closeOnSelect（構成の候補と ${pickProcess} の一覧）は 0.10.0、
-// editor/state の workDir は 0.9.0 で足した。
-// #399 の切り替えの部品のメッセージを使い始める PR が、その版に上げる。
-const minAPIVersion = "0.21.0"
+// minAPIVersion は、この拡張機能が要る本体の拡張機能 API の版である（基本設計 1.4 の「古い本体での標準の拡張機能」。FR-306）。
+// 値は、使うメッセージのうち最後に足したものの版で、今は切り替えの部品（pane/open の switcher、子を指す view/update、
+// view/childSelect、popupKeys の children と子を切り替える action。API 0.23.0）である。
+// view/append と server.TextLog は 0.20.0、input/ask は 0.21.0、progress/report（resolveCommand の進み具合）は 0.14.0、
+// pane/open の center と closeOnSelect（構成の候補と ${pickProcess} の一覧）は 0.10.0、editor/state の workDir は 0.9.0 で足した。
+const minAPIVersion = "0.23.0"
 
 // apiSupported は、本体の拡張機能 API の版が minAPIVersion 以上かを返す。
 // 足りなければ、最初の 1 回だけ要る版をメッセージの行に出す。操作は、段階 2 の取り決めだけを使うものも含めてすべて断る（基本設計 1.4）。
-// FR-271 の振る舞いの一部（切り替えの部品はまだ使わない）なので、要件の注釈は付けない。
+// 前の形（1 つの部品のペイン、output/append）には代えない。
+//
+// req: FR-306
 func (d *debugger) apiSupported(op ext.Operation) bool {
 	d.mu.Lock()
 	old := ext.VersionLess(d.apiVersion, minAPIVersion)
@@ -956,6 +1000,7 @@ func (d *debugger) restartByRequest(s *session, w *waiter) {
 	d.mu.Lock()
 	s.halted = false
 	s.gen.Add(1)
+	d.pane.markDirty(secThreads, secScopes)
 	d.mu.Unlock()
 	d.clearExecution(s)
 	if err := c.call(ctx, "restart", restartArguments{Arguments: expand.Plain(s.spec.config)}, nil); err != nil {
@@ -1127,6 +1172,10 @@ func (d *debugger) startLocked(spec *runSpec, sync bool) (ext.ProviderInvokeResu
 	}
 	d.addSessionLocked(s)
 	d.last = spec
+	if d.settings.ui.autoOpen {
+		// launch か attach を送る前に開く（FR-277）。開くのはペインの goroutine で、セッションの開始を待たせない。
+		d.pane.requestOpen()
+	}
 	var w *waiter
 	if sync {
 		w = d.waitStopLocked(s, true)
@@ -1387,6 +1436,9 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focu
 	}
 	s.exec = &execPoint{path: path, line: line}
 	s.frame, s.hasFrame = frame, true
+	s.stopGen = 0
+	// ペインの区画は、止まった位置への移動（editor/open か再生の応答）を済ませた後に作り直す（markStopped の doc）。
+	defer d.pane.markDirty(secThreads, secScopes)
 	d.publishLocked(path)
 	w := d.takeStopWaiterForLocked(s)
 	buf, opened := d.buffers[path]
@@ -1504,6 +1556,8 @@ func (d *debugger) stoppedWithoutSource(s *session, gen uint64, reason string) {
 		d.mu.Unlock()
 		return
 	}
+	s.stopGen = 0
+	defer d.pane.markDirty(secThreads, secScopes)
 	w := d.takeStopWaiterForLocked(s)
 	multi := len(d.sessions) > 1
 	redirected := s.redirected
@@ -1605,6 +1659,11 @@ func (d *debugger) sessionEnded(s *session, abnormal, quiet bool) {
 	if last {
 		d.restartPending = false
 	}
+	d.pane.markDirty(secThreads, secScopes, secConsole)
+	if last && !restart && d.settings.ui.autoClose {
+		// すべてのセッションが終わったら閉じる（FR-277）。debug.restart で始め直すときは閉じない。
+		d.pane.requestClose()
+	}
 	// 再生中の操作が停止を待っていれば、止まらずに終わったので、カーソルを動かさずに応答させる。
 	// 開始に失敗したか、デバッグアダプターが異常終了したなら失敗にして、再生を止める（FR-19）。
 	// 待っているのが s でなければ（親のセッションの操作で、子のセッションが終わった）、待たせ続ける。
@@ -1656,6 +1715,8 @@ func (d *debugger) sessionEnded(s *session, abnormal, quiet bool) {
 //
 // 印は、行の昇順のブレークポイントの後に実行位置を並べる。1 つの行に複数の印があるときの表示の優先順位は本体が決める（基本設計 6.7）。
 func (d *debugger) publishLocked(path string) {
+	// ブレークポイントの区画も作り直す（ブレークポイントの列か検証の印が変わったとき、ここを通る）。
+	d.pane.markDirty(secBreakpoints)
 	buf, ok := d.buffers[path]
 	if !ok {
 		return

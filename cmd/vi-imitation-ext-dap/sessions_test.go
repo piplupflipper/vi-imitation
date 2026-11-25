@@ -469,7 +469,7 @@ func TestStaleStackTrace(t *testing.T) {
 		}
 		// フレームを選ぶと、選択に出て、世代が進む。
 		gen := s.gen.Load()
-		if !h.d.selectFrame(s, 1, 1000) {
+		if !h.d.selectFrame(s, 1000) {
 			t.Fatal("selectFrame = false")
 		}
 		if sel := h.d.currentSelection(); !sel.hasFrame || sel.frame != 1000 || sel.thread != 1 || s.gen.Load() == gen {
@@ -648,11 +648,8 @@ func TestExtensionKilledWithChildSessions(t *testing.T) {
 	h.openFT(srcPath, "go")
 	h.mustExec(cmdToggleBreakpoint, 2)
 	h.mustExec(cmdStart, 0)
-	var pids []int
-	for _, what := range []string{"adapter", "child", "adapter", "child"} {
-		pids = append(pids, h.waitPID(what))
-	}
 	h.waitSigns(bp2, exec2)
+	pids := waitFakePIDs(t, cmd.Process.Pid, 4)
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,21 @@
   "provides": [
     "breakpoint.toggle", "breakpoint.conditional", "breakpoint.clear",
     "debug.continue", "debug.pause", "debug.terminate", "debug.restart", "debug.runLast",
-    "debug.stepOver", "debug.stepIn", "debug.stepOut"
-  ]
+    "debug.stepOver", "debug.stepIn", "debug.stepOut", "debug.toggleUI"
+  ],
+  "contributes": {
+    "popupKeys": [
+      { "id": "dap.view.next", "keys": "<Tab>", "action": "view.child-next", "description": "DAP のペインの次の区画へ" },
+      { "id": "dap.view.prev", "keys": "<S-Tab>", "action": "view.child-prev", "description": "DAP のペインの前の区画へ" },
+      { "id": "dap.scopes.parent", "keys": "[[", "children": ["scopes"], "description": "親の項目へ移る" },
+      { "id": "dap.scopes.setValue", "keys": "s", "children": ["scopes"], "description": "変数の値を書き換える" },
+      { "id": "dap.threads.toggleSubtle", "keys": "t", "children": ["threads"], "description": "subtle のフレームを出すかを切り替える" },
+      { "id": "dap.threads.filter", "keys": "f", "children": ["threads"], "description": "フレームを絞り込む文字列を聞く" },
+      { "id": "dap.threads.invertFilter", "keys": "o", "children": ["threads"], "description": "フレームの絞り込みを反転する" },
+      { "id": "dap.threads.select", "keys": "s", "children": ["threads"], "description": "セッションかスレッドを、続行とステップ実行の送り先に選ぶ" },
+      { "id": "dap.breakpoints.delete", "keys": "d", "children": ["breakpoints"], "description": "ブレークポイントを消す" },
+      { "id": "dap.console.nextSession", "keys": "]s", "children": ["console"], "description": "出力を出すセッションを次へ" },
+      { "id": "dap.console.prevSession", "keys": "[s", "children": ["console"], "description": "出力を出すセッションを前へ" }
+    ]
+  }
 }

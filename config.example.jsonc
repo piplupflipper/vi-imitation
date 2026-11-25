@@ -532,6 +532,17 @@
           { "id": "debugpyPort", "type": "promptString", "description": "debugpy のポート", "default": "5678" },
           { "id": "remoteRoot", "type": "promptString", "description": "remoteRoot", "default": "/app" },
         ],
+        // デバッグの情報のペイン（<leader>du で開け閉めする）。既定は nvim-dap-view の既定（開け閉めは手で、最初は watches、下に 25%）で、
+        // ここはオーナーの nvim の値（始めたら開き、すべて終わったら閉じ、最初は scopes）にした。
+        // ペインの中では <Tab> と <S-Tab>（と ]v、[v）で区画を回し、区画の名前の後の [S] などのキーで直に移る
+        "ui": {
+          "autoOpen": true,
+          "autoClose": true,
+          "direction": "down",
+          "size": 25,
+          "sections": ["watches", "scopes", "exceptions", "breakpoints", "threads", "repl", "console"],
+          "defaultSection": "scopes",
+        },
       },
     },
     "activation": { "lsp": [{ "on": "filetype", "pattern": "python" }] },

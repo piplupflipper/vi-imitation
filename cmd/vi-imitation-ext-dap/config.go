@@ -30,7 +30,7 @@ import (
 //
 // 今までの 1 組の設定（adapter、adapterID、launch）も読み続ける（legacySettings）。
 // ${input:ID} の問いの表 inputs（FR-298）は、.vscode/launch.json の inputs と同じ形で読む（inputs.go）。
-// ui は、後の issue（FR-108）で読む。今は書いてあっても読み捨てる。
+// ペインと区画の項目 ui（FR-108、FR-277、FR-278）は uiSettings で読む（pane.go）。
 
 // トランスポート（アダプターのつなぎ方。FR-279）の名前である。
 const (
@@ -75,6 +75,8 @@ type settings struct {
 	inputs inputTable
 	// legacy は、今までの 1 組の設定の構成である。adapters か configurations を書き、1 組の設定を書かなければ nil。
 	legacy *legacySettings
+	// ui は、ペインと区画の設定である（FR-108、FR-277、FR-278）。
+	ui uiSettings
 }
 
 // legacySettings は、今までの 1 組の設定（adapter、adapterID、launch）である。
@@ -114,7 +116,10 @@ func defaultLegacy() *legacySettings {
 
 // defaultSettings は、設定を省いたときの値である。
 func defaultSettings() settings {
-	return settings{adapters: map[string]*adapterDef{}, configurations: map[string][]map[string]any{}, written: map[string][][]expand.Var{}, legacy: defaultLegacy()}
+	return settings{
+		adapters: map[string]*adapterDef{}, configurations: map[string][]map[string]any{}, written: map[string][][]expand.Var{},
+		legacy: defaultLegacy(), ui: defaultUISettings(),
+	}
 }
 
 // decodeJSON は、data を UseNumber で any へ読む（2^53 を超える整数を丸めないため。ext/expand の doc）。
@@ -205,6 +210,13 @@ func parseSettings(data []byte) (settings, error) {
 		return s, ierr
 	}
 	s.inputs = inputs
+	if raw, ok := top["ui"]; ok && raw != nil {
+		ui, err := parseUISettings(raw)
+		if err != nil {
+			return s, err
+		}
+		s.ui = ui
+	}
 	var raws struct {
 		Configurations map[string][]json.RawMessage `json:"configurations"`
 	}

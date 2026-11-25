@@ -9,7 +9,7 @@
 // 仕様: https://microsoft.github.io/debug-adapter-protocol/specification
 //
 // 引き受ける本体の操作（基本設計 5.5。FR-94）は次のとおりで、どれも provider/invoke には受け付けたかどうかだけを ok で返し、
-// 結果は後から sign/set、editor/open、message/show、output/append で届ける（基本設計 6 章の冒頭）。
+// 結果は後から sign/set、editor/open、message/show と、デバッグの情報のペイン（pane.go）で届ける（基本設計 6 章の冒頭）。
 // キーは本体の既定のキー（<leader>dc など。要件定義 4.11）である。
 // 段階 2 のコマンド（dap.start、dap.toggleBreakpoint など）は、この操作に置き換えた（#203）。
 //
@@ -20,10 +20,11 @@
 //   - debug.pause、debug.terminate: 一時停止する、デバッグを終える
 //   - debug.restart、debug.runLast: 終えてから前回の設定で始め直す、前回の設定で始める
 //   - debug.stepOver、debug.stepIn、debug.stepOut: ステップ実行
+//   - debug.toggleUI: デバッグの情報のペイン（スコープ、スレッド、ブレークポイント、出力などの区画。FR-108）を開け閉めする
 //
 // breakpoint.conditional のほかは引数を取らない。本体のコマンドラインから引数を付けて呼んだ（:debug.continue foo）ら、
 // ok を false で返して知らせる（noArgs）。
-// debug.toggleUI（DAP のペイン。FR-108）は、ペインを開く pane/open ができるまで引き受けない。
+// デバッグ対象の出力は、ペインの出力の区画に出す（段階 2 の output/append の dap の欄には書かない）。
 //
 // 状態の持ち方と、本体との取り決めの詳細は debugger の doc に、DAP の手順は session の doc にある。
 // 設定（initialize の settings）の項目は settings の doc にある。

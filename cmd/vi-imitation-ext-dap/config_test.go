@@ -772,6 +772,10 @@ func TestConfigExample(t *testing.T) {
 	if s.legacy != nil {
 		t.Error("the example keeps the default dlv dap")
 	}
+	// ペインはオーナーの nvim の値（始めたら開き、終わったら閉じ、最初はスコープ、7 つの区画）にする。
+	if u := s.ui; !u.autoOpen || !u.autoClose || u.defaultSection != secScopes || !slices.Equal(u.sections, allSections) {
+		t.Errorf("ui = %+v", u)
+	}
 	for name, transport := range map[string]string{"go": transportClientSocket, "python": transportStdio, "debugpy": transportStdio, "pwa-node": transportServerPort, "pwa-chrome": transportServerPort} {
 		if a := s.adapters[name]; a == nil || a.transport != transport {
 			t.Errorf("adapters[%s] = %+v, want %s", name, a, transport)
@@ -796,6 +800,8 @@ func TestConfigExample(t *testing.T) {
 }
 
 // TestOldHost は、本体の拡張機能 API の版が minAPIVersion より古ければ、どの操作も断り、要る版を 1 回だけ知らせることを確かめる。
+//
+// req: FR-306
 func TestOldHost(t *testing.T) {
 	h := newHost(t, "")
 	h.d.mu.Lock()

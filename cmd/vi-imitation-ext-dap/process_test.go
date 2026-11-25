@@ -60,6 +60,65 @@ func (h *host) waitPID(prefix string) int {
 	return 0
 }
 
+// waitFakePIDs は、root の子孫のうち、テスト用のアダプター（fakeAdapter。デバッグ対象の代役の -sleep を含む）のプロセスが n 個になるまで待ち、
+// その pid を返す。拡張機能を別のプロセスで動かすテストは、出力の写しを本体の役から読めない（ペインを開いていない）ので、/proc から探す。
+func waitFakePIDs(t *testing.T, root, n int) []int {
+	t.Helper()
+	deadline := time.Now().Add(testTimeout)
+	var found []int
+	for time.Now().Before(deadline) {
+		found = found[:0]
+		entries, _ := os.ReadDir("/proc")
+		for _, e := range entries {
+			var pid int
+			if _, err := fmt.Sscanf(e.Name(), "%d", &pid); err != nil || gone(pid) {
+				continue
+			}
+			cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+			if err != nil || !strings.HasPrefix(string(cmdline), fakeAdapter+"\x00") && string(cmdline) != fakeAdapter {
+				continue
+			}
+			if descends(pid, root) {
+				found = append(found, pid)
+			}
+		}
+		if len(found) == n {
+			return found
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("fake adapter processes under %d = %v, want %d", root, found, n)
+	return nil
+}
+
+// descends は、pid が root の子孫かを、/proc の親のプロセス ID でたどって返す。
+func descends(pid, root int) bool {
+	for range 64 {
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			return false
+		}
+		s := string(data)
+		i := strings.LastIndexByte(s, ')')
+		var state string
+		var ppid int
+		if i < 0 {
+			return false
+		}
+		if _, err := fmt.Sscanf(s[i+1:], " %s %d", &state, &ppid); err != nil {
+			return false
+		}
+		if ppid == root {
+			return true
+		}
+		if ppid <= 1 {
+			return false
+		}
+		pid = ppid
+	}
+	return false
+}
+
 // TestKillTerminatesDebuggee は、session.kill がデバッグアダプターに先に SIGTERM を送り、
 // デバッグアダプターが別のプロセスグループで起動したデバッグ対象を終わらせられることを確かめる（PR #58 のレビューの必須 1）。
 //
@@ -111,16 +170,16 @@ func TestExtensionKilled(t *testing.T) {
 	h.open(1, srcPath, srcText)
 	h.mustExec(cmdToggleBreakpoint, 2)
 	h.mustExec(cmdStart, 0)
-	adapter := h.waitPID("adapter")
-	child := h.waitPID("child")
 	h.waitSigns(bp2, exec2)
+	pids := waitFakePIDs(t, cmd.Process.Pid, 2)
 
 	// 本体の強制終了と同じく、拡張機能のプロセスグループへ SIGKILL を送る。
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	waitGone(t, "adapter", adapter)
-	waitGone(t, "debuggee", child)
+	for _, pid := range pids {
+		waitGone(t, "adapter or debuggee", pid)
+	}
 }
 
 // TestExtensionKilledOrphaningAdapter は、SIGTERM で子を残して終わるアダプター（vscode-js-debug の dapDebugServer.js の代役）でも、
@@ -152,16 +211,18 @@ func TestExtensionKilledOrphaningAdapter(t *testing.T) {
 	h.open(1, srcPath, srcText)
 	h.mustExec(cmdToggleBreakpoint, 2)
 	h.mustExec(cmdStart, 0)
-	adapter := h.waitPID("adapter")
-	child := h.waitPID("child")
-	killAtCleanup(t, child)
 	h.waitSigns(bp2, exec2)
+	pids := waitFakePIDs(t, cmd.Process.Pid, 2)
+	for _, pid := range pids {
+		killAtCleanup(t, pid)
+	}
 
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	waitGone(t, "adapter", adapter)
-	waitGone(t, "debuggee", child)
+	for _, pid := range pids {
+		waitGone(t, "adapter or debuggee", pid)
+	}
 }
 
 // sessionOf は、pid のプロセスのセッションの ID と制御端末（tty_nr。無ければ 0）を /proc/<pid>/stat から読む。

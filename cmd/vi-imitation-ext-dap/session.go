@@ -31,9 +31,6 @@ import (
 // アドレスは "unix:" に続けてソケットのパスを書く形で、dlv の --client-addr の書き方に合わせる。
 const clientAddrPlaceholder = "${clientAddr}"
 
-// outputChannel は、output/append で書き足す欄の名前である（基本設計 6.4）。
-const outputChannel = "dap"
-
 // session は、1 つのデバッグのセッションである。デバッグアダプターとの DAP の接続と、拡張機能が起動したならその子プロセスを持つ。
 //
 // 拡張機能はセッションを同時に複数持てる（FR-285）。最上位のセッションは debug.continue などで始め、
@@ -103,8 +100,13 @@ type session struct {
 	// gen は、遅れて届いた応答を捨てるための世代の番号である（FR-287。基本設計 6.4 の「セッションと状態の分離」）。
 	// 止まった、続けた、続行とステップ実行と一時停止を送った、スレッドかフレームかセッションを選び直した、のたびに 1 つ進める。
 	gen atomic.Uint64
-	// output は、このセッションのデバッグ対象の出力の写しである（基本設計 6.4。後の issue のデバッグのペインの出力の区画が使う）。
+	// output は、このセッションのデバッグ対象の出力の写しである（基本設計 6.4。ペインの出力の区画に結びつける。FR-291）。
 	output *server.TextLog
+	// crMu は crPending を守る。crPending は、出力の種類ごとの、前の塊が \r で終わったこと（次の塊の先頭の \n を捨てる）である（normalizeCR）。
+	// escPending は、出力の種類ごとの、前の塊の末尾で途切れた端末の制御の並び（stripEscapes）である。どちらも crMu で守る。
+	crMu       sync.Mutex
+	crPending  map[string]bool
+	escPending map[string]string
 	// reply は、子のセッションで、親が受けた startDebugging へ応答する関数である。最上位のセッションでは nil。
 	// replyOnce で 1 回だけ呼ぶ（replyStart）。
 	reply     func(error)
@@ -124,13 +126,23 @@ type session struct {
 	halted bool
 	// exec は、止まった位置である。止まっていないか、位置が分からなければ nil。
 	exec *execPoint
-	// thread は、選んでいるスレッドの ID である（最後に止まったスレッド）。hasThread が false なら未知。
+	// thread は、選んでいるスレッド（続行、ステップ実行、一時停止の送り先）の ID である。止まったときは止まったスレッドにし、
+	// スレッドの区画の s で選び直す（FR-303）。hasThread が false なら未知。
 	// vscode-js-debug はスレッドの ID に 0 を使うので、0 を未知の印にしない（2026-11-25 に確かめた）。
 	thread    int
 	hasThread bool
-	// frame は、選んでいるフレームの ID である（止まったスレッドの先頭のフレーム）。hasFrame が false なら未知。
+	// stoppedThread は、止まった理由のあるスレッド（stopped の event の threadId。省かれたら threads の最初のスレッド）である。
+	// 選び直しでは変えない（スレッドの区画の「止まっている」の印。nvim-dap の stopped_thread_id）。hasStoppedThread が false なら未知。
+	stoppedThread    int
+	hasStoppedThread bool
+	// frame は、選んでいるフレーム（スコープの区画が出すフレーム）の ID である。止まったときは止まったスレッドの先頭のフレームにし、
+	// スレッドの区画のフレームの <CR> で選び直す。フレームを選び直しても、thread（操作の送り先）は変えない（nvim-dap の _frame_set と同じ）。
+	// hasFrame が false なら未知。
 	frame    int
 	hasFrame bool
+	// stopGen は、止まった位置を出し終える前（markStopped の後、showStopped か stoppedWithoutSource の前）の世代である。
+	// 0 なら出し終えた。世代が進めば（続けた、選び直した）意味を失う。ペインは、この間は区画を読まない（stopping）。
+	stopGen uint64
 	// redirected は、今のセッションが動いていたので、続行かステップ実行をこのセッションへ替えて送ったことを表す（targetLocked）。
 	// 次の停止の知らせに添えて消す。続けて出る停止の知らせで、替えたことの知らせが上書きされて読めないため（PR #414 の再レビューの推奨 B）。
 	redirected bool
@@ -331,6 +343,12 @@ func (s *session) run() {
 	}()
 	err := s.start()
 	s.replyStart(err)
+	if err == nil {
+		// 開始が成り立った（launch か attach の応答を受けた）。止まらずに動き続けるセッション（ブレークポイントを置かずに始めた、
+		// 動いているサーバーへ attach した）でも、繋がったことと、そのスレッドを区画に出す（PR #423 の再レビューの必須 1）。
+		// スレッドの一覧は、ここで 1 回読み、その後は thread の event で足し引きする（動いている間に request を送らない）。
+		s.d.pane.markDirty(secThreads, secScopes)
+	}
 	switch {
 	case err != nil && s.stopping.Load():
 		// 始める途中で終えた（debug.terminate、親のセッションの終わり）。ログにだけ書く。
@@ -589,6 +607,7 @@ func (s *session) resume(ctx context.Context, command string) error {
 	wasHalted := s.halted
 	s.halted = false
 	gen := s.gen.Add(1)
+	s.d.pane.markDirty(secThreads, secScopes)
 	s.d.mu.Unlock()
 	if err := c.call(ctx, command, threadArguments{ThreadID: tid}, nil); err != nil {
 		s.d.mu.Lock()
@@ -609,6 +628,7 @@ func (s *session) pause(ctx context.Context, tid int) error {
 		return errDAPClosed
 	}
 	s.gen.Add(1)
+	s.d.pane.markDirty(secThreads, secScopes)
 	return c.call(ctx, "pause", threadArguments{ThreadID: tid}, nil)
 }
 
@@ -844,6 +864,13 @@ func (s *session) handleEvent(e dapEvent) {
 		if body.Reason == "changed" && body.Breakpoint.ID != 0 {
 			s.d.breakpointChanged(s, body.Breakpoint)
 		}
+	case "thread":
+		var body threadEvent
+		if err := json.Unmarshal(e.body, &body); err != nil {
+			s.d.logf("thread event: %v", err)
+			return
+		}
+		s.d.pane.threadEvent(s, body)
 	case "exited":
 		var body exitedEvent
 		if err := json.Unmarshal(e.body, &body); err == nil {
@@ -875,7 +902,13 @@ func (s *session) handleEvent(e dapEvent) {
 		if body.Category == "telemetry" {
 			return
 		}
-		s.appendOutput(body.Output)
+		if body.Category == "important" {
+			// 目立つように出すことの勧め（同仕様）なので、メッセージの行にも出す（FR-291）。
+			if text := strings.TrimSpace(body.Output); text != "" {
+				s.d.showInfo(text)
+			}
+		}
+		s.appendOutput(body.Output, body.Category)
 	default:
 		if command, ok := strings.CutPrefix(e.name, lateFailureEvent); ok {
 			// 応答を待ち終えた request へ、後から届いた失敗の応答（dlv の restart のビルドの失敗。PR #414 のレビューの推奨 3）。
@@ -903,12 +936,166 @@ func (s *session) handleEvent(e dapEvent) {
 	}
 }
 
-// appendOutput は、デバッグ対象の出力を、セッションの写しと output/append の dap の欄へ書き足す（基本設計 6.4）。
-func (s *session) appendOutput(text string) {
-	if err := s.output.Append(text, ""); err != nil {
+// appendOutput は、デバッグ対象の出力を、セッションの写し（出力の区画）へ書き足す（基本設計 6.4。FR-291）。
+// category は DAP の output の event の category で、stderr は diagnostic.error、console と important は comment の色で書き足す（仮）。
+// 写しが出力の区画に結びついていれば view/append で送り、ペインを閉じている間は写しにだけ足す（FR-273）。
+// 段階 2 の output/append の dap の欄へは書かない（基本設計 1.4 の「output/append」）。
+// 改行の \r\n は \n にし、\n の前でない \r も \n にする（normalizeCR）。
+//
+// req: FR-291
+func (s *session) appendOutput(text, category string) {
+	text = s.normalizeCR(category, s.stripEscapes(category, text))
+	style := ""
+	switch category {
+	case "stderr":
+		style = "diagnostic.error"
+	case "console", "important":
+		style = "comment"
+	}
+	if err := s.output.Append(text, style); err != nil {
 		s.d.logf("output log: %v", err)
 	}
-	s.d.appendOutput(text)
+	if tap := s.d.outputTap; tap != nil {
+		tap(text)
+	}
+}
+
+// appendStream は、アダプターの標準出力と標準エラー出力（clientSocket の dlv dap がデバッグ対象の出力を書く所）を書き足す。
+func (s *session) appendStream(text string) { s.appendOutput(text, "") }
+
+// stripEscapes は、出力から端末の制御の並び（ESC で始まるもの。pytest や開発用のサーバーが書く SGR の色 \x1b[31m など）を取り除く
+// （PR #423 のレビューの推奨 2）。色に直さないのは、view/append の highlights は本体の色の表の名前（7.1）しか持てず、
+// 表に端末の 16 色に当たる名前が無いためである。並びが塊の境目で途切れたら、残りを覚えて、同じ category の次の塊と一緒に取り除く。
+// 取り除く並びの形は escapeEnd にある。
+func (s *session) stripEscapes(category, text string) string {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	if p := s.escPending[category]; p != "" {
+		text = p + text
+		delete(s.escPending, category)
+	}
+	if !strings.Contains(text, "\x1b") {
+		return text
+	}
+	out, rest := stripEscapeSeqs(text)
+	if rest != "" {
+		if s.escPending == nil {
+			s.escPending = map[string]string{}
+		}
+		s.escPending[category] = rest
+	}
+	return out
+}
+
+// maxEscapeLen は、途切れた制御の並びとして覚える長さの上限である（仮）。超えたら並びではないとみなし、ESC だけを捨てる。
+const maxEscapeLen = 256
+
+// stripEscapeSeqs は、text から制御の並びを取り除いたものと、末尾で途切れた並び（無ければ空）を返す。
+func stripEscapeSeqs(text string) (out, rest string) {
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		if text[i] != 0x1b {
+			b.WriteByte(text[i])
+			i++
+			continue
+		}
+		end := escapeEnd(text, i)
+		if end < 0 {
+			if len(text)-i <= maxEscapeLen {
+				return b.String(), text[i:]
+			}
+			i++ // 長すぎる。ESC だけを捨てる
+			continue
+		}
+		i = end
+	}
+	return b.String(), ""
+}
+
+// escapeEnd は、text[i] の ESC で始まる並びの次の位置（text[i:end] を捨てる）を返す。並びが text の中で終わっていなければ -1 を返す。
+// 並びの形は ECMA-48（5th edition）の 5 章（エスケープシーケンス、制御シーケンス、制御文字列）に沿う（PR #423 の再レビューの推奨 3）。
+//
+//   - CSI（ESC [）: 引数のバイト 0x30〜0x3f と中間のバイト 0x20〜0x2f の後の、終わりのバイト 0x40〜0x7e まで。
+//     途中にほかのバイト（制御文字、多バイト文字）が来たら、並びが壊れているとみなし、そのバイトの前までを捨てて本文に戻す
+//   - 制御文字列（OSC の ESC ]、DCS の ESC P、SOS の ESC X、PM の ESC ^、APC の ESC _）: ST（ESC \）か BEL まで。
+//     改行か別の ESC が来たら、壊れているとみなし、その前までを捨てる（行をまたいで本文を待たない）
+//   - nF（ESC の後に中間のバイト 0x20〜0x2f が続き、終わりのバイト 0x30〜0x7e。文字集合を指す ESC ( B など）
+//   - Fp、Fe、Fs（ESC と 0x30〜0x7e の 1 バイト）
+//   - ESC の後が制御文字か多バイト文字なら、ESC だけを捨てる（文字の途中で切らず、不正な UTF-8 を作らない）
+func escapeEnd(text string, i int) int {
+	n := len(text)
+	if i+1 >= n {
+		return -1
+	}
+	c := text[i+1]
+	switch {
+	case c == '[':
+		for j := i + 2; j < n; j++ {
+			switch b := text[j]; {
+			case b >= 0x40 && b <= 0x7e:
+				return j + 1
+			case b < 0x20 || b > 0x3f:
+				return j
+			}
+		}
+		return -1
+	case c == ']' || c == 'P' || c == 'X' || c == '^' || c == '_':
+		for j := i + 2; j < n; j++ {
+			switch text[j] {
+			case 0x07:
+				return j + 1
+			case '\n', '\r':
+				return j
+			case 0x1b:
+				if j+1 >= n {
+					return -1
+				}
+				if text[j+1] == '\\' {
+					return j + 2
+				}
+				return j
+			}
+		}
+		return -1
+	case c >= 0x20 && c <= 0x2f:
+		j := i + 2
+		for j < n && text[j] >= 0x20 && text[j] <= 0x2f {
+			j++
+		}
+		if j >= n {
+			return -1
+		}
+		if b := text[j]; b >= 0x30 && b <= 0x7e {
+			return j + 1
+		}
+		return j
+	case c >= 0x30 && c <= 0x7e:
+		return i + 2
+	}
+	return i + 1
+}
+
+// normalizeCR は、出力の改行の \r を扱う（PR #405 の未確認事項の決め）。\r\n は \n にし、\n の前でない \r（進み具合の表示が行を
+// 書き直すもの）も \n にする。写しと本体の行は \r を ^M で出すうえ、行の書き直しはできないので、書き直した行を次の行に並べる。
+// 塊が \r で終わったときは \n にしておき、次の塊（同じ category）の先頭の \n を捨てる。\r\n が塊の境目で分かれても行が増えない。
+func (s *session) normalizeCR(category, text string) string {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	if s.crPending[category] {
+		text = strings.TrimPrefix(text, "\n")
+		delete(s.crPending, category)
+	}
+	if !strings.Contains(text, "\r") {
+		return text
+	}
+	if strings.HasSuffix(text, "\r") {
+		if s.crPending == nil {
+			s.crPending = map[string]bool{}
+		}
+		s.crPending[category] = true
+	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	return strings.ReplaceAll(text, "\r", "\n")
 }
 
 // startChild は、アダプターからの startDebugging（seq の逆向きの request）を受けて、子のセッションを始める（FR-285。基本設計 6.4 の
@@ -980,6 +1167,7 @@ func (s *session) stopped(body *stoppedEvent) {
 		s.d.mu.Lock()
 		if s.gen.Load() == gen {
 			s.thread, s.hasThread = tid, true
+			s.stoppedThread, s.hasStoppedThread = tid, true
 		}
 		s.d.mu.Unlock()
 	}
