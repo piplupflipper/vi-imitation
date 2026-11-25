@@ -17,7 +17,7 @@ import (
 //     [BufferDisposeRequest]、[DiffStartRequest]、[PaneOpenRequest]、[EditorListRequest]、[EditorExecuteRequest]、
 //     [OptionSetRequest]、[OptionGetRequest]
 //   - 拡張機能からの通知: [DecorationSet]、[MessageShow]、[DiagnosticSet]、[SignSet]、[PopupShow]、[OutputAppend]、
-//     [ViewUpdate]、[ViewClose]、[BandSet]、[VirtualTextSet]
+//     [ViewUpdate]、[ViewClose]、[ViewAppend]、[BandSet]、[VirtualTextSet]
 //   - Host が作るもの: [StateChange]、[QueryResult]
 //
 // # 拡張機能からのリクエストの扱い
@@ -372,6 +372,19 @@ type ViewClose struct {
 	Params    ext.ViewCloseParams
 }
 
+// ViewAppend は、拡張機能からの view/append の通知である（FR-272）。読めないもの（ext.ViewAppendParams.Validate の誤り）は Host が捨てる。
+// Host は、同じ拡張機能の同じ部品（View と Child の組）への書き足しが、イベントループへ渡す前の列の末尾で続けば、
+// ext.ViewAppendParams.Merge で 1 件につなぐ（拡張機能ごとの列の上限に、出力の行の数で当たらないようにする）。
+type ViewAppend struct {
+	Extension string
+	Params    ext.ViewAppendParams
+}
+
+// SameView は、a と b が同じ拡張機能の同じ部品（View と Child の組）への書き足しかを返す。
+func (a *ViewAppend) SameView(b *ViewAppend) bool {
+	return a.Extension == b.Extension && a.Params.View == b.Params.View && a.Params.Child == b.Params.Child
+}
+
 // StateChange は、拡張機能の状態が変わったことを知らせる。
 // 異常による遷移（再起動待ちと無効）では、Err に異常の内容が入る。利用者への 1 行のメッセージに使う（基本設計 8 章）。
 type StateChange struct {
@@ -434,6 +447,7 @@ func (*OptionSetRequest) isEvent()      {}
 func (*OptionGetRequest) isEvent()      {}
 func (*ViewUpdate) isEvent()            {}
 func (*ViewClose) isEvent()             {}
+func (*ViewAppend) isEvent()            {}
 func (*StateChange) isEvent()           {}
 func (*QueryResult) isEvent()           {}
 
@@ -461,6 +475,22 @@ func (h *Host) pushLocked(ev Event, r *run) error {
 	default:
 	}
 	return nil
+}
+
+// mergeAppendLocked は、列の末尾が、同じプロセス r から届いた同じ部品への書き足しなら、a をそれにつないで true を返す。
+// つないだ件はまだイベントループへ渡していない（pump は列から取り出してから渡す）ので、書き換えてよい。
+// 末尾でなければ（間に別のイベントがあれば）つながず、届いた順を変えない。
+func (h *Host) mergeAppendLocked(a *ViewAppend, r *run) bool {
+	n := len(h.queue)
+	if n == 0 || h.queue[n-1].r != r {
+		return false
+	}
+	last, ok := h.queue[n-1].ev.(*ViewAppend)
+	if !ok || !last.SameView(a) {
+		return false
+	}
+	last.Params.Merge(a.Params)
+	return true
 }
 
 // purgeLocked は、プロセス r から届いたイベントのうち、まだ渡していないものを捨てる。

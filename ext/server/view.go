@@ -155,6 +155,10 @@ func (s *Server) viewNotification(ctx context.Context, n *rpc.Notification) {
 		s.logf("%v", err)
 		return
 	}
+	if e.Kind == ViewClosed {
+		// 拡張機能のフックより先に、閉じた部品に結びついた写しを外す（TextLog。FR-273）。
+		s.viewClosed(e.View)
+	}
 	if s.onView != nil {
 		s.hook("view hook", func() { s.onView(ctx, &e) })
 	}

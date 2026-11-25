@@ -108,4 +108,6 @@ package ext
 // （VirtualTextSetParams。virtualtext.go）を足した（#368。FR-230〜FR-234）。
 // 古い本体は、Attr を付けた範囲のある decoration/set の通知の全体を誤りとして捨て（styles の項目を文字列として読めないため）、
 // virtualText/set を知らない通知として捨てる。直に付ける色を使う拡張機能は、initialize の apiVersion を見てから付ける。
-const APIVersion = "0.19.0"
+// 0.20.0 で、テキストの部品の末尾へ書き足す view/append（ViewAppendParams。view.go）を足した（#402。FR-272、FR-273）。
+// 古い本体は view/append を知らない通知として捨てる。使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
+const APIVersion = "0.20.0"

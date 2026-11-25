@@ -1,6 +1,11 @@
 package ext
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"unicode/utf8"
+)
 
 // ポップアップと表示の部品（基本設計 1.4、5.3 の段階 3 の表。FR-68〜FR-72）。
 //
@@ -24,8 +29,9 @@ import "fmt"
 //   - view/expand（本体 → 拡張機能、通知）: 木の項目を利用者が開閉したことを知らせる（ViewExpandParams）
 //   - view/tabChange（本体 → 拡張機能、通知）: 分割したペインを開いた元の client のカーソルのあるタブが替わったことを知らせる
 //     （ViewTabChangeParams。API 0.10.0 で足した）
+//   - view/append（拡張機能 → 本体、通知）: 開いたテキストの部品の末尾へテキストを書き足す（ViewAppendParams。API 0.20.0 で足した）
 //
-// 本体は、閉じた後や知らない ID の view/update と view/close を黙って捨てる（閉じた知らせと行き違いうるため）。
+// 本体は、閉じた後や知らない ID の view/update、view/append、view/close を黙って捨てる（閉じた知らせと行き違いうるため）。
 const (
 	// MethodPopupOpen は、拡張機能から本体へのリクエストである。params は PopupOpenParams、result は PopupOpenResult。
 	MethodPopupOpen = "popup/open"
@@ -47,6 +53,8 @@ const (
 	MethodViewExpand = "view/expand"
 	// MethodViewTabChange は、本体から拡張機能への通知である。params は ViewTabChangeParams。
 	MethodViewTabChange = "view/tabChange"
+	// MethodViewAppend は、拡張機能から本体への通知である。params は ViewAppendParams。
+	MethodViewAppend = "view/append"
 )
 
 // ViewID は、本体が開いたポップアップに付けた番号である。本体の中で一意で、使い回さない。0 は使わない。
@@ -422,6 +430,78 @@ type ViewUpdateParams struct {
 	View      ViewID        `json:"view"`
 	Component ViewComponent `json:"component"`
 	Seq       uint64        `json:"seq,omitempty"`
+}
+
+// ViewAppendParams は、view/append の params である（基本設計 1.4 の「末尾への書き足し」。FR-272。API 0.20.0 で足した）。
+//
+// 本体は、開いたテキストの部品（ViewText）の中身の末尾へ Text を書き足す。部品の全体を送り直さない。
+// 中身の末尾が改行で終わっていなければ、その行に続ける。行の数え方と上限は AppendViewText と ViewTextOverflow のとおりで、
+// 行数が ViewTextMaxLines を超えたら古い行から捨て、1 行が ViewTextMaxLineBytes を超えたら文字の境目で次の行へ送る。
+// 書き足す前に部品のカーソルが最後の行にあれば、書き足した後の最後の行へカーソルを動かして末尾に追従し、
+// 利用者が最後の行より上へカーソルを動かしている間は、見ている行とカーソルを動かさない。
+// 閉じた後、知らない ID、テキストでない部品への書き足しは、view/update と同じく黙って捨てる。
+// Format が Markdown の部品へ書き足したテキストは、コードの囲みの行を除かずにそのまま出す。
+//
+// 閉じた部品を開き直したときに中身を戻すには、拡張機能の側で写しを持つ（ext/server の TextLog。FR-273）。
+type ViewAppendParams struct {
+	View ViewID `json:"view"`
+	// Child は、切り替えの部品（FR-269）の子の ID である。切り替えの部品はまだ無いので、空でなければ本体は知らない子として捨てる。
+	Child string `json:"child,omitempty"`
+	// Text は、書き足すテキストである。改行を含んでよい。不正な UTF-8 を含む通知は、本体がログに残して捨てる。
+	Text string `json:"text"`
+	// Highlights は、Text の中の色を付ける範囲である。位置は Text の中のバイトの位置で、Text の外を指せない。
+	// 色の違う断片を 1 件の中に並べて持てる（DAP の stdout と stderr）。
+	Highlights []ViewSpan `json:"highlights,omitempty"`
+}
+
+// Validate は、Text が正しい UTF-8 であることと、Highlights の範囲が Text の中にあることを検査する。
+func (p *ViewAppendParams) Validate() error {
+	if !utf8.ValidString(p.Text) {
+		return fmt.Errorf("text が不正な UTF-8 を含む")
+	}
+	for i, s := range p.Highlights {
+		if s.Start < 0 || s.End < s.Start || s.End > len(p.Text) {
+			return fmt.Errorf("highlights[%d] が text の外を指す", i)
+		}
+	}
+	return nil
+}
+
+// Merge は、同じ部品（View と Child の組）への後の書き足し q を、p の後ろへつないで 1 件にする。
+// q の Highlights は p の Text の長さだけずらして足す。
+// つないだ Text が、それだけで ViewTextMaxLines を超える行を持つなら、古い行を捨てる。捨てた後の Text は改行で始め、
+// 本体の中身に当てたときに、書き足す前の中身の行（と最後の行に続けた行）も捨てられるようにする。
+// このため、つないで捨てた 1 件を当てた結果は、つながずに順に当てた結果と同じになる（本体が拡張機能の応答を待つ間に
+// 取っておく列で使う。基本設計 1.4 の「待ちの間」）。
+func (p *ViewAppendParams) Merge(q ViewAppendParams) {
+	shift := len(p.Text)
+	p.Text += q.Text
+	p.Highlights = slices.Clip(p.Highlights) // 呼び出し側の列の後ろへ書き込まない
+	for _, s := range q.Highlights {
+		p.Highlights = append(p.Highlights, ViewSpan{Start: s.Start + shift, End: s.End + shift, Style: s.Style})
+	}
+	n := strings.Count(p.Text, "\n") + 1
+	if strings.HasSuffix(p.Text, "\n") {
+		n--
+	}
+	d := ViewTextOverflow(n)
+	if d == 0 {
+		return
+	}
+	// 捨てる d 行の最後の行の終わりの改行の位置から残す。
+	pos := -1
+	for range d {
+		pos += 1 + strings.IndexByte(p.Text[pos+1:], '\n')
+	}
+	p.Text = p.Text[pos:]
+	var hs []ViewSpan
+	for _, s := range p.Highlights {
+		if s.End <= pos {
+			continue
+		}
+		hs = append(hs, ViewSpan{Start: max(s.Start-pos, 0), End: s.End - pos, Style: s.Style})
+	}
+	p.Highlights = hs
 }
 
 // ViewCloseParams は、view/close の params である。

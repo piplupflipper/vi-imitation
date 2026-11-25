@@ -215,6 +215,10 @@ func (e *Editor) wait(q *exthost.Query, tag queryTag) *exthost.QueryResult {
 // true で返す（基本設計 5.3。FR-178。PR #345 のレビューの必須 1）。進み具合は画面の表示だけを変え、バッファもカーソルも変えないので、
 // 実行中の操作の途中で当てても操作に響かない。保存の前の整形（buffer/willSave の待ち）のように、待っている間にこそ出したい知らせだからである。
 // 取っておかないので、取っておく列の上限にも数えない（同じレビューの必須 2）。
+//
+// テキストの部品への書き足し（ViewAppend）は差分なので、上限を超えたときに捨てる通知に数えず、同じ部品への続く書き足しを
+// 1 件につなぐ（mergeHeldAppend）。つなげない書き足しで上限を超え、捨てられる通知も無ければ、届いた書き足しを捨て、
+// 処理し終えたときに、その部品の末尾に捨てたことを表す行を足す（基本設計 1.4 の「待ちの間」）。
 // 進み具合をその場で当てるので、拡張機能が止まったことを表す状態の変化（StateChange）を取っておくときは、その拡張機能の進み具合を
 // その場で消す（clearProgressNow）。取っておいた状態の変化を後で処理するときに消すと、待ちの間に起動し直した後の進み具合まで消えるためである。
 func (e *Editor) hold(ev exthost.Event) (redraw bool) {
@@ -229,6 +233,10 @@ func (e *Editor) hold(ev exthost.Event) (redraw bool) {
 		return true
 	case *exthost.StateChange:
 		redraw = e.clearProgressNow(s)
+	case *exthost.ViewAppend:
+		if e.mergeHeldAppend(s) {
+			return false
+		}
 	}
 	e.held = append(e.held, ev)
 	limit := e.cfg.Host.MaxQueuedEvents
@@ -249,6 +257,14 @@ func (e *Editor) hold(ev exthost.Event) (redraw bool) {
 			break
 		}
 	}
+	if a, ok := ev.(*exthost.ViewAppend); ok && drop < 0 {
+		// 書き足しだけで上限を超えた（つなげない書き足しが、開いている部品の数だけある）。届いた書き足しを捨て、
+		// 処理し終えたら、捨てた部品の末尾に捨てたことを表す行を足す（基本設計 1.4 の「待ちの間」）。
+		e.log.Warn("取っておくイベントが上限を超えたので書き足しを捨てる", "extension", a.Extension, "view", a.Params.View)
+		e.held = e.held[:len(e.held)-1]
+		e.noteAppendLost(a)
+		return redraw
+	}
 	if drop < 0 {
 		for i, h := range e.held {
 			if r, ok := h.(request); ok {
@@ -264,6 +280,34 @@ func (e *Editor) hold(ev exthost.Event) (redraw bool) {
 	e.log.Warn("取っておくイベントが上限を超えたので捨てる", "type", fmt.Sprintf("%T", e.held[drop]))
 	e.held = append(e.held[:drop], e.held[drop+1:]...)
 	return redraw
+}
+
+// mergeHeldAppend は、取っておく列に、同じ部品（拡張機能、View、Child の組）への書き足しがあり、それより後に同じ部品への
+// view/update と view/close が無ければ、a をその書き足しにつないで true を返す（基本設計 1.4 の「待ちの間」。PR #401 のレビューの必須 4）。
+// 列の中で隣り合っていなくてよく、間にほかの部品やほかの通知があってもつなぐ。
+// 書き足しは差分なので、1 件でも捨てると本体の中身が欠ける。つなぐので、列の書き足しの件数は出力の行の数に比例しない。
+// つないだテキストが行数の上限を超えたら、ext.ViewAppendParams.Merge が古い行を捨てる（当てた結果は、つながずに当てたときと同じ）。
+//
+// req: FR-272
+func (e *Editor) mergeHeldAppend(a *exthost.ViewAppend) bool {
+	for i := len(e.held) - 1; i >= 0; i-- {
+		switch h := e.held[i].(type) {
+		case *exthost.ViewAppend:
+			if h.SameView(a) {
+				h.Params.Merge(a.Params)
+				return true
+			}
+		case *exthost.ViewUpdate:
+			if h.Extension == a.Extension && h.Params.View == a.Params.View {
+				return false
+			}
+		case *exthost.ViewClose:
+			if h.Extension == a.Extension && h.Params.View == a.Params.View {
+				return false
+			}
+		}
+	}
+	return false
 }
 
 // trackDeferred は、Feed などが保留した操作 d を、送った問い合わせと結びつける。

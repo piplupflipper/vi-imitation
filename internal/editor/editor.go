@@ -432,6 +432,9 @@ type Editor struct {
 
 	// held は、入れ子の待ちの間に届き、処理せずに取っておいた拡張機能のイベントである。
 	held []exthost.Event
+	// appendLost は、held が上限を超えて view/append を捨てた部品である。held を処理し終えたら、その末尾に捨てたことを表す行を足す
+	// （viewappend.go の flushAppendLost）。
+	appendLost []appendKey
 	// waiting は、入れ子の待ちの深さである。
 	waiting int
 	// tagSeq は、問い合わせの Tag の連番である。
@@ -905,6 +908,9 @@ func (e *Editor) Run(ctx context.Context) error {
 			ev := e.held[0]
 			e.held = e.held[1:]
 			e.handleEvent(ev)
+			if len(e.held) == 0 {
+				e.flushAppendLost()
+			}
 			e.renderIdle()
 			continue
 		}

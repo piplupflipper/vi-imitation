@@ -150,6 +150,10 @@ type floatState struct {
 	// screenPending は、端末の列数を問い合わせている間であることを表す。その間はプレビューを出さない（previewShown）。
 	screen        int
 	screenPending bool
+	// textEOL は、テキストの部品（floatText）の中身の末尾が改行で終わっていることを表す（ext.SplitViewText の eol）。
+	// バッファの行は末尾の改行の後の空の行を持たないので、次の view/append を最後の行に続けるか、新しい行から始めるかをここで覚える
+	// （viewappend.go。FR-272）。開いたときと view/update のたびに決め直す。
+	textEOL bool
 }
 
 // popupDecorationOwner は、ポップアップの部品の色を付ける範囲を、バッファの構文の色に入れるときの持ち主の名前である。
@@ -848,7 +852,10 @@ func floatLines(c ext.ViewComponent, expanded map[string]bool, icons *itemIcons)
 			lines, decs = markdownLines(c.Text, c.Highlights)
 			return lines, nil, decs
 		}
-		return strings.Split(strings.TrimRight(c.Text, "\n"), "\n"), nil, c.Highlights
+		// 行は Vim と同じく数え、末尾の改行は 1 つだけを除く（"a\n\n" は "a" と空の行の 2 行）。view/append で書き足した中身を
+		// 拡張機能の写し（TextLog）から開き直したときに、末尾の空の行まで同じ行にするためである（ext.SplitViewText）。
+		lines, _ := ext.SplitViewText(c.Text)
+		return lines, nil, c.Highlights
 	case ext.ViewInput:
 		return []string{c.Text}, nil, nil
 	case ext.ViewList, ext.ViewTree, ext.ViewFinder:
@@ -1008,6 +1015,9 @@ func (e *Editor) drawFloatContent(f *floatState, c ext.ViewComponent) {
 	if c.Kind == ext.ViewInput {
 		f.input = c.Text
 	}
+	if c.Kind == ext.ViewText {
+		f.textEOL = strings.HasSuffix(c.Text, "\n")
+	}
 	e.setPopupDecorations(f.bs, decs)
 }
 
@@ -1034,6 +1044,7 @@ func (e *Editor) newComponentFloat(c ext.ViewComponent, extID string) *floatStat
 	case ext.ViewFinder:
 		return e.newFinderFloat(c, extID)
 	case ext.ViewText:
+		f.textEOL = strings.HasSuffix(c.Text, "\n")
 	}
 	lines, rows, decs := floatLines(c, f.expanded, e.itemIcons(f.iconColumnFor(c.Items)))
 	f.rows = rows
