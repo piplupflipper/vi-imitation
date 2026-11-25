@@ -277,7 +277,13 @@ func runFakeExt(mode string) int {
 			if e.Seq != 0 || e.Input != "" {
 				msg += fmt.Sprintf(" seq=%d input=%s", e.Seq, e.Input)
 			}
+			if e.Child != "" {
+				msg += " child=" + e.Child
+			}
 			_ = s.ShowMessage(ext.MessageInfo, msg)
+			if e.Child != "" && fakeSwitcherEvent(s, e) {
+				return
+			}
 			if e.Kind == server.ViewKey && e.Key == "fake.watch" {
 				// ペインの中のキーから input/ask を送る（DAP のウォッチ式の追加。PR #411 の裁定要 1）。
 				go func() {
@@ -744,6 +750,19 @@ func fakePopup(kind string) ext.PopupOpenParams {
 			Kind: ext.ViewText, Text: "alpha beta\ngamma",
 			Highlights: []ext.Decoration{{Range: ext.Range{End: ext.Position{Byte: 5}}, Style: "keyword"}},
 		}}
+	case "switcher", "switcher1":
+		// 切り替えの部品（FR-269）。木（キー T）、一覧（キー L）、テキスト（キー無し）、組（キー R）の 4 つの子を持つ。switcher1 は木の子だけを持つ。
+		// 組の子で say <文字列> を送ると、偽の拡張機能はその文字列の行を見えていないテキストの子 out へ書き足す（fakeSwitcherAppend）。
+		children := []ext.ViewChild{
+			{ID: "tree", Title: "Tree", Key: "T", Component: fakePopup("tree").Component},
+			{ID: "list", Title: "List", Key: "L", Component: fakePopup("list").Component},
+			{ID: "out", Title: "Out", Component: ext.ViewComponent{Kind: ext.ViewText, Text: "start\n", Tail: true}},
+			{ID: "repl", Title: "Repl", Key: "R", Component: ext.ViewComponent{Kind: ext.ViewConsole, Text: "repl\n", Prompt: "> "}},
+		}
+		if kind == "switcher1" {
+			children = children[:1]
+		}
+		return ext.PopupOpenParams{Placement: ext.PopupCenter, Component: ext.ViewComponent{Kind: ext.ViewSwitcher, Title: "dap", Children: children}}
 	case "console":
 		// 書き足すテキストと入力の行の組（FR-274）。placement を書かなくても、本体は中央に出す。
 		// 入力の行で say <文字列> を送ると、偽の拡張機能はその文字列の行を出力へ書き足し、flood <行数> を送ると、その行数を書き足す。
@@ -757,6 +776,46 @@ func fakePopup(kind string) ext.PopupOpenParams {
 		{ID: "update", Label: "update me"},
 	}}}
 }
+
+// fakeSwitcherEvent は、切り替えの部品（fakePopup の switcher）の子の知らせ e に応え、応えたら true を返す（#416）。
+//
+//   - 組の子 repl で say <文字列> を送ると、その文字列の行を見えていないテキストの子 out へ書き足す。flood <行数> なら、その行数を
+//     1 行ずつ out へ書き足し、書き終えたら "flooded" と出す
+//   - 一覧の子 list で update を選ぶと、list の項目を置き換え、見えていない out の中身を "replaced" にする（子を指す view/update）
+//   - 一覧の子 list で zs を打つと、部品の全体を置き換える（木の子を捨て、out を先頭に並べ直して中身を替え、out を選ぶ）
+func fakeSwitcherEvent(s *server.Server, e *server.ViewEvent) bool {
+	view := e.View
+	switch {
+	case e.Kind == server.ViewSelected && e.Child == "repl" && strings.HasPrefix(e.Item, "say "):
+		_ = s.AppendView(ext.ViewAppendParams{View: view, Child: "out", Text: strings.TrimPrefix(e.Item, "say ") + "\n"})
+	case e.Kind == server.ViewSelected && e.Child == "repl" && strings.HasPrefix(e.Item, "flood "):
+		n, _ := strconv.Atoi(strings.TrimPrefix(e.Item, "flood "))
+		go func() {
+			for i := range n {
+				_ = s.AppendView(ext.ViewAppendParams{View: view, Child: "out", Text: fmt.Sprintf("line %d\n", i)})
+			}
+			_ = s.ShowMessage(ext.MessageInfo, "flooded")
+		}()
+	case e.Kind == server.ViewSelected && e.Child == "list" && e.Item == "update":
+		_ = s.UpdateView(ext.ViewUpdateParams{View: view, Child: "list", Component: ext.ViewComponent{
+			Kind: ext.ViewList, Items: []ext.ViewItem{{ID: "new", Label: "updated"}},
+		}})
+		_ = s.UpdateView(ext.ViewUpdateParams{View: view, Child: "out", Component: ext.ViewComponent{Kind: ext.ViewText, Text: "replaced\n"}})
+	case e.Kind == server.ViewKey && e.Key == "fake.swap":
+		c := fakePopup("switcher").Component
+		out := c.Children[2]
+		out.Component.Text = "swapped\n"
+		c.Children = []ext.ViewChild{out, c.Children[1], c.Children[3]}
+		c.Selected = "out"
+		_ = s.UpdateView(ext.ViewUpdateParams{View: view, Component: c})
+	default:
+		return false
+	}
+	return true
+}
+
+// fakeSwitcherChildren は、fakePopup の switcher の子の ID である。
+var fakeSwitcherChildren = []string{"tree", "list", "out", "repl"}
 
 // fakeSpecs は、テスト用の拡張機能の定義を返す。
 func fakeSpecs(t *testing.T) []exthost.Spec {
@@ -795,7 +854,15 @@ func fakeSpecs(t *testing.T) []exthost.Spec {
 				},
 				// ポップアップの中だけで効くキー（FR-69）。x は本体では文字を消すキーで、ポップアップの中ではこちらが先に効く。
 				// gx は g で始まるので、gg はキーの列が当たらずに本体の gg として動く。
-				PopupKeys: []ext.Contribution{contrib("fake.pick", "x"), contrib("fake.two", "zq"), contrib("fake.gx", "gx"), contrib("fake.watch", "zw")},
+				// <Tab> と <S-Tab> は、切り替えの部品（fakePopup の switcher）の子の中でだけ、子を切り替える（DAP の拡張機能の形。#416）。
+				// d と zs は、一覧の子 list の中でだけ効く（FR-271）。
+				PopupKeys: []ext.Contribution{
+					contrib("fake.pick", "x"), contrib("fake.two", "zq"), contrib("fake.gx", "gx"), contrib("fake.watch", "zw"),
+					{ID: "fake.next", Keys: "<Tab>", Action: ext.PopupKeyChildNext, Children: fakeSwitcherChildren},
+					{ID: "fake.prev", Keys: "<S-Tab>", Action: ext.PopupKeyChildPrev, Children: fakeSwitcherChildren},
+					{ID: "fake.del", Keys: "d", Children: []string{"list"}},
+					{ID: "fake.swap", Keys: "zs", Children: []string{"list"}},
+				},
 			},
 		},
 		{

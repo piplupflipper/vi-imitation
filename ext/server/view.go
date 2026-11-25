@@ -32,12 +32,20 @@ func (s *Server) OpenPane(ctx context.Context, p ext.PaneOpenParams) (ext.PaneOp
 }
 
 // UpdateView は、本体へ view/update を送り、開いたポップアップの部品の中身を置き換えさせる。応答は待たない。どこから呼んでもよい。
-// p.Component が ext.ViewComponent.Validate を通らなければ、送らずにその誤りを返す。
+// p が ext.ViewUpdateParams.Validate を通らなければ、送らずにその誤りを返す。
+// 切り替えの部品（ext.ViewSwitcher）の 1 つの子だけを置き換えるときは、p.Child にその子の ID を入れる（API 0.23.0 から）。
 func (s *Server) UpdateView(p ext.ViewUpdateParams) error {
-	if err := p.Component.Validate(); err != nil {
+	if err := p.Validate(); err != nil {
 		return err
 	}
 	return s.notify(ext.MethodViewUpdate, p)
+}
+
+// SelectViewChild は、本体へ選ぶ子だけを替える view/update（ext.ViewUpdateParams.SelectsOnly）を送り、開いた切り替えの部品
+// （ext.ViewSwitcher）の子 child を選ばせる（API 0.23.0 から。FR-270）。子の中身（書き足した出力、打ちかけの入力）は変わらない。
+// 本体は view/childSelect を送らない。応答は待たない。どこから呼んでもよい。
+func (s *Server) SelectViewChild(view ext.ViewID, child string) error {
+	return s.UpdateView(ext.ViewUpdateParams{View: view, Component: ext.ViewComponent{Kind: ext.ViewSwitcher, Selected: child}})
 }
 
 // CloseView は、本体へ view/close を送り、開いたポップアップを閉じさせる。応答は待たない。どこから呼んでもよい。
@@ -64,6 +72,9 @@ const (
 	// ViewTabChanged は、view/tabChange である（API 0.10.0 で足した）。分割したペインを開いた元の client のカーソルのあるタブが替わった。
 	// Buffer にそのタブのバッファの番号が、Item にそのファイルの絶対パス（ファイルでなければ空）が入る（ext.ViewTabChangeParams）。
 	ViewTabChanged
+	// ViewChildSelected は、view/childSelect である（API 0.23.0 で足した）。利用者が切り替えの部品の子を切り替えた。
+	// Child に選んだ子の ID が入る（ext.ViewChildSelectParams）。
+	ViewChildSelected
 )
 
 // ViewEvent は、本体からポップアップの利用者の操作の知らせ（view/closed、view/select、input/change、view/key、view/expand、
@@ -87,6 +98,9 @@ type ViewEvent struct {
 	Selection uint64
 	// Buffer は、ViewTabChanged のときの、替わった後のタブのバッファの番号である。
 	Buffer ext.BufferID
+	// Child は、切り替えの部品（ext.ViewSwitcher）の中の知らせ（ViewSelected、ViewInputChanged、ViewKey、ViewExpanded）なら、
+	// その子の ID である。ViewChildSelected では選んだ子の ID である。ほかでは空である（API 0.23.0 で足した）。
+	Child string
 }
 
 // ListEditor は、本体へ editor/list を送り、本体が持つ一覧（タブ、コマンド、キーの一覧、レジスターの履歴、ジャンプリスト）の 1 つを
@@ -131,19 +145,23 @@ func (s *Server) viewNotification(ctx context.Context, n *rpc.Notification) {
 	case ext.MethodViewSelect:
 		var p ext.ViewSelectParams
 		err = decodeParams(n, &p)
-		e = ViewEvent{Kind: ViewSelected, View: p.View, Item: p.Item, Input: p.Input, Selection: p.Selection}
+		e = ViewEvent{Kind: ViewSelected, View: p.View, Item: p.Item, Input: p.Input, Selection: p.Selection, Child: p.Child}
 	case ext.MethodInputChange:
 		var p ext.InputChangeParams
 		err = decodeParams(n, &p)
-		e = ViewEvent{Kind: ViewInputChanged, View: p.View, Item: p.Text, Seq: p.Seq}
+		e = ViewEvent{Kind: ViewInputChanged, View: p.View, Item: p.Text, Seq: p.Seq, Child: p.Child}
 	case ext.MethodViewKey:
 		var p ext.ViewKeyParams
 		err = decodeParams(n, &p)
-		e = ViewEvent{Kind: ViewKey, View: p.View, Item: p.Item, Key: p.ID, Input: p.Input}
+		e = ViewEvent{Kind: ViewKey, View: p.View, Item: p.Item, Key: p.ID, Input: p.Input, Child: p.Child}
 	case ext.MethodViewExpand:
 		var p ext.ViewExpandParams
 		err = decodeParams(n, &p)
-		e = ViewEvent{Kind: ViewExpanded, View: p.View, Item: p.Item, Expanded: p.Expanded}
+		e = ViewEvent{Kind: ViewExpanded, View: p.View, Item: p.Item, Expanded: p.Expanded, Child: p.Child}
+	case ext.MethodViewChildSelect:
+		var p ext.ViewChildSelectParams
+		err = decodeParams(n, &p)
+		e = ViewEvent{Kind: ViewChildSelected, View: p.View, Child: p.Child}
 	case ext.MethodViewTabChange:
 		var p ext.ViewTabChangeParams
 		err = decodeParams(n, &p)

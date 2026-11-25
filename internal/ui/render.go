@@ -130,6 +130,9 @@ type Renderer struct {
 	floatList *Renderer
 	// console は、直前に描いた窓が書き足すテキストと入力の行の組（drawConsole）で、floatList がその出力を描いたことを表す。
 	console bool
+	// floatKids は、切り替えの部品（Float.Switcher）の窓の、子の ID ごとの float と floatList である（useFloatSubs）。
+	// 子を切り替えても、子ごとのスクロールの位置を保つ。floatID の窓が替わるか、窓を描かなくなったら捨てる。
+	floatKids map[string]*floatKid
 	// floatPreview は、ポップアップのプレビュー（Float.Preview。FR-149）の中身を描く子の Renderer で、previewID はその中身の Preview.ID である
 	// （drawPreview）。中身が替わるか、プレビューを描かなくなったら作り直す。
 	floatPreview *Renderer
@@ -349,7 +352,7 @@ func (r *Renderer) render(f *Frame) Screen {
 			listCursor = &c
 		}
 	default:
-		r.float, r.floatList, r.floatPreview = nil, nil, nil
+		r.float, r.floatList, r.floatPreview, r.floatKids = nil, nil, nil, nil
 	}
 	screen := Screen{Grid: g, Cursor: Cursor{
 		Row: curRow, Col: curCol, Shape: CursorBlock,

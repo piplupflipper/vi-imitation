@@ -35,14 +35,22 @@ func (r *Renderer) drawConsole(g *Grid, theme Theme, fl *Float) (Cursor, bool) {
 	r.floatPreview = nil
 	textRows := r.textRows()
 	boxH := textRows - 2*b
-	head := 0
+	// 窓の中の最初の行から、見出しの行（枠線が無いとき）と切り替えの部品の見出しの行（FR-269）を置く。
+	titleRows, bar := 0, 0
 	if fl.Title != "" && !bordered {
-		head = 1
+		titleRows = 1
 	}
-	if boxH-head < 1 {
+	if fl.Switcher != nil {
+		bar = 1
+	}
+	if boxH-titleRows-bar < 1 {
 		// 見出しより入力の行を残す。
-		head = 0
+		titleRows = 0
 	}
+	if boxH-bar < 1 {
+		bar = 0
+	}
+	head := titleRows + bar
 	avail := boxH - head
 	innerW := boxW - 2
 	if avail < 1 || innerW < 2 {
@@ -56,10 +64,7 @@ func (r *Renderer) drawConsole(g *Grid, theme Theme, fl *Float) (Cursor, bool) {
 	promptW := min(StringWidth(con.Prompt, tabStop), innerW-1)
 	top := (textRows-boxH-2*b)/2 + b
 	x0 := max((r.Width-boxW-2*b)/2, 0) + b
-	if r.float == nil || r.floatID != fl.ID {
-		r.float, r.floatList = &Renderer{}, &Renderer{}
-		r.floatID = fl.ID
-	}
+	r.useFloatSubs(fl)
 	// 窓の中は、マウスで操作しない（mouse.go。窓の場所だけを残す。ファインダーと同じ）。
 	r.hits.cover(top-b, x0-b, boxH+2*b, boxW+2*b)
 	in, out := r.float, r.floatList
@@ -108,9 +113,13 @@ func (r *Renderer) drawConsole(g *Grid, theme Theme, fl *Float) (Cursor, bool) {
 		}
 	}
 	row := top
-	if head > 0 {
+	if titleRows > 0 {
 		blankRow(row)
 		r.drawText(g, row, x0+1, x0+boxW-1, fl.Title, a.Over(Attr{Bold: true}))
+		row++
+	}
+	if bar > 0 {
+		r.drawSwitcher(g, theme, fl.Switcher, row, x0, x0+boxW, a)
 		row++
 	}
 	outTop := row

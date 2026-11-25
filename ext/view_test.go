@@ -81,6 +81,99 @@ func TestViewMessageJSON(t *testing.T) {
 		`{"help":[{"word":":write","kind":"command","description":"保存する"},{"word":"w","kind":"key"}]}`)
 }
 
+// 切り替えの部品は、子の数、子の ID の空と重複と改行、名前の改行、キーの重複、子の種類、子の部品の検査、選ぶ子を検査する。
+// 項目の ID の重複は子ごとに数える。popup/open のカーソルの近くと、切り替えの部品でない部品の children と selected は断る。
+// 子を指す view/update は、子にできる種類の部品だけを通す。
+func TestViewSwitcherValidate(t *testing.T) {
+	list := func(ids ...string) ViewComponent {
+		c := ViewComponent{Kind: ViewList}
+		for _, id := range ids {
+			c.Items = append(c.Items, ViewItem{ID: id, Label: id})
+		}
+		return c
+	}
+	sw := func(sel string, ch ...ViewChild) ViewComponent {
+		return ViewComponent{Kind: ViewSwitcher, Title: "dap", Selected: sel, Children: ch}
+	}
+	child := func(id, key string, c ViewComponent) ViewChild {
+		return ViewChild{ID: id, Title: id, Key: key, Component: c}
+	}
+	tests := []struct {
+		name string
+		c    ViewComponent
+		want string
+	}{
+		{"4 つの子", sw("b",
+			child("a", "W", list("x", "y")), child("b", "S", list("x")),
+			child("c", "", ViewComponent{Kind: ViewText, Text: "t"}), child("d", "R", ViewComponent{Kind: ViewConsole, Prompt: "> "})), ""},
+		{"子が無い", sw(""), "children が空"},
+		{"空の ID", sw("", child("", "", list())), "id が空"},
+		{"ID の改行", sw("", child("a\nb", "", list())), "id が改行"},
+		{"ID の重複", sw("", child("a", "", list()), child("a", "", list())), "重複"},
+		{"名前の改行", sw("", ViewChild{ID: "a", Title: "A\nB", Component: list()}), "title が改行"},
+		{"キーの重複", sw("", child("a", "S", list()), child("b", "S", list())), "key \"S\" が重複"},
+		{"子の切り替えの部品", sw("", child("a", "", sw("", child("b", "", list())))), "子にできない"},
+		{"子の入力の行", sw("", child("a", "", ViewComponent{Kind: ViewInput})), "子にできない"},
+		{"子のファインダー", sw("", child("a", "", ViewComponent{Kind: ViewFinder})), "子にできない"},
+		{"子の部品の誤り", sw("", child("a", "", list("x", "x"))), "children[0].component"},
+		{"知らない選ぶ子", sw("z", child("a", "", list())), "selected \"z\""},
+		{"自分の中身", ViewComponent{Kind: ViewSwitcher, Text: "x", Children: []ViewChild{child("a", "", list())}}, "持てない"},
+		{"一覧の children", ViewComponent{Kind: ViewList, Children: []ViewChild{child("a", "", list())}}, "switcher でだけ"},
+		{"一覧の selected", ViewComponent{Kind: ViewList, Selected: "a"}, "switcher でだけ"},
+	}
+	for _, tt := range tests {
+		err := tt.c.Validate()
+		switch {
+		case tt.want == "" && err != nil:
+			t.Errorf("%s: %v", tt.name, err)
+		case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+			t.Errorf("%s: err = %v, want %q", tt.name, err, tt.want)
+		}
+	}
+	ok := sw("", child("a", "", list()))
+	if p := (PopupOpenParams{Component: ok}); p.Validate() == nil {
+		t.Error("popup/open の cursor の切り替えの部品を通した")
+	}
+	if p := (PopupOpenParams{Placement: PopupCenter, Component: ok}); p.Validate() != nil {
+		t.Errorf("popup/open の center の切り替えの部品: %v", p.Validate())
+	}
+	if p := (ViewUpdateParams{Child: "a", Component: ok}); p.Validate() == nil {
+		t.Error("子を指す view/update の切り替えの部品を通した")
+	}
+	if p := (ViewUpdateParams{Child: "a", Component: list("x")}); p.Validate() != nil {
+		t.Errorf("子を指す view/update の一覧: %v", p.Validate())
+	}
+	// 選ぶ子だけを替える view/update は、selected だけを持つ。
+	selOnly := ViewUpdateParams{Component: ViewComponent{Kind: ViewSwitcher, Selected: "a"}}
+	if err := selOnly.Validate(); err != nil || !selOnly.SelectsOnly() {
+		t.Errorf("選ぶ子だけを替える view/update: %v %v", err, selOnly.SelectsOnly())
+	}
+	for _, bad := range []ViewComponent{{Kind: ViewSwitcher}, {Kind: ViewSwitcher, Selected: "a", Title: "t"}} {
+		if p := (ViewUpdateParams{Component: bad}); p.Validate() == nil {
+			t.Errorf("選ぶ子だけを替える view/update の誤りを通した: %+v", bad)
+		}
+	}
+	if p := (PaneOpenParams{Component: selOnly.Component}); p.Validate() == nil {
+		t.Error("children の無い switcher の pane/open を通した")
+	}
+	if p := (ViewUpdateParams{Component: ok}); p.SelectsOnly() {
+		t.Error("部品の全体の置き換えを選ぶ子だけの更新とした")
+	}
+	if ok.ChildIndex("a") != 0 || ok.ChildIndex("z") != -1 {
+		t.Error("ChildIndex")
+	}
+	roundTrip(t, PaneOpenParams{Component: ViewComponent{Kind: ViewSwitcher, Selected: "b", Children: []ViewChild{
+		{ID: "a", Title: "A", Key: "W", Component: ViewComponent{Kind: ViewText, Text: "t"}},
+	}}}, `{"component":{"kind":"switcher","children":[{"id":"a","title":"A","key":"W","component":{"kind":"text","text":"t"}}],"selected":"b"}}`)
+	roundTrip(t, ViewUpdateParams{View: 3, Child: "a", Component: ViewComponent{Kind: ViewText, Text: "t"}},
+		`{"view":3,"component":{"kind":"text","text":"t"},"child":"a"}`)
+	roundTrip(t, ViewChildSelectParams{View: 3, Child: "a"}, `{"view":3,"child":"a"}`)
+	roundTrip(t, ViewSelectParams{View: 3, Item: "x", Child: "a"}, `{"view":3,"item":"x","child":"a"}`)
+	roundTrip(t, ViewKeyParams{View: 3, ID: "k", Child: "a"}, `{"view":3,"id":"k","child":"a"}`)
+	roundTrip(t, ViewExpandParams{View: 3, Item: "x", Expanded: true, Child: "a"}, `{"view":3,"item":"x","expanded":true,"child":"a"}`)
+	roundTrip(t, InputChangeParams{View: 3, Text: "x", Seq: 1, Child: "a"}, `{"view":3,"text":"x","seq":1,"child":"a"}`)
+}
+
 // 書き足すテキストと入力の行の組の履歴は、空の中身と直前と同じ中身を積まず、上限を超えたら古いものから捨てる。
 // 本体と拡張機能が同じ関数で積むので、開き直したときの履歴は、本体が閉じる前に持っていた履歴と同じになる。
 func TestAppendConsoleHistory(t *testing.T) {

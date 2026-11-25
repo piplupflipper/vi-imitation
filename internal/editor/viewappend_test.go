@@ -307,6 +307,43 @@ func TestHoldViewAppendSizeLimit(t *testing.T) {
 	})
 }
 
+// 切り替えの部品の子への書き足しは、子ごとにつなぐ。別の子だけを置き換える view/update は境目にせず、同じ子と部品の全体を置き換える
+// view/update は境目にする（DAP が区画をまとめて更新する間も、出力の区画への書き足しをつなぐため）。
+func TestHoldViewAppendChild(t *testing.T) {
+	h := start(t, Config{})
+	h.e.do(func() {
+		e := h.e
+		app := func(child, text string) *exthost.ViewAppend {
+			return &exthost.ViewAppend{Extension: "fake", Params: ext.ViewAppendParams{View: 1, Child: child, Text: text}}
+		}
+		up := func(child string) *exthost.ViewUpdate {
+			return &exthost.ViewUpdate{Extension: "fake", Params: ext.ViewUpdateParams{View: 1, Child: child, Component: ext.ViewComponent{Kind: ext.ViewText}}}
+		}
+		e.hold(app("out", "a"))
+		e.hold(app("repl", "r"))
+		e.hold(up("scopes"))
+		e.hold(&exthost.ViewUpdate{Extension: "fake", Params: ext.ViewUpdateParams{View: 1, Component: ext.ViewComponent{Kind: ext.ViewSwitcher, Selected: "out"}}})
+		e.hold(app("out", "b")) // 別の子の view/update と、選ぶ子だけを替える view/update は境目にしない
+		e.hold(up("out"))
+		e.hold(app("out", "c")) // 同じ子の view/update の後ろなので、新しい件
+		e.hold(&exthost.ViewUpdate{Extension: "fake", Params: ext.ViewUpdateParams{View: 1, Component: ext.ViewComponent{
+			Kind: ext.ViewSwitcher, Children: []ext.ViewChild{{ID: "repl", Component: ext.ViewComponent{Kind: ext.ViewConsole}}},
+		}}})
+		e.hold(app("repl", "s")) // 部品の全体の view/update の後ろなので、新しい件
+		var got []string
+		for _, ev := range e.held {
+			if a, ok := ev.(*exthost.ViewAppend); ok {
+				a.Flush()
+				got = append(got, a.Params.Child+":"+a.Params.Text)
+			}
+		}
+		if want := []string{"out:ab", "repl:r", "out:c", "repl:s"}; !slices.Equal(got, want) {
+			t.Errorf("held = %q, want %q", got, want)
+		}
+		e.held = nil
+	})
+}
+
 // 待ちの間に取っておく view/append は、上限で捨てる通知に数えず、同じ部品への続く書き足しを 1 件につなぐ。
 // 間に同じ部品への view/update か view/close があれば、その後ろに新しい件を置く。
 // つなげない書き足しだけで上限を超えたら、届いた書き足しを捨て、処理し終えたときに、その部品の末尾に捨てたことを表す行を足す。

@@ -28,6 +28,9 @@ const (
 	// Line、Col、Below は、帯の下に隠れた本文の位置（HitText と同じ）で、BandLine は帯の行に当たるバッファの行である。
 	// 帯の行に当たる行が無いか、帯を作った後に本文が変わった行（BandLine.Stale）は HitText である。
 	HitBand
+	// HitChild は、切り替えの部品（Float.Switcher。FR-269）の見出しの行の、子の見出しの上である。Child はその子の添字である。
+	// 見出しの行の見出しの無い列は HitNone である（FR-185 の例外は子の見出しだけ）。
+	HitChild
 )
 
 // Hit は、画面の位置にあるもの（Renderer.HitTest の結果）である。
@@ -70,6 +73,8 @@ type Hit struct {
 	Over int
 	// BandLine は、Area が HitBand のときの、押した帯の行に当たるバッファの行（0 から数える。ui.BandLine.Line）である。
 	BandLine int
+	// Child は、Area が HitChild のときの、切り替えの部品の子の添字（Switcher.Children の添字）である。
+	Child int
 }
 
 // rect は、画面の矩形（行と列は 0 から数える。タブの行を除いた座標）である。
@@ -107,13 +112,15 @@ type hitState struct {
 	// （drawBand が残す）。
 	band      rect
 	bandLines []int
+	// children は、切り替えの部品の見出しの行に描いた子の見出しの場所である（drawSwitcher）。
+	children []childSpan
 }
 
 // reset は、h を空にする。
 func (h *hitState) reset() {
 	h.band, h.bandLines = rect{}, h.bandLines[:0]
 	h.lines, h.floatOK, h.barOK = 0, false, false
-	h.covers, h.tabs = h.covers[:0], h.tabs[:0]
+	h.covers, h.tabs, h.children = h.covers[:0], h.tabs[:0], h.children[:0]
 }
 
 // cover は、row 行目の x 列目から幅 w 列、高さ n 行の窓を、表示領域の上に重ねて描いたことを残す。
@@ -134,6 +141,7 @@ func (h *hitState) cover(row, x, n, w int) {
 // 表示領域の外の行もそのまま Hit.Row に入れる。スクロールバーを描いていなければ HitNone を返す。
 // 直前の Render が描いた帯（FR-237）の、バッファの行に当たる行は、浮かべた窓とスクロールバーのつまみと印の下でなければ
 // HitBand にする（FR-238）。clamp が HitText なら、帯の上も本文として解く。
+// 直前の Render が描いた切り替えの部品の見出しの行の子の見出しは、窓の中でも HitChild にする（FR-269。FR-185 の例外）。
 //
 // req: FR-181, FR-182, FR-185, FR-189, FR-210, FR-238
 func (r *Renderer) HitTest(row, col int, clamp HitArea) Hit {
@@ -161,10 +169,16 @@ func (r *Renderer) HitTest(row, col int, clamp HitArea) Hit {
 			return none
 		}
 		return Hit{Area: HitScrollbar, Tab: -1, Mark: -1, MarkFirst: -1, MarkLast: -1, Row: row - r.hits.bar.top, ThumbRow: r.hits.barThumb}
-	case HitNone, HitTabLine, HitStatusLine, HitCommandLine, HitBand:
+	case HitNone, HitTabLine, HitStatusLine, HitCommandLine, HitBand, HitChild:
 	}
 	if h, ok := r.hitFloat(row, col, false); ok {
 		return h
+	}
+	for _, s := range r.hits.children {
+		// 切り替えの部品の見出しの行の子の見出しは、窓（covers）の中でも、押すとその子に切り替える場所として返す（FR-185 の例外）。
+		if row == s.row && col >= s.from && col < s.to {
+			return Hit{Area: HitChild, Tab: -1, Child: s.index}
+		}
 	}
 	for _, b := range r.hits.covers {
 		if b.contains(row, col) {

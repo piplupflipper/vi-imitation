@@ -2,6 +2,7 @@ package input
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/piplupflipper/vi-imitation/internal/editcmd"
@@ -456,6 +457,24 @@ var previewKeys = []providerSpec{
 	{keys: "<A-S-Up>", id: PreviewPrefix + "up", kind: BindAction, modes: MapNormal | MapInsert, desc: "プレビューを 1 行上へスクロールする"},
 }
 
+// ViewChildPrefix は、切り替えの部品（FR-269）の子を切り替える操作の ID の接頭辞である。後ろは next、prev、first、last である。
+// 提供者へは問い合わせず、internal/editor が、キーを受けているバッファが切り替えの部品の子に属するときだけ切り替える。
+// ほかのバッファ（編集のバッファ、ほかの部品）では何もせず、誤りも出さない。PreviewPrefix と同じく ProviderExtension の操作にして、
+// ドットリピートに記録せず、編集を禁止したバッファ（一覧、木、出力）でも断らない扱いにする。
+const ViewChildPrefix = "view.child-"
+
+// viewChildKeys は、切り替えの部品の子を切り替える操作の既定のキーである（FR-269）。
+// キーは nvim-dap-view（コミット b4486a6e83c45db4712849c09a76ef95b41a2133）の lua/dap-view/config.lua の keymaps.base の既定
+// （next_view が ]v、prev_view が [v、jump_to_first が [V、jump_to_last が ]V）に合わせた（基本設計 1.4）。インサートモードには割り当てない。
+//
+// req: FR-269
+var viewChildKeys = []providerSpec{
+	{keys: "]v", id: ViewChildPrefix + "next", kind: BindAction, modes: MapNormal, desc: "切り替えの部品の次の子へ切り替える"},
+	{keys: "[v", id: ViewChildPrefix + "prev", kind: BindAction, modes: MapNormal, desc: "切り替えの部品の前の子へ切り替える"},
+	{keys: "[V", id: ViewChildPrefix + "first", kind: BindAction, modes: MapNormal, desc: "切り替えの部品の最初の子へ切り替える"},
+	{keys: "]V", id: ViewChildPrefix + "last", kind: BindAction, modes: MapNormal, desc: "切り替えの部品の最後の子へ切り替える"},
+}
+
 // KeyListBinding は、接頭辞 prefix で始まるキーと、分類 group（空なら無し）の操作のキーの一覧（FR-90）を出す、
 // prefix の後に ? を続けたキーの登録を返す。Ref.ID は KeyListPrefix で始まり（ParseKeyListID）、Ref.Extension は ProviderExtension である。
 func KeyListBinding(prefix []editcmd.Key, group, desc string) Binding {
@@ -551,7 +570,7 @@ func DefaultKeymapLeader(leader []editcmd.Key) (m *Keymap, errs []error) {
 			errs = append(errs, fmt.Errorf("キーの一覧の既定のキー %s を登録できない: %w", s.keys, err))
 		}
 	}
-	for _, s := range previewKeys {
+	for _, s := range slices.Concat(previewKeys, viewChildKeys) {
 		err := m.Bind(Binding{
 			Kind: s.kind, Modes: s.modes, Keys: editcmd.MustParseKeys(s.keys),
 			Ref: editcmd.Ref{ID: s.id, Extension: ProviderExtension}, Description: s.desc,

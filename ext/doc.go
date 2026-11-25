@@ -115,4 +115,10 @@ package ext
 // 0.22.0 で、書き足すテキストと入力の行を組にした部品の種類 console（ViewConsole）と、部品の input、prompt、history を足し、
 // view/append を console の部品の出力にも当てるようにした（#413。FR-274）。古い本体は console を知らない部品の種類として、
 // その popup/open と pane/open を誤りで断る。使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
-const APIVersion = "0.22.0"
+// 0.23.0 で、複数の子の部品を見出しの行で切り替える部品の種類 switcher（ViewSwitcher）と、部品の children、selected と、
+// 子を指す view/update と view/append の child、子を指す知らせ（view/select、view/key、view/expand、input/change）の child、
+// 利用者が子を切り替えた知らせ view/childSelect（ViewChildSelectParams）、宣言ファイルの popupKeys の children と、
+// 子を切り替える action（PopupKeyChildNext など）を足した（#416。FR-269〜FR-271、FR-301）。
+// 古い本体は switcher を知らない部品の種類として、その popup/open と pane/open を誤りで断り、popupKeys の children を読まずに
+// どの部品でも効かせ、知らない action は警告にして view/key を送る。使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
+const APIVersion = "0.23.0"

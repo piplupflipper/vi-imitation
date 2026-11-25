@@ -1,6 +1,8 @@
 package editor
 
 import (
+	"slices"
+
 	"github.com/piplupflipper/vi-imitation/internal/command"
 	"github.com/piplupflipper/vi-imitation/internal/editcmd"
 	"github.com/piplupflipper/vi-imitation/internal/option"
@@ -79,7 +81,7 @@ func (m mouseLocator) hit(drag bool) (ui.Hit, *ui.Renderer, bool) {
 		case ui.HitBand:
 			// 帯の上で押したボタンのドラッグは、帯の下の本文の位置として解く（FR-238）。
 			clamp = ui.HitText
-		case ui.HitNone, ui.HitTabLine, ui.HitStatusLine, ui.HitCommandLine:
+		case ui.HitNone, ui.HitTabLine, ui.HitStatusLine, ui.HitCommandLine, ui.HitChild:
 			return ui.Hit{}, nil, false
 		}
 	}
@@ -161,6 +163,12 @@ func (m mouseLocator) Target(drag bool) command.MouseTarget {
 		if h.Tab >= 0 && h.Tab < len(e.view.tabs) && e.mouseComp() == nil && !drag {
 			return command.MouseTarget{Kind: command.MouseElsewhere}
 		}
+	case ui.HitChild:
+		// 切り替えの部品の見出しの行の子の名前は、タブの見出しと同じく、ほかの部品（MouseElsewhere。Activate でその子に切り替える）である
+		// （FR-269。FR-185 の例外）。キーを受けているのがその部品の子のバッファのときだけである。
+		if f := e.mouseFloat(); f != nil && f.sw != nil && slices.Contains(f.buffers(), m.bs) && !drag {
+			return command.MouseTarget{Kind: command.MouseElsewhere}
+		}
 	case ui.HitScrollbar:
 		// 右端のスクロールバー（FR-186）のつまみと印のセルは、タブのバッファの表示領域のスクロールバーである（FR-189）。
 		// 押したらつまみのドラッグを始めるか印の行へ移り（FR-210、FR-211）、ホイールはステータス行の上と同じくその表示領域を送る。
@@ -210,10 +218,11 @@ func (m mouseLocator) barRenderer() *ui.Renderer {
 
 // Activate は、command.Mouse の Activate である（FR-181）。
 // タブの見出しならそのタブへ移る（:b と同じく、移るとマクロの再生の残りは移った先のバッファで続く）。
+// 切り替えの部品の見出しの行の子の名前なら、その子に切り替える（FR-269）。
 // フォーカスのあるカーソルの近くのポップアップの外のバッファの表示領域なら、フォーカスを元のタブへ戻し、その位置へカーソルを移す
 // （Neovim でほかの窓を押したときと同じ）。中央のポップアップは、開いている間はそれだけを操作する（FR-68）ので、Target が外を返さない。
 //
-// req: FR-181
+// req: FR-181, FR-269
 func (m mouseLocator) Activate() error {
 	h, _, ok := m.hit(false)
 	if !ok {
@@ -227,6 +236,11 @@ func (m mouseLocator) Activate() error {
 		}
 		if to := e.view.tabs[h.Tab]; to != e.tab() {
 			e.gotoBuffer(m.bs, to)
+		}
+	case ui.HitChild:
+		// 切り替えの部品の見出しの行の子の名前を押すと、その子に切り替える（FR-269。nvim-dap-view の on_click）。
+		if f := e.mouseFloat(); f != nil && f.sw != nil {
+			e.selectChild(f, h.Child, true)
 		}
 	case ui.HitText, ui.HitBand:
 		// フォーカスのあるポップアップの外の帯は、帯の下の本文と同じく、元のタブへ戻ってその位置へ移る。

@@ -208,7 +208,7 @@ func (f *finder) onView(_ context.Context, e *server.ViewEvent) {
 			ev.selected, ev.selection = &item, e.Selection
 		case server.ViewClosed:
 			ev.closed = true
-		case server.ViewKey, server.ViewExpanded, server.ViewTabChanged:
+		case server.ViewKey, server.ViewExpanded, server.ViewTabChanged, server.ViewChildSelected:
 		}
 		f.mu.Unlock()
 		return
@@ -224,7 +224,7 @@ func (f *finder) onView(_ context.Context, e *server.ViewEvent) {
 		go p.choose(e.Item, e.Selection)
 	case server.ViewClosed:
 		p.cancel()
-	case server.ViewKey, server.ViewExpanded, server.ViewTabChanged:
+	case server.ViewKey, server.ViewExpanded, server.ViewTabChanged, server.ViewChildSelected:
 	}
 }
 

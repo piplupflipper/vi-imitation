@@ -452,6 +452,10 @@ func (e *Editor) paneOpenRequest(ev *exthost.PaneOpenRequest) {
 		_ = ev.ReplyError(errors.New("no client to show the pane"))
 		return
 	}
+	if err := checkComponentKeys(p.Component); err != nil {
+		_ = ev.ReplyError(invalidParams("%v", err))
+		return
+	}
 	f := e.newComponentFloat(p.Component, ev.Extension)
 	f.closeOnSelect = p.CloseOnSelect
 	pane := e.view.info.Pane
@@ -468,7 +472,7 @@ func (e *Editor) paneOpenRequest(ev *exthost.PaneOpenRequest) {
 	f.base = e.cur
 	f.shownTab = e.tab()
 	f.shownPath = f.shownTab.path
-	f.bs.state.Viewport = floatViewport{f: f, r: e.renderer}
+	e.bindViewports(f)
 	e.panes = append(e.panes, f)
 	e.startConsoleInsert(f)
 	_ = ev.Reply(ext.PaneOpenResult{View: ext.ViewID(f.id)})

@@ -55,8 +55,9 @@ func main() {
   Edit が返した誤りに使う。
 - `ErrBufferClosed`: WaitBuffer で待っている間か、待ち始める前に、そのバッファの buffer/close が届いた（その後に buffer/open が届いていない）ことを表す。
   本体は、不正な UTF-8 を含むバッファを拡張機能へ送らず、editor/open で開いたときは buffer/open の代わりに buffer/close を送る（ext.BufferCloseParams）。
-- `ErrChildUnsupported`: 切り替えの部品の子（空でない child）へ Rebind したことを表す。
-  子だけを置き換える view/updateは、切り替えの部品を足すときに足す。
+- `ErrChildUnsupported`: API 0.20.0 から 0.22.0 の間、切り替えの部品の子（空でない child）へ Rebind したことを表した。
+  API 0.23.0 で子を指す view/update を足したので、Rebind はこの誤りを返さなくなった。スクリプトの拡張機能が名前を参照していても
+  動くように残す。
 - `ErrEditInHandler`: Server が呼んだハンドラーかフックの中から、その ctx で、本体の応答を待つ関数を呼んだことを表す。
   対象は Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice、AskInput、WaitBuffer である。
   待つと詰まるので、これらはリクエストを送らずにこの誤りを返す。
@@ -323,6 +324,9 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
   拡張機能の main から呼ぶ。
 - `func (s *Server) SaveBuffer(ctx context.Context, p ext.BufferSaveParams) (ext.BufferSaveResult, error)`: 本体へ buffer/save を送り、バッファをファイルへ書き出させる。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
+- `func (s *Server) SelectViewChild(view ext.ViewID, child string) error`: 本体へ選ぶ子だけを替える view/update（ext.ViewUpdateParams.SelectsOnly）を送り、開いた切り替えの部品
+  （ext.ViewSwitcher（switcher））の子 child を選ばせる（API 0.23.0 から）。子の中身（書き足した出力、打ちかけの入力）は変わらない。
+  本体は view/childSelect を送らない。応答は待たない。どこから呼んでもよい。
 - `func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error`: r から本体のメッセージを読み、w へ書き、接続が終わるまでメッセージを処理する。
   r と w が io.Closer を実装していれば、終わるときに閉じる。
 - `func (s *Server) SetBand(p ext.BandSetParams) error`: 本体へ band/set を送り、窓の上端に行を重ねて描く帯を置く。
@@ -355,7 +359,8 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
 - `func (s *Server) UpdateBuffer(ctx context.Context, p ext.BufferUpdateParams) (ext.BufferUpdateResult, error)`: 本体へ buffer/update を送り、CreateBuffer で作ったバッファの中身を置き換えさせる。応答は置き換えた後のバージョン番号である。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
 - `func (s *Server) UpdateView(p ext.ViewUpdateParams) error`: 本体へ view/update を送り、開いたポップアップの部品の中身を置き換えさせる。応答は待たない。どこから呼んでもよい。
-  p.Component が ext.ViewComponent.Validate を通らなければ、送らずにその誤りを返す。
+  p が ext.ViewUpdateParams.Validate を通らなければ、送らずにその誤りを返す。
+  切り替えの部品（ext.ViewSwitcher（switcher））の 1 つの子だけを置き換えるときは、p.Child にその子の ID を入れる（API 0.23.0 から）。
 - `func (s *Server) WaitBuffer(ctx context.Context, id ext.BufferID, version ext.Version) (*Buffer, error)`: バッファ id の複製が、バージョン番号 version 以降になるまで待ち、その時点の複製の Clone を返す。
   既にそうなっていれば待たずに返す。
   editor/open（OpenEditor）の応答を受け取った後に、本体が先に送った buffer/open の処理を待つのに使う。
@@ -417,6 +422,8 @@ view/tabChange）を受け取ったことを表す。
 - `Input string`: ファインダーの ViewSelected と ViewKey のときの、入力の行の中身である。
 - `Selection uint64`: ViewSelected のときの選択の番号である（ext.ViewSelectParams.Selection）。Execute に渡す。
 - `Buffer ext.BufferID`: ViewTabChanged のときの、替わった後のタブのバッファの番号である。
+- `Child string`: 切り替えの部品（ext.ViewSwitcher（switcher））の中の知らせ（ViewSelected、ViewInputChanged、ViewKey、ViewExpanded）なら、
+  その子の ID である。ViewChildSelected では選んだ子の ID である。ほかでは空である（API 0.23.0 で足した）。
 
 #### `server.ViewEventKind`
 
@@ -431,6 +438,8 @@ ViewEvent の種類である。
 - `ViewExpanded`: view/expand である。Item に開閉した木の項目の ID が、Expanded に開いたかどうかが入る。
 - `ViewTabChanged`: view/tabChange である（API 0.10.0 で足した）。分割したペインを開いた元の client のカーソルのあるタブが替わった。
   Buffer にそのタブのバッファの番号が、Item にそのファイルの絶対パス（ファイルでなければ空）が入る（ext.ViewTabChangeParams）。
+- `ViewChildSelected`: view/childSelect である（API 0.23.0 で足した）。利用者が切り替えの部品の子を切り替えた。
+  Child に選んだ子の ID が入る（ext.ViewChildSelectParams）。
 
 #### `server.WindowChangeEvent`
 

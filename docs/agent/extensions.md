@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.22.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.23.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -230,6 +230,10 @@ ID と Pattern は使わない。利用者の操作もファイルを開くこ�
   足したのは API 0.4.0 の後だが、版は上げていない。
 - `action`（`PopupKeyAction`、省ける）: Contributes.PopupKeys の項目で、キーを打ったときに view/key を送る代わりに本体がする操作である（API 0.10.0 で足した）。
   省くと view/key を送る。ほかの種類の操作では読まない。
+- `children`（`[]string`、省ける）: Contributes.PopupKeys の項目で、キーを効かせる切り替えの部品（ViewSwitcher（switcher））の子の ID の列である
+  （API 0.23.0 で足した）。並べた項目は、切り替えの部品でその子を出しているときだけ効き、ほかの部品では効かない。
+  省いた項目は、今までどおりその拡張機能のどの部品でも効く。同じキーを子ごとに別の項目にできる（DAP の区画ごとの d と s）。
+  古い本体は読まずに捨て、どの部品でも効かせる。ほかの種類の操作では読まない。
 
 #### `PopupKeyAction`
 
@@ -241,6 +245,13 @@ contributes.popupKeys のキーで、view/key の代わりに本体がする操�
   ファイラの l（ディレクトリを開閉し、ファイルを開く。nvim の neo-tree の open）に使う。
   <CR> と同じ経路なので、選んだら閉じる中央のポップアップ（PaneOpenParams.CloseOnSelect）を閉じ、
   分割したペインで選んだ後の editor/open は端末多重化ソフトのフォーカスを元の client へ戻す。
+- `"view.child-next"`（PopupKeyChildNext）: PopupKeyChildNext（view.child-next）、PopupKeyChildPrev（view.child-prev）、PopupKeyChildFirst（view.child-first）、PopupKeyChildLast（view.child-last） は、切り替えの部品（ViewSwitcher（switcher））の
+  次、前、最初、最後の子へ切り替える（本体の操作 view.child-next などと同じ。API 0.23.0 で足した）。拡張機能を呼ばない。
+  利用者の切り替えなので、view/childSelect を送る。切り替えの部品でない部品では何もしない。
+  DAP の拡張機能が、自分のペインの中だけで <Tab> と <S-Tab> を区画の切り替えにするのに使う（本体の既定の <Tab> は FR-98 のタブの移動）。
+- `"view.child-prev"`（PopupKeyChildPrev）
+- `"view.child-first"`（PopupKeyChildFirst）
+- `"view.child-last"`（PopupKeyChildLast）
 
 #### `StatusLinePart`
 
@@ -316,6 +327,7 @@ params と result の型の項目は、`vi-imitation --docs extension-types <型
 - `provider/invoke`: リクエスト。params は `ProviderInvokeParams`、result は `ProviderInvokeResult`。本体の操作（Operation）を、宣言ファイルの provides で名乗った拡張機能（提供者）へ問い合わせる。本体は、利用者が操作のキー（<leader>lh など）を打つか、コマンドラインから操作の名前で呼んだ（:rename 新しい名前）ときに、カーソルのあるバッファのファイルの種類で提供者を選んで送る（選び方は `vi-imitation --docs extensions Manifest`）。応答の扱いは command/execute と同じで、言語サーバーやデバッグアダプターの応答を待つ操作は、受け付けたことだけを ok で返し、結果を後から editor/open、popup/show、buffer/edit などで届けてよい。
 - `shutdown`: 通知。params は `ShutdownParams`。本体が拡張機能を正常に止めるとき（エディタの終了、拡張機能の無効化）に送る。
 - `textObject/resolve`: リクエスト。params は `TextObjectResolveParams`、result は `TextObjectResolveResult`。
+- `view/childSelect`: 通知。params は `ViewChildSelectParams`。
 - `view/closed`: 通知。params は `ViewClosedParams`。
 - `view/expand`: 通知。params は `ViewExpandParams`。
 - `view/key`: 通知。params は `ViewKeyParams`。

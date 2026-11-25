@@ -158,6 +158,12 @@ const (
 	StyleTabLineSelected = "tabline.selected"
 	// StyleTabLineFill は、タブの行の、見出しの右の空いた列である（Vim の TabLineFill）。
 	StyleTabLineFill = "tabline.fill"
+	// StyleViewChild は、切り替えの部品（FR-269）の見出しの行の、選んでいない子の名前である（nvim-dap-view の Tab）。
+	// 表に無ければ StyleTabLine を引き継ぐ。
+	StyleViewChild = "view.child"
+	// StyleViewChildSelected は、切り替えの部品の見出しの行の、選んでいる子の名前である（nvim-dap-view の TabSelected）。
+	// 表に無ければ StyleTabLineSelected を引き継ぐ。
+	StyleViewChildSelected = "view.child.selected"
 )
 
 // styleNames は、本体が色を付ける対象の名前の全部である（StyleNames）。
@@ -181,6 +187,7 @@ var styleNames = []string{
 	StyleStatusLineRecording, StyleStatusLineRuler, StyleStatusLinePosition, StyleStatusLineExt,
 	StyleStatusLineModeNormal, StyleStatusLineModeInsert, StyleStatusLineModeVisual, StyleStatusLineModeCommandLine,
 	StyleTabLine, StyleTabLineSelected, StyleTabLineFill,
+	StyleViewChild, StyleViewChildSelected,
 	StyleDiffAdd, StyleDiffChange, StyleDiffDelete, StyleDiffText,
 }
 
@@ -396,12 +403,16 @@ func DefaultTheme() Theme {
 //     本体の浮かべた窓（ホバーなど）の色の名前は StylePopup である）
 //   - StyleBandLineNr は StyleLineNr（TreesitterContextLineNumber は LineNr へのリンク）
 //   - StyleInlayHint は StyleNonText（Neovim 0.12.5 の LspInlayHint は NonText へのリンク。2026-11-22 に nvim --clean の :hi LspInlayHint で確かめた）
+//   - StyleViewChild は StyleTabLine、StyleViewChildSelected は StyleTabLineSelected（切り替えの部品の見出しの行は、
+//     タブの行の見出しの色を引き継ぐ。基本設計 1.4。nvim-dap-view の見出しの行も Tab と TabSelected を使う）
 //
 // req: FR-258
 var styleLinks = map[string]string{
-	StyleBand:       StylePopup,
-	StyleBandLineNr: StyleLineNr,
-	StyleInlayHint:  StyleNonText,
+	StyleBand:              StylePopup,
+	StyleBandLineNr:        StyleLineNr,
+	StyleInlayHint:         StyleNonText,
+	StyleViewChild:         StyleTabLine,
+	StyleViewChildSelected: StyleTabLineSelected,
 }
 
 // attr は、名前 name の属性を返す。表に無い名前なら、引き継ぐ先（styleLinks）があればその属性を、無ければゼロ値（飾りなし）を返す。

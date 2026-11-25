@@ -26,9 +26,8 @@ import (
 // 結合文字を前の文字と一緒に 1 文字として扱い（prevCharStart、nextCharEnd）、<C-w> の区切りも input/ask と同じ prevWordStart である
 // （consoleKey）。横のスクロールは、入力の行を描く子の Renderer が行う（ui.drawConsole）。
 //
-// 切り替えの部品（FR-269）の子にしたときの規則（子を初めて出したときのモード、切り替え直したときにフォーカスとモードを戻すこと）は、
-// 切り替えの部品の実装で足す。そのときは、子ごとに consoleState と tailState を持ち、フォーカスのある方（outFocus）から
-// consoleFocusBuffer で戻す先を決める。
+// 切り替えの部品（FR-269）の子にしたときは、子ごとの中身（floatContent）が consoleState と tailState を持ち、子を初めて出したときに
+// 入力の行のインサートモードにし、切り替え直したときはフォーカスのある方（outFocus）とそのバッファのモードに戻す（switcher.go。FR-301）。
 //
 // 入力の行の改行は持たない。貼り付けと、行を増やす編集（行単位の p、o）で入った改行は、consoleInputText で空白に替える
 // （input/ask の貼り付けと同じ。PR #415 のレビューの必須 1）。ACP のプロンプトで改行を保つ形（記号で見せて送るときに戻す、
@@ -65,7 +64,7 @@ const (
 //
 // req: FR-274
 func (e *Editor) newConsoleFloat(c ext.ViewComponent, extID string) *floatState {
-	f := &floatState{kind: floatConsole, ext: extID, title: c.Title, scratch: true, input: c.Input}
+	f := &floatState{floatContent: &floatContent{kind: floatConsole, input: c.Input}, ext: extID, title: c.Title, scratch: true}
 	h := c.History
 	if d := len(h) - ext.ConsoleHistoryMax; d > 0 {
 		h = h[d:]
@@ -77,7 +76,7 @@ func (e *Editor) newConsoleFloat(c ext.ViewComponent, extID string) *floatState 
 	f.bs.state.SetCursor(buffer.Position{Byte: len(c.Input)})
 	lines, _, decs := floatLines(c, nil, nil)
 	con.out = e.newPopupBuffer(consoleOutputName, floatBufferText(lines), "", true)
-	con.out.state.Viewport = consoleOutViewport{f: f, r: e.renderer}
+	con.out.state.Viewport = consoleOutViewport{f: f, r: e.renderer, ct: f.floatContent}
 	if len(decs) > 0 {
 		e.setPopupDecorations(con.out, decs)
 	}
@@ -108,11 +107,12 @@ func (e *Editor) setConsoleContent(f *floatState, c ext.ViewComponent) {
 }
 
 // startConsoleInsert は、開いた書き足すテキストと入力の行の組 f の入力の行を、行末から打てるインサートモードにする（FR-274）。
-// 組でない部品と、既にインサートモードの入力の行では何もしない。利用者のキーではないので、マクロに記録しない（command.State.FeedUnrecorded）。
+// 組でない部品と、既にインサートモードの入力の行と、切り替えの部品の子（入力の行のノーマルモードで始める。FR-301）では何もしない。
+// 利用者のキーではないので、マクロに記録しない（command.State.FeedUnrecorded）。
 // 分割したペインの部品は、元の client のキーを受けるバッファではないので、入力の行の State に直に渡す（モードを入れるだけで、
 // バッファもレジスターも変えないので、結果を処理しなくてよい）。
 func (e *Editor) startConsoleInsert(f *floatState) {
-	if f.kind != floatConsole || f.bs.state.Mode() == command.ModeInsert {
+	if f.kind != floatConsole || f.sw != nil || f.bs.state.Mode() == command.ModeInsert {
 		return
 	}
 	if e.cur == f.bs {
@@ -217,7 +217,7 @@ func (e *Editor) consoleOutputKey(f *floatState, k editcmd.Key, insert bool) (bo
 func (e *Editor) submitConsole(f *floatState) {
 	e.notifyInputChange(f)
 	text := f.bs.buf.Line(0)
-	e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: text})
+	e.notifyView(f, ext.MethodViewSelect, ext.ViewSelectParams{View: ext.ViewID(f.id), Item: text, Child: f.child})
 	con := f.con
 	con.history = ext.AppendConsoleHistory(con.history, text)
 	con.histPos, con.histEdits = len(con.history), nil
@@ -394,17 +394,17 @@ func (e *Editor) uiConsole(f *floatState) *ui.Console {
 // consoleOutViewport は、書き足すテキストと入力の行の組の出力のバッファのページ単位のスクロール（command.State.Viewport）と、
 // 書き足しで古い行を捨てたときの見ている行のずらし（appendFloatText）を、出力の表示領域につなぐ口である。
 // まだ描いていなければ、1 行の表示領域として扱う。部品の client が描く部品（floatState.remote）では、その client の画面の窓を使う。
+// ct は、その組の中身である（切り替えの部品の子なら、その子を描いた子の Renderer を使う。floatViewport と同じ）。
 type consoleOutViewport struct {
-	f *floatState
-	r *ui.Renderer
+	f  *floatState
+	r  *ui.Renderer
+	ct *floatContent
 }
 
 // sub は、出力を描く子の Renderer を返す。まだ描いていなければ nil である。
 func (v consoleOutViewport) sub() *ui.Renderer {
-	if c := v.f.remote; c != nil {
-		return c.r.ConsoleOutputRenderer()
-	}
-	return v.r.ConsoleOutputRenderer()
+	_, s := v.f.childRenderers(v.r, v.ct)
+	return s
 }
 
 func (v consoleOutViewport) Top() int {

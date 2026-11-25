@@ -32,8 +32,18 @@ import (
 //     （ViewTabChangeParams。API 0.10.0 で足した）
 //   - view/append（拡張機能 → 本体、通知）: 開いたテキストの部品の末尾へテキストを書き足す（ViewAppendParams。API 0.20.0 で足した）。
 //     API 0.22.0 から、書き足すテキストと入力の行の組（ViewConsole）の出力にも書き足せる
+//   - view/childSelect（本体 → 拡張機能、通知）: 利用者が切り替えの部品（ViewSwitcher）の子を切り替えたことを知らせる
+//     （ViewChildSelectParams。API 0.23.0 で足した）
 //
 // 本体は、閉じた後や知らない ID の view/update、view/append、view/close を黙って捨てる（閉じた知らせと行き違いうるため）。
+//
+// # 切り替えの部品（API 0.23.0。FR-269〜FR-271）
+//
+// ViewSwitcher は、ほかの種類の部品を子（ViewChild）として並べて持ち、窓の最初の行（見出しの行）に子の名前を並べ、
+// 選んでいる 1 つの子だけをその下に出す。子は拡張機能が決めた変わらない ID（ViewChild.ID）で指す。
+// view/update と view/append の Child で子を指すと、その子だけの中身を置き換えるか書き足す。見えていない子への置き換えと書き足しも、
+// 本体がその場で子の中身に当てる。切り替えの部品の中で起きた知らせ（view/select、view/key、view/expand、input/change）には、
+// 子の ID（Child）を付ける。ほかの部品の知らせには付けない（FR-271）。
 const (
 	// MethodPopupOpen は、拡張機能から本体へのリクエストである。params は PopupOpenParams、result は PopupOpenResult。
 	MethodPopupOpen = "popup/open"
@@ -57,6 +67,8 @@ const (
 	MethodViewTabChange = "view/tabChange"
 	// MethodViewAppend は、拡張機能から本体への通知である。params は ViewAppendParams。
 	MethodViewAppend = "view/append"
+	// MethodViewChildSelect は、本体から拡張機能への通知である。params は ViewChildSelectParams。
+	MethodViewChildSelect = "view/childSelect"
 )
 
 // ViewID は、本体が開いたポップアップに付けた番号である。本体の中で一意で、使い回さない。0 は使わない。
@@ -95,7 +107,42 @@ const (
 	// インサートモードの <Esc> はノーマルモードへ戻り、閉じない。<C-w>w で出力と入力の行の間でフォーカスを移す。
 	// view/update は出力（Text、Highlights）と Prompt だけを置き換え、Input と History は読まない（利用者が打っているため）。
 	ViewConsole ViewKind = "console"
+	// ViewSwitcher は、ほかの種類の部品を子（Children）として並べ、見出しの行で選んだ 1 つの子だけを出す部品である
+	// （FR-269。API 0.23.0 で足した。nvim-dap-view の見出しの行に当たる）。子にできるのは ViewText、ViewList、ViewTree、ViewConsole で、
+	// ViewSwitcher、ViewInput、ViewFinder は子にできない。Selected は選ぶ子の ID で、省くと最初の子である。
+	// 本体は子ごとに中身（カーソル、スクロール、木の開閉、入力の行と履歴）を持ち、切り替えても捨てない。
+	// 子を切り替える本体の操作は view.child-next、view.child-prev、view.child-first、view.child-last（既定のキーは ]v、[v、[V、]V）で、
+	// 子の Key、見出しの行の子の名前のクリック、contributes.popupKeys の子を切り替える action でも切り替える。
+	// 利用者が切り替えたら view/childSelect で知らせる。拡張機能が view/update の Selected で替えたときは知らせない。
+	// 置き場所は pane/open の split と center、popup/open の center で、popup/open の cursor は断る。
+	ViewSwitcher ViewKind = "switcher"
 )
+
+// ViewChild は、切り替えの部品（ViewSwitcher）の子 1 つである（FR-269。API 0.23.0 で足した）。
+type ViewChild struct {
+	// ID は、部品の中で一意な空でない文字列で、改行を含めない。子を指す view/update と view/append、子を指す知らせ、
+	// 宣言ファイルの popupKeys の children で使う。
+	ID string `json:"id"`
+	// Title は、見出しの行に出す子の名前である。改行を含めない。
+	Title string `json:"title"`
+	// Key は、その子へ直に切り替えるノーマルモードの 1 つのキー（"S"、"<C-x>" など。キーの表記は popupKeys と同じ）である。省ける。
+	// 部品の中のノーマルモードでだけ効き、contributes.popupKeys と本体の既定のキーより先に引く。見出しの行の名前の後に [S] の形で出す。
+	// 本体は、キーとして読めない表記、2 つ以上のキー、本体の部品の操作と重なるキー（<CR>、<Esc>、:、<C-w>）を持つ部品を、
+	// popup/open と pane/open では誤りで断り、view/update では捨てる（キーの表記は本体が読むので、Validate では確かめない）。
+	Key string `json:"key,omitempty"`
+	// Component は、子の部品である。Title は読まない（子の名前は ViewChild.Title で出す）。
+	Component ViewComponent `json:"component"`
+}
+
+// ChildKind は、k が切り替えの部品の子にできる部品の種類かを返す。
+func (k ViewKind) ChildKind() bool {
+	switch k {
+	case ViewText, ViewList, ViewTree, ViewConsole:
+		return true
+	case ViewInput, ViewFinder, ViewSwitcher:
+	}
+	return false
+}
 
 // ConsoleHistoryMax は、ViewConsole の入力の履歴の件数の上限である（基本設計 1.4。仮）。超えたら古いものから捨てる。
 const ConsoleHistoryMax = 1000
@@ -118,7 +165,7 @@ func AppendConsoleHistory(h []string, s string) []string {
 // Known は、k がこの版の API の知っている部品の種類かを返す。
 func (k ViewKind) Known() bool {
 	switch k {
-	case ViewText, ViewList, ViewTree, ViewInput, ViewFinder, ViewConsole:
+	case ViewText, ViewList, ViewTree, ViewInput, ViewFinder, ViewConsole, ViewSwitcher:
 		return true
 	}
 	return false
@@ -164,6 +211,16 @@ type ViewComponent struct {
 	// History は、ViewConsole の入力の履歴の最初の中身（古い順）である（API 0.22.0 で足した）。どの項目も改行を含めない。
 	// ConsoleHistoryMax を超える分は、本体が古いものから捨てる。view/update では読まない。
 	History []string `json:"history,omitempty"`
+	// Children は、ViewSwitcher の子の列である（API 0.23.0 で足した）。1 つ以上を持つ。他の種類では持てない。
+	Children []ViewChild `json:"children,omitempty"`
+	// Selected は、ViewSwitcher で選ぶ子の ID である（API 0.23.0 で足した）。開いたとき（popup/open、pane/open）に省くと最初の子、
+	// 部品の全体を置き換える view/update で省くと、選んでいる子を保つ（選んでいた子が無くなったら最初の子）。他の種類では持てない。
+	Selected string `json:"selected,omitempty"`
+}
+
+// ChildIndex は、ViewSwitcher の c の子のうち、ID が id の子の添字を返す。無ければ -1 である。
+func (c *ViewComponent) ChildIndex(id string) int {
+	return slices.IndexFunc(c.Children, func(ch ViewChild) bool { return ch.ID == id })
 }
 
 // ViewPreview は、一覧、木、ファインダーの項目 1 つの、プレビューに出すものである（FR-149。API 0.11.0 で足した）。
@@ -253,6 +310,18 @@ type ViewExpandParams struct {
 	Item string `json:"item"`
 	// Expanded は、開いたなら true、閉じたなら false である。
 	Expanded bool `json:"expanded"`
+	// Child は、切り替えの部品（ViewSwitcher）の中の知らせなら、その子の ID である。ほかの部品では省く（FR-271。API 0.23.0 で足した）。
+	Child string `json:"child,omitempty"`
+}
+
+// ViewChildSelectParams は、view/childSelect の params である（FR-270。API 0.23.0 で足した）。
+// 利用者の操作（本体の操作 view.child-*、子の Key、見出しの行のクリック、popupKeys の子を切り替える action）で、
+// 切り替えの部品の選ぶ子が替わったことを知らせる。拡張機能の view/update の Selected で替えたときは送らない。
+// 拡張機能は、見えていない子の中身を作らずにおき、この知らせを受けてから作ってよい。
+type ViewChildSelectParams struct {
+	View ViewID `json:"view"`
+	// Child は、選んだ子の ID である。
+	Child string `json:"child"`
 }
 
 // ViewTabChangeParams は、view/tabChange の params である（API 0.10.0 で足した）。
@@ -281,9 +350,20 @@ type ViewSpan struct {
 // 表示の文字列と入力の行の中身が改行を含まないこと、範囲が表示の文字列の中にあること、
 // プレビュー（Preview）と項目の指すファイル（File）の形を検査する。
 // 本体は、誤りのある popup/open に JSON-RPC のエラーで応答し、誤りのある view/update は捨てる。
+//
+// ViewSwitcher では、子が 1 つ以上あること、子の ID が空でなく改行を含まず重複しないこと、子の Title が改行を含まないこと、
+// 子の Key が重複しないこと、子の部品の種類が子にできるもの（ViewKind.ChildKind）であること、子の部品ごとの Validate
+// （項目の ID の重複は子ごとに数える）、Selected が子の ID のどれか（空なら最初の子）であることを検査する。
+// ViewSwitcher でない部品は、Children と Selected を持てない。
 func (c *ViewComponent) Validate() error {
 	if !c.Kind.Known() {
 		return fmt.Errorf("kind %q は知らない部品の種類である", c.Kind)
+	}
+	if c.Kind == ViewSwitcher {
+		return c.validateSwitcher()
+	}
+	if len(c.Children) > 0 || c.Selected != "" {
+		return fmt.Errorf("children と selected は switcher でだけ使える")
 	}
 	if (c.Kind == ViewInput || c.Kind == ViewFinder) && containsNewline(c.Text) {
 		return fmt.Errorf("%s の text が改行を含む", c.Kind)
@@ -344,6 +424,45 @@ func (c *ViewComponent) Validate() error {
 	return check(c.Items, "items")
 }
 
+// validateSwitcher は、ViewSwitcher の c を検査する（Validate）。
+func (c *ViewComponent) validateSwitcher() error {
+	switch {
+	case len(c.Children) == 0:
+		return fmt.Errorf("switcher の children が空である")
+	case c.Text != "" || len(c.Highlights) > 0 || len(c.Items) > 0 || c.Input != "" || c.Prompt != "" || len(c.History) > 0:
+		return fmt.Errorf("switcher は text、highlights、items、input、prompt、history を持てない（子の component に書く）")
+	}
+	ids, keys := map[string]bool{}, map[string]bool{}
+	for i, ch := range c.Children {
+		p := fmt.Sprintf("children[%d]", i)
+		switch {
+		case ch.ID == "":
+			return fmt.Errorf("%s.id が空である", p)
+		case containsNewline(ch.ID):
+			return fmt.Errorf("%s.id が改行を含む", p)
+		case ids[ch.ID]:
+			return fmt.Errorf("%s.id %q が重複する", p, ch.ID)
+		case containsNewline(ch.Title):
+			return fmt.Errorf("%s.title が改行を含む", p)
+		case ch.Key != "" && keys[ch.Key]:
+			return fmt.Errorf("%s.key %q が重複する", p, ch.Key)
+		case !ch.Component.Kind.ChildKind():
+			return fmt.Errorf("%s.component.kind %q は switcher の子にできない", p, ch.Component.Kind)
+		}
+		ids[ch.ID] = true
+		if ch.Key != "" {
+			keys[ch.Key] = true
+		}
+		if err := ch.Component.Validate(); err != nil {
+			return fmt.Errorf("%s.component: %w", p, err)
+		}
+	}
+	if c.Selected != "" && !ids[c.Selected] {
+		return fmt.Errorf("selected %q は children の id に無い", c.Selected)
+	}
+	return nil
+}
+
 func containsNewline(s string) bool {
 	for i := range len(s) {
 		if s[i] == '\n' || s[i] == '\r' {
@@ -384,6 +503,10 @@ func (p *PopupOpenParams) Validate() error {
 	case "", PopupAtCursor, PopupCenter:
 	default:
 		return fmt.Errorf("placement %q は知らない置き場所である", p.Placement)
+	}
+	if p.Component.Kind == ViewSwitcher && p.Placement != PopupCenter {
+		// カーソルの近くの 12 行の窓では、見出しの行と子を読みにくいので断る（基本設計 1.4）。
+		return fmt.Errorf("switcher は placement が center のときだけ開ける")
 	}
 	return p.Component.Validate()
 }
@@ -488,10 +611,45 @@ type PaneOpenResult struct {
 //
 // ViewConsole では、出力（Text、Highlights）と前置き（Prompt）だけを置き換え、入力の行（Input）と履歴（History）は読まない
 // （利用者が打っているため）。出力のカーソルは、テキストと同じく最後の行にあれば（Tail なら常に）新しい中身の最後の行へ置く。
+//
+// ViewSwitcher（API 0.23.0）では、Child があれば Component をその子の部品として、その子だけを置き換える（見えていない子でもよい）。
+// 子の部品の種類が開いたときと違うか、知らない子なら捨てる。Child が無ければ部品の全体を置き換え、同じ ID の子は状態を保ったまま
+// 中身を置き換え、無くなった ID の子は捨て、新しい ID の子は作る。Selected を書けばその子を選び（view/childSelect は送らない）、
+// 書かなければ選んでいる子を保つ。子を並べ直したときは、見出しの行の並びも替える。
+// Component を children の無い switcher にして Selected だけを書くと、子の中身を変えずに選ぶ子だけを替える（SelectsOnly）。
+// 全体の置き換えは、テキストと console の子の中身（書き足した出力）も送った中身で置き換えるので、選ぶ子だけを替えるときはこの形を使う。
 type ViewUpdateParams struct {
 	View      ViewID        `json:"view"`
 	Component ViewComponent `json:"component"`
 	Seq       uint64        `json:"seq,omitempty"`
+	// Child は、ViewSwitcher の子の ID である（API 0.23.0 で足した）。あれば Component はその子の部品である。
+	Child string `json:"child,omitempty"`
+}
+
+// Validate は、Component を検査する。Child があれば、Component が切り替えの部品の子にできる種類であることも検査する。
+// 選ぶ子だけを替える形（SelectsOnly）は、Selected のほかを持たないことを検査する。
+func (p *ViewUpdateParams) Validate() error {
+	if p.Child != "" && !p.Component.Kind.ChildKind() {
+		return fmt.Errorf("child のある view/update の component.kind %q は switcher の子にできない", p.Component.Kind)
+	}
+	if p.Child == "" && p.Component.Kind == ViewSwitcher && len(p.Component.Children) == 0 {
+		c := p.Component
+		switch {
+		case c.Selected == "":
+			return fmt.Errorf("children の無い switcher の view/update は selected が要る")
+		case c.Title != "" || c.Text != "" || len(c.Highlights) > 0 || len(c.Items) > 0 || c.Input != "" || c.Prompt != "" || len(c.History) > 0:
+			return fmt.Errorf("children の無い switcher の view/update は selected のほかを持てない")
+		}
+		return nil
+	}
+	return p.Component.Validate()
+}
+
+// SelectsOnly は、p が切り替えの部品の選ぶ子だけを替える view/update（Child が無く、Component が children の無い switcher で
+// Selected だけを持つ）かを返す（FR-270。API 0.23.0）。本体は子の中身（出力、書き足した中身、打ちかけの入力）を変えずに、
+// Selected の子を選ぶ（view/childSelect は送らない）。知らない子なら捨てる。
+func (p *ViewUpdateParams) SelectsOnly() bool {
+	return p.Child == "" && p.Component.Kind == ViewSwitcher && len(p.Component.Children) == 0
 }
 
 // ViewAppendParams は、view/append の params である（基本設計 1.4 の「末尾への書き足し」。FR-272。API 0.20.0 で足した）。
@@ -508,7 +666,8 @@ type ViewUpdateParams struct {
 // 閉じた部品を開き直したときに中身を戻すには、拡張機能の側で写しを持つ（ext/server の TextLog。FR-273）。
 type ViewAppendParams struct {
 	View ViewID `json:"view"`
-	// Child は、切り替えの部品（FR-269）の子の ID である。切り替えの部品はまだ無いので、空でなければ本体は知らない子として捨てる。
+	// Child は、切り替えの部品（ViewSwitcher。FR-269）の子の ID である。見えていない子にも書き足す（API 0.23.0 から。
+	// 古い本体は空でない Child の書き足しを捨てる）。知らない子と、テキストと ViewConsole でない子への書き足しは捨てる。
 	Child string `json:"child,omitempty"`
 	// Text は、書き足すテキストである。改行を含んでよい。不正な UTF-8 を含む通知は、本体がログに残して捨てる。
 	Text string `json:"text"`
@@ -636,6 +795,8 @@ type ViewSelectParams struct {
 	// 拡張機能は、この選択への応答として、同じ番号を付けた editor/execute（EditorExecuteParams.Selection）を 1 回だけ送れる。
 	// ViewInput では省く。
 	Selection uint64 `json:"selection,omitempty"`
+	// Child は、切り替えの部品（ViewSwitcher）の中の知らせなら、その子の ID である。ほかの部品では省く（FR-271。API 0.23.0 で足した）。
+	Child string `json:"child,omitempty"`
 }
 
 // InputChangeParams は、input/change の params である。
@@ -646,7 +807,10 @@ type InputChangeParams struct {
 	// Seq は、そのポップアップの入力の行が変わるたびに 1 から 1 ずつ増やす番号である（API 0.9.0 で足した）。
 	// ViewFinder の拡張機能は、この入力への一覧を view/update の Seq に同じ値を入れて返す。
 	// 本体は、前の入力への一覧が届いていなくても次の input/change を送るので、拡張機能は古い入力への計算を捨ててよい。
+	// 切り替えの部品の子では、子ごとに数える。
 	Seq uint64 `json:"seq,omitempty"`
+	// Child は、切り替えの部品（ViewSwitcher）の中の知らせなら、その子の ID である。ほかの部品では省く（FR-271。API 0.23.0 で足した）。
+	Child string `json:"child,omitempty"`
 }
 
 // ViewKeyParams は、view/key の params である（FR-69）。
@@ -658,4 +822,7 @@ type ViewKeyParams struct {
 	Item string `json:"item,omitempty"`
 	// Input は、ViewFinder の入力の行の中身である。他の部品では省く。
 	Input string `json:"input,omitempty"`
+	// Child は、切り替えの部品（ViewSwitcher）の中の知らせなら、キーを打ったときに出していた子の ID である。
+	// ほかの部品では省く（FR-271。API 0.23.0 で足した）。
+	Child string `json:"child,omitempty"`
 }

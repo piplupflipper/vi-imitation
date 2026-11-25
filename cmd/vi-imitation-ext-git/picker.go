@@ -200,7 +200,7 @@ func (x *extension) onView(_ context.Context, e *server.ViewEvent) {
 			ev.selected = &item
 		case server.ViewClosed:
 			ev.closed = true
-		case server.ViewKey, server.ViewExpanded, server.ViewTabChanged:
+		case server.ViewKey, server.ViewExpanded, server.ViewTabChanged, server.ViewChildSelected:
 		}
 		x.mu.Unlock()
 		return
@@ -215,7 +215,7 @@ func (x *extension) onView(_ context.Context, e *server.ViewEvent) {
 		go p.send(inputState{text: e.Item, seq: e.Seq})
 	case server.ViewSelected:
 		go p.choose(e.Item)
-	case server.ViewClosed, server.ViewKey, server.ViewExpanded, server.ViewTabChanged:
+	case server.ViewClosed, server.ViewKey, server.ViewExpanded, server.ViewTabChanged, server.ViewChildSelected:
 	}
 }
 
