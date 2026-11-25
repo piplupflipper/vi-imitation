@@ -29,8 +29,8 @@ import (
 //
 // 変数の値は、スコープの区画と同じ読み込み（loadScopes と varsOf。セッションと世代ごとの写し）を使い、同じ scopes と variables を 2 回送らない。
 // 区画が見えていなくても、ペインを閉じていても、選んでいるフレームの expensive でないスコープの最上位の変数だけは読む。
-// 読み始める時機は区画と同じ規則に従う（止まった位置を出し終えるまで読まない、続けて打っている間は settleDelay だけ待つ、動き出してから
-// runningShowDelay の間は消さない。pane.refresh）。
+// 読み始める時機は区画の規則に近い（止まった位置を出し終えるまで読まない、動き出してから runningShowDelay の間は消さない。pane.refresh）が、
+// 止まってから settleDelay は、続けて打っているかに依らず待つ（settleHold）。
 
 // vtKey は、行末の変数の値の作り直しの印（pane.markDirty）の名前である。区画の ID と重ならないよう、区切りの文字で始める。
 const vtKey = "\x1fvirtualText"
@@ -202,9 +202,9 @@ func (d *debugger) vtSettings() vtSettings {
 }
 
 // refreshVirtualText は、印（vtKey）が付いていれば、行末の変数の値を出し直す（FR-296）。run で呼ぶ。
-// 止まった位置を出し終えるまでと、続けて打っている間の settleDelay と、動き出してから runningShowDelay の間は、印を残して待つ
-// （区画と同じ。ステップ実行のたびに消してから出し直すと、値がちらつき、本体の描き直しの分だけ止まった位置への移動が遅れる）。
-// 止まっていなければ（動いている、終わった）、出したものを消す。
+// 止まった位置を出し終えるまでと、止まってから settleDelay（settleHold）と、動き出してから runningShowDelay の間は、印を残して待つ
+// （動き出した直後に消してから出し直すと、値がちらつき、本体の描き直しの分だけ止まった位置への移動が遅れる）。
+// 止まっていなければ（動いている、終わった、終えているところ）、出したものを消す。
 //
 // req: FR-296
 func (p *pane) refreshVirtualText() {
@@ -250,7 +250,8 @@ func (p *pane) virtualTextsFor(cfg vtSettings) (want map[ext.BufferID]vtSent, x 
 		return nil, nil, errStale
 	}
 	c, ok := current(ss, cur)
-	if !ok || !c.halted || !c.hasFrame || c.at == nil {
+	if !ok || !c.halted || !c.hasFrame || c.at == nil || c.s.stopping.Load() || c.s.terminated.Load() || c.s.debuggeeExited.Load() {
+		// 終えているところのセッション（debug.terminate、terminated と exited の event の後）は、終わるのを待たずに消す。
 		return nil, nil, nil
 	}
 	p.d.mu.Lock()

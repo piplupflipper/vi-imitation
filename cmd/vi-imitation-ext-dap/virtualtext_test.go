@@ -337,6 +337,52 @@ func TestVirtualText(t *testing.T) {
 	h.waitEnded()
 }
 
+// TestVirtualTextSettle は、止まってから settleDelay の間は読まず（続けて打っているかに依らない）、その間に次のステップ実行を打てば、
+// その停止の scopes と variables を送らずに、次の停止の値だけを出すことを確かめる。
+//
+// req: FR-296
+func TestVirtualTextSettle(t *testing.T) {
+	h := vtHost(t, nil, map[string]any{"enabled": true, "position": "eol"}, nil)
+	h.mustExec(cmdToggleBreakpoint, 9)
+	h.waitSigns(ext.Sign{Line: 9, Kind: ext.SignBreakpoint})
+	h.mustExec(cmdStart, 0)
+	h.waitOpen()
+	shown := time.Now()
+	h.waitVT(1, vtHas("x = 1"), nil)
+	if d := time.Since(shown); d < settleDelay-20*time.Millisecond {
+		t.Errorf("read %v after the stop, want after %v", d, settleDelay)
+	}
+	h.drainOutputs(100 * time.Millisecond)
+	h.mustExec(cmdNext, 0)
+	h.waitOpen()
+	h.mustExec(cmdNext, 0)
+	h.waitVT(1, vtHas("x = 3"), nil)
+	if out := h.drainOutputs(200 * time.Millisecond); strings.Count(out, "scopes 1000\n") != 1 || strings.Count(out, "variables 1 ") != 1 {
+		t.Errorf("requests for two quick steps = %q, want one scopes and one variables", out)
+	}
+}
+
+// TestVirtualTextStopping は、debug.terminate で、セッションが終わるのを待たずに消すことを確かめる（アダプターが disconnect に応えず、
+// 終わるまで期限を待つ形。debugpy は terminate の後、セッションが終わるまで数秒かかった）。
+//
+// req: FR-296
+func TestVirtualTextStopping(t *testing.T) {
+	h := vtHost(t, map[string]any{"ignore": []any{"disconnect"}}, map[string]any{"enabled": true}, nil)
+	h.mustExec(cmdToggleBreakpoint, 9)
+	h.waitSigns(ext.Sign{Line: 9, Kind: ext.SignBreakpoint})
+	h.mustExec(cmdStart, 0)
+	h.waitVT(1, vtHas(" = 1"), nil)
+	h.mustExec(cmdStop, 0)
+	h.waitVT(1, vtEmpty, nil)
+	h.d.mu.Lock()
+	n := len(h.d.sessions)
+	h.d.mu.Unlock()
+	if n != 1 {
+		t.Errorf("sessions = %d when cleared, want the session still ending", n)
+	}
+	h.waitEnded()
+}
+
 // TestVirtualTextContinue は、続行して動いている間（runningShowDelay の後）に消し、次に止まったら出し直すことを確かめる。
 //
 // req: FR-296

@@ -89,6 +89,9 @@ type session struct {
 	stopping atomic.Bool
 	// terminated は、terminated の event を受け取ったことを表す。
 	terminated atomic.Bool
+	// debuggeeExited は、exited の event（デバッグ対象が終わった）を受け取ったことを表す。行末の変数の値は、これと terminated と
+	// stopping のどれかが立てば、セッションが終わるのを待たずに消す（nvim-dap-virtual-text も event_exited と event_terminated で消す）。
+	debuggeeExited atomic.Bool
 	// ended は、後始末が終わると閉じる。
 	ended chan struct{}
 	// eventCtx は、event の処理（stopped）と接続の試し直しが本体とデバッグアダプターへ送る request の ctx の親である。
@@ -672,6 +675,8 @@ func (s *session) pause(ctx context.Context, tid int) error {
 // req: FR-284, FR-285
 func (s *session) stop(ctx context.Context, grace time.Duration) {
 	s.stopping.Store(true)
+	// 行末の変数の値は、終え終わるのを待たずに消す（debugpy は terminate の後、セッションが終わるまで数秒かかる）。
+	s.d.pane.markDirty(vtKey)
 	s.cancelEvents()
 	s.stopChildren(ctx, grace)
 	s.terminate(ctx)
@@ -896,6 +901,8 @@ func (s *session) handleEvent(e dapEvent) {
 		}
 		s.d.pane.threadEvent(s, body)
 	case "exited":
+		s.debuggeeExited.Store(true)
+		s.d.pane.markDirty(vtKey)
 		var body exitedEvent
 		if err := json.Unmarshal(e.body, &body); err == nil {
 			if s.parent != nil {
@@ -908,6 +915,7 @@ func (s *session) handleEvent(e dapEvent) {
 		s.terminated.Store(true)
 		s.terminatedOnce.Do(func() { close(s.terminatedCh) })
 		s.d.clearExecution(s)
+		s.d.pane.markDirty(vtKey)
 		// デバッグアダプターがセッションを終えた。子のセッションを終えてから、disconnect を送ってデバッグアダプターを終わらせる。
 		// debug.terminate で終わらせている最中なら、stop が disconnect を送るので、ここでは送らない（二重に送ると、閉じた接続への書き込みになる）。
 		if !s.stopping.Load() {
