@@ -12,16 +12,17 @@ import (
 	"github.com/piplupflipper/vi-imitation/ext/expand"
 )
 
-// この節は、デバッグの構成の変数 ${input:ID}（VS Code の launch.json の inputs）の読み方と聞き方である（基本設計 6.4。FR-298）。
+// この節は、デバッグの構成の変数 ${input:ID}（VS Code の launch.json の inputs）の読み方と聞き方である（基本設計 6.4。FR-298、FR-307）。
 // VS Code の文書「Variables reference」の「Input variables」（https://code.visualstudio.com/docs/reference/variables-reference）に合わせた。
 //
 // inputs は、.vscode/launch.json と利用者の設定（DAP の拡張機能の設定の inputs）に書ける。
 // .vscode/launch.json の構成の ${input:ID} は、その launch.json の inputs を先に引き、無ければ設定の inputs を引く。
-// 設定の構成は、設定の inputs だけを引く。
+// 設定の構成と、アダプターの起動の方法の ${input:ID} は、設定の inputs だけを引く。
+// 1 つの表の中に同じ id が 2 つあれば、後のものを使う（VS Code と同じ）。
 //
 // 項目の形は VS Code と同じで、id、type（promptString、pickString、command）、description、default、password、options を読む。
 // command の種類の command と args は読まない（扱えない変数にする）。
-// VS Code に無い項目 split（真偽）を足した。真なら、配列の要素の全体が ${input:ID} だけのとき、答えを空白で分けた複数の要素にする（spliceSplit）。
+// 利用者の設定の inputs にだけ、VS Code に無い項目 split（真偽）を書ける（FR-307。spliceSplit）。
 
 // 入力の種類（inputs の type）である。
 const (
@@ -33,6 +34,9 @@ const (
 // maxChoiceAsk は、choice/ask で聞く選択肢の数の上限である。choice/ask は番号のキーで選ぶ 9 つまでの問いなので、
 // それより多い pickString の options は、中央のポップアップの一覧（pick）で選ばせる（基本設計 6.4 の #408 の決め）。
 const maxChoiceAsk = 9
+
+// errSplitInLaunchJSON は、.vscode/launch.json の inputs に split が書かれていることを表す（FR-307）。
+var errSplitInLaunchJSON = errors.New("split は .vscode/launch.json の inputs では扱えない（利用者の設定の inputs にだけ書ける）")
 
 // inputOption は、pickString の選択肢 1 つである。文字列の選択肢は label と value が同じになる。
 type inputOption struct {
@@ -57,30 +61,32 @@ type inputDef struct {
 	hasDefault bool
 	password   bool
 	options    []inputOption
-	// split は、答えを空白で分けて配列の複数の要素にするかである（VS Code に無い項目）。
+	// split は、答えを ASCII の空白で分けて配列の複数の要素にするかである（VS Code に無い項目。FR-307）。
 	split bool
 	// invalid は、項目の形の誤りである。その ID の ${input:…} を使ったときに、扱えない変数として知らせる。
 	invalid error
 }
 
-// inputTable は、引く順に並べた inputs である。同じ ID が 2 つあれば、前のものを使う。
+// inputTable は、1 つの出どころ（.vscode/launch.json か設定）の inputs を、書いた順に並べたものである。
 type inputTable []inputDef
 
-// find は、ID が id の項目と、表の中の位置を返す。
-func (t inputTable) find(id string) (inputDef, int, bool) {
-	for i, in := range t {
-		if in.id == id {
-			return in, i, true
+// find は、ID が id の項目を返す。同じ id が 2 つ以上あれば、後のものを返す（VS Code の
+// baseConfigurationResolverService.ts の showUserInput が inputInfos.filter(...).pop() で後のものを使うのに合わせた）。
+func (t inputTable) find(id string) (inputDef, bool) {
+	for i := len(t) - 1; i >= 0; i-- {
+		if t[i].id == id {
+			return t[i], true
 		}
 	}
-	return inputDef{}, -1, false
+	return inputDef{}, false
 }
 
 // parseInputs は、inputs の値（配列）を読む。配列でない、要素がオブジェクトでない、id が文字列でないか空のときは誤りを返す。
 // ほかの形の誤り（type が文字列でない、options が配列でない など）は、項目の invalid に覚え、その ID を使ったときに知らせる。
+// allowSplit が偽（.vscode/launch.json の inputs）なら、split を書いた項目を扱えない項目にする（FR-307）。
 //
 // req: FR-298
-func parseInputs(raw any) (inputTable, error) {
+func parseInputs(raw any, allowSplit bool) (inputTable, error) {
 	if raw == nil {
 		return nil, nil
 	}
@@ -98,19 +104,20 @@ func parseInputs(raw any) (inputTable, error) {
 		if id == "" {
 			return nil, fmt.Errorf("inputs[%d].id is not a non-empty string", i)
 		}
-		out = append(out, parseInput(id, m))
+		out = append(out, parseInput(id, m, allowSplit))
 	}
 	return out, nil
 }
 
 // parseInput は、inputs の項目 1 つを読む。
-func parseInput(id string, m map[string]any) inputDef {
+func parseInput(id string, m map[string]any, allowSplit bool) inputDef {
 	in := inputDef{id: id}
-	bad := func(format string, args ...any) {
+	bad := func(err error) {
 		if in.invalid == nil {
-			in.invalid = fmt.Errorf(format, args...)
+			in.invalid = err
 		}
 	}
+	badf := func(format string, args ...any) { bad(fmt.Errorf(format, args...)) }
 	str := func(key string) string {
 		v, ok := m[key]
 		if !ok || v == nil {
@@ -118,7 +125,7 @@ func parseInput(id string, m map[string]any) inputDef {
 		}
 		s, ok := v.(string)
 		if !ok {
-			bad("%s が文字列でない", key)
+			badf("%s が文字列でない", key)
 		}
 		return s
 	}
@@ -129,9 +136,12 @@ func parseInput(id string, m map[string]any) inputDef {
 		}
 		b, ok := v.(bool)
 		if !ok {
-			bad("%s が真偽でない", key)
+			badf("%s が真偽でない", key)
 		}
 		return b
+	}
+	if _, has := m["split"]; has && !allowSplit {
+		bad(errSplitInLaunchJSON)
 	}
 	in.kind = str("type")
 	in.description = str("description")
@@ -139,11 +149,13 @@ func parseInput(id string, m map[string]any) inputDef {
 		in.def, in.hasDefault = str("default"), true
 	}
 	in.password = flag("password")
-	in.split = flag("split")
+	if allowSplit {
+		in.split = flag("split")
+	}
 	if v, ok := m["options"]; ok && v != nil {
 		arr, ok := v.([]any)
 		if !ok {
-			bad("options が配列でない")
+			badf("options が配列でない")
 		}
 		for i, x := range arr {
 			switch o := x.(type) {
@@ -153,14 +165,14 @@ func parseInput(id string, m map[string]any) inputDef {
 				value, vok := o["value"].(string)
 				label, lok := o["label"].(string)
 				if _, has := o["label"]; has && !lok {
-					bad("options[%d].label が文字列でない", i)
+					badf("options[%d].label が文字列でない", i)
 				}
 				if !vok {
-					bad("options[%d].value が文字列でない", i)
+					badf("options[%d].value が文字列でない", i)
 				}
 				in.options = append(in.options, inputOption{label: label, value: value})
 			default:
-				bad("options[%d] が文字列でもオブジェクトでもない", i)
+				badf("options[%d] が文字列でもオブジェクトでもない", i)
 			}
 		}
 	}
@@ -213,18 +225,33 @@ func (in inputDef) title() string {
 	return t + " "
 }
 
-// inputAsker は、1 回の開始の ${input:ID} を聞いて覚える。同じ ID は 1 回だけ聞く（FR-298。文書の「If a variable occurs more than once, it is only evaluated once.」）。
+// 利用者に聞く変数の印である。
+var (
+	varPickProcess = expand.Var{Name: "pickProcess"}
+)
+
+// inputAsker は、1 回の開始の、利用者に聞く変数（${input:ID} と ${pickProcess}）を聞いて覚える。
+// 同じ変数は 1 回だけ聞く（FR-298。文書の「If a variable occurs more than once, it is only evaluated once.」）。
 // 1 回の開始の中だけで使い、debug.runLast と debug.restart は、聞き終えて値を当てた構成（runSpec）を使うので聞き直さない。
 type inputAsker struct {
-	d       *debugger
-	ctx     context.Context
-	table   inputTable
-	answers map[string]string
+	d   *debugger
+	ctx context.Context
+	// launch は .vscode/launch.json の inputs（設定の構成では nil）、settings は設定の inputs である。
+	launch, settings inputTable
+	answers          map[expand.Var]string
 }
 
-// newInputAsker は、表 table を引いて聞く inputAsker を作る。d が nil なら聞けない（設定の例を確かめるテストの Check のため）。
-func newInputAsker(ctx context.Context, d *debugger, table inputTable) *inputAsker {
-	return &inputAsker{d: d, ctx: ctx, table: table, answers: map[string]string{}}
+// newInputAsker は、launch、settings の順に引いて聞く inputAsker を作る。d が nil なら聞けない（設定の例を確かめるテストの Check のため）。
+func newInputAsker(ctx context.Context, d *debugger, launch, settings inputTable) *inputAsker {
+	return &inputAsker{d: d, ctx: ctx, launch: launch, settings: settings, answers: map[expand.Var]string{}}
+}
+
+// lookup は、ID が id の項目を、.vscode/launch.json の inputs、設定の inputs の順に引く。
+func (a *inputAsker) lookup(id string) (inputDef, bool) {
+	if in, ok := a.launch.find(id); ok {
+		return in, true
+	}
+	return a.settings.find(id)
 }
 
 // check は、${input:ID} の引数 id を、聞かずに確かめる（expand.Entry の Check）。
@@ -234,54 +261,109 @@ func (a *inputAsker) check(id string) error {
 	if id == "" {
 		return errors.New("ID が無い")
 	}
-	in, _, ok := a.table.find(id)
+	in, ok := a.lookup(id)
 	if !ok {
 		return fmt.Errorf("inputs に ID %q が無い", id)
 	}
 	return in.check()
 }
 
-// value は、${input:ID} の値を返す（expand.Entry の Value）。聞いていなければ聞く。
-func (a *inputAsker) value(id string) (string, error) {
-	if v, ok := a.answers[id]; ok {
-		return v, nil
+// checkAdapter は、アダプターの起動の方法 adapter の ${input:ID} が、.vscode/launch.json の inputs に無いことを確かめる。
+// アダプターの起動の方法は利用者の設定だけが決めるので（#399 の決め）、設定の inputs だけを引く。
+// 構成と同じ 1 回の展開で同じ変数を 1 回だけ評価するので、launch.json の inputs に同じ ID があれば、どちらの項目で聞くかを決められず、誤りにする。
+func (a *inputAsker) checkAdapter(adapter any) error {
+	vars, err := expand.Vars(adapter)
+	if err != nil {
+		return err
 	}
-	in, _, ok := a.table.find(id)
-	if !ok {
-		return "", fmt.Errorf("inputs に ID %q が無い", id)
+	var bad []string
+	for _, v := range vars {
+		if v.Name != "input" {
+			continue
+		}
+		if _, ok := a.launch.find(v.Arg); ok {
+			bad = append(bad, v.String())
+		}
 	}
-	v, err := a.ask(in)
+	if len(bad) > 0 {
+		return fmt.Errorf("アダプターの起動の方法の %s は、設定の inputs で引くが、.vscode/launch.json の inputs にも同じ ID がある", strings.Join(bad, "、"))
+	}
+	return nil
+}
+
+// inputValue と pickProcessValue は、expand.Entry の Value である。聞いていなければ聞く。
+func (a *inputAsker) inputValue(id string) (string, error) {
+	return a.get(expand.Var{Name: "input", Arg: id})
+}
+
+func (a *inputAsker) pickProcessValue(string) (string, error) { return a.get(varPickProcess) }
+
+// get は、利用者に聞く変数 v の値を返す。聞いていなければ聞いて覚える。
+func (a *inputAsker) get(v expand.Var) (string, error) {
+	if s, ok := a.answers[v]; ok {
+		return s, nil
+	}
+	if a.d == nil {
+		return "", errors.New("聞けない")
+	}
+	var s string
+	var err error
+	if v == varPickProcess {
+		s, err = a.d.pickProcess(a.ctx)
+	} else {
+		in, ok := a.lookup(v.Arg)
+		if !ok {
+			return "", fmt.Errorf("inputs に ID %q が無い", v.Arg)
+		}
+		s, err = a.ask(in)
+	}
 	if err != nil {
 		return "", err
 	}
-	a.answers[id] = v
-	return v, nil
+	a.answers[v] = s
+	return s, nil
 }
 
-// askAll は、値 unit の ${input:ID} を、inputs の表に書いた順に聞いて覚える（展開の前に呼ぶ）。
-// 展開の口（ext/expand）の評価の順は値のキーの辞書順で意味を持たないので、利用者が順を決められるよう、表の順で先に聞く（仮）。
+// interactive は、v が利用者に聞く変数（${input:ID} か ${pickProcess}）かを返す。
+func interactive(v expand.Var) bool { return v.Name == "input" || v == varPickProcess }
+
+// writtenVars は、構成の JSON の文字列 raw に、利用者に聞く変数が書かれた順（重ねない）を返す。
+// JSON に読むと map のキーの順が失われるので、読む前の文字列から取る。
+func writtenVars(raw []byte) []expand.Var {
+	vars, err := expand.Vars(string(raw))
+	if err != nil {
+		return nil
+	}
+	var out []expand.Var
+	for _, v := range vars {
+		if interactive(v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// askAll は、値 unit の利用者に聞く変数を、展開の前に聞いて覚える。
+// 聞く順は、構成に書いた順 written（VS Code が構成を書いた順にたどって変数を集め、出てきた順に聞くのに合わせた。
+// configurationResolverExpression.ts と baseConfigurationResolverService.ts の resolveWithInteraction）で、
+// written に無いもの（アダプターの起動の方法、1 組の設定の構成）はその後に聞く。
 // 取り消したら errPickCancelled を返し、残りを聞かない。
 //
 // req: FR-298
-func (a *inputAsker) askAll(unit any) error {
+func (a *inputAsker) askAll(unit any, written []expand.Var) error {
 	vars, err := expand.Vars(unit)
 	if err != nil {
 		return err
 	}
-	var ids []string
-	for _, v := range vars {
-		if v.Name == "input" && !slices.Contains(ids, v.Arg) {
-			ids = append(ids, v.Arg)
+	var order []expand.Var
+	for _, v := range append(slices.Clone(written), vars...) {
+		if interactive(v) && slices.Contains(vars, v) && !slices.Contains(order, v) {
+			order = append(order, v)
 		}
 	}
-	slices.SortStableFunc(ids, func(x, y string) int {
-		_, i, _ := a.table.find(x)
-		_, j, _ := a.table.find(y)
-		return i - j
-	})
-	for _, id := range ids {
-		if _, err := a.value(id); err != nil {
-			return fmt.Errorf("${input:%s}: %w", id, err)
+	for _, v := range order {
+		if _, err := a.get(v); err != nil {
+			return fmt.Errorf("%s: %w", v, err)
 		}
 	}
 	return nil
@@ -293,9 +375,6 @@ func (a *inputAsker) askAll(unit any) error {
 //
 // req: FR-298
 func (a *inputAsker) ask(in inputDef) (string, error) {
-	if a.d == nil {
-		return "", errors.New("聞けない")
-	}
 	switch in.kind {
 	case inputPromptString:
 		res, err := a.d.srv.AskInput(a.ctx, ext.InputAskParams{Title: in.title(), Default: in.def})
@@ -349,41 +428,52 @@ func (a *inputAsker) ask(in inputDef) (string, error) {
 	}
 }
 
+// splitASCII は、答え s を ASCII の空白（U+0020）とその連続で分ける。空の要素は捨てる（nvim の trimempty と同じ）。
+// 全角の空白とタブでは分けず、引用符とエスケープは解かない（FR-307。オーナーの nvim の vim.split(…, " ") と同じ）。
+func splitASCII(s string) []string {
+	var out []string
+	for f := range strings.SplitSeq(s, " ") {
+		if f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // spliceSplit は、展開の前の値 before で、配列の要素の全体が split の項目の ${input:ID} だけだった所を、
-// 展開した値 after の中で、答えを空白で分けた複数の要素に置き換える（空白だけの答えは要素を消す）。
-// オーナーの nvim の vim.split(vim.fn.input("Args: "), " ", { trimempty = true }) に当たる。引用符は解かない（仮）。
+// 展開した値 after の中で、答えを ASCII の空白で分けた複数の要素に置き換える（空白だけの答えは要素を消す）。
 // 配列の要素でない所と、ほかの文字と混ざった所は、答えを 1 つの文字列のまま入れる（VS Code と同じ）。
 //
-// req: FR-298
-func spliceSplit(after, before any, table inputTable) any {
+// req: FR-307
+func (a *inputAsker) spliceSplit(after, before any) any {
 	switch b := before.(type) {
 	case map[string]any:
-		a, ok := after.(map[string]any)
+		m, ok := after.(map[string]any)
 		if !ok {
 			return after
 		}
-		for k, v := range a {
+		for k, v := range m {
 			if bv, ok := b[k]; ok {
-				a[k] = spliceSplit(v, bv, table)
+				m[k] = a.spliceSplit(v, bv)
 			}
 		}
-		return a
+		return m
 	case []any:
-		a, ok := after.([]any)
-		if !ok || len(a) != len(b) {
+		arr, ok := after.([]any)
+		if !ok || len(arr) != len(b) {
 			return after
 		}
-		out := make([]any, 0, len(a))
-		for i := range a {
-			if s, ok := b[i].(string); ok && splitVar(s, table) {
-				if v, ok := expand.Plain(a[i]).(string); ok {
-					for _, f := range strings.Fields(v) {
+		out := make([]any, 0, len(arr))
+		for i := range arr {
+			if s, ok := b[i].(string); ok && a.splitVar(s) {
+				if v, ok := expand.Plain(arr[i]).(string); ok {
+					for _, f := range splitASCII(v) {
 						out = append(out, f)
 					}
 					continue
 				}
 			}
-			out = append(out, spliceSplit(a[i], b[i], table))
+			out = append(out, a.spliceSplit(arr[i], b[i]))
 		}
 		return out
 	default:
@@ -392,7 +482,7 @@ func spliceSplit(after, before any, table inputTable) any {
 }
 
 // splitVar は、s の全体が、split が真の項目を指す ${input:ID} だけかを返す。
-func splitVar(s string, table inputTable) bool {
+func (a *inputAsker) splitVar(s string) bool {
 	id, ok := strings.CutPrefix(s, "${input:")
 	if !ok {
 		return false
@@ -401,6 +491,6 @@ func splitVar(s string, table inputTable) bool {
 	if !ok || strings.ContainsAny(id, "{}") {
 		return false
 	}
-	in, _, found := table.find(id)
+	in, found := a.lookup(id)
 	return found && in.split
 }

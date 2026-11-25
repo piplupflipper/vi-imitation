@@ -424,7 +424,7 @@
               "cwd": "${workspaceFolder}",
               "python": "${workspaceFolder}/.venv/bin/python",
             },
-            // 引数を聞いて渡す。${input:args} は下の inputs の split の項目なので、答えを空白で分けた複数の引数になる
+            // 引数を聞いて渡す。${input:args} は下の inputs の split の項目なので、答えを ASCII の空白で分けた複数の引数になる
             {
               "name": "今のファイルを実行（引数を聞く）",
               "type": "python",
@@ -520,9 +520,10 @@
             { "name": "開発用のサーバーへ attach（9229）", "type": "pwa-node", "request": "attach", "port": 9229, "cwd": "${workspaceFolder}", "sourceMaps": true, "skipFiles": ["<node_internals>/**"] },
           ],
         },
-        // ${input:ID} で、始めるときに聞く値（.vscode/launch.json の inputs と同じ形）。同じ ID は 1 回の開始で 1 回だけ、ここに書いた順に聞く。
+        // ${input:ID} で、始めるときに聞く値（.vscode/launch.json の inputs と同じ形）。同じ ID は 1 回の開始で 1 回だけ、構成に書いた順に聞く。
         // promptString は 1 行の入力（default は初めの中身）、pickString は options から選ばせる。command の種類と password は扱えない。
-        // split（VS Code に無い項目）が真なら、配列の要素の全体が ${input:ID} だけのとき、答えを空白で分けた複数の要素にする（引用符は解かない）。
+        // split（VS Code に無い項目。この設定にだけ書け、.vscode/launch.json には書けない）が真なら、配列の要素の全体が ${input:ID} だけのとき、
+        // 答えを ASCII の空白で分けた複数の要素にする（全角の空白では分けず、引用符は解かない。空白を含む引数は split の無い別の変数にする）。
         // debug.runLast（<leader>dl）と debug.restart は、前回の答えを使い、聞き直さない
         "inputs": [
           { "id": "module", "type": "promptString", "description": "モジュール（-m）" },

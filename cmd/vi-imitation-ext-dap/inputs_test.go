@@ -223,15 +223,19 @@ func TestInputsLaunchJSON(t *testing.T) {
 	writeFile(t, filepath.Join(root, ".vscode", "launch.json"), `{
   "configurations": [
     { "name": "L", "type": "fake", "request": "launch", "program": "${input:p}", "port": "${input:onlySettings}" },
+    { "name": "LS", "type": "fake", "request": "launch", "args": ["${input:sp}"] },
+    { "name": "LA", "type": "fakein", "request": "launch" },
   ],
   "inputs": [
+    { "id": "p", "type": "promptString", "description": "launch.json の前の p" },
     { "id": "p", "type": "promptString", "description": "launch.json の p" },
+    { "id": "sp", "type": "promptString", "split": true },
   ],
 }`)
 	file := filepath.Join(root, "main.go")
 	writeFile(t, file, srcText)
 	h := newHost(t, mustJSON(t, map[string]any{
-		"adapters":       map[string]any{"fake": fakeDef(transportStdio)},
+		"adapters":       map[string]any{"fake": fakeDef(transportStdio), "fakein": fakeDef(transportStdio, "${input:p}")},
 		"configurations": map[string]any{"go": []any{map[string]any{"name": "S", "type": "fake", "request": "launch", "program": "${input:p}"}}},
 		"inputs": []any{
 			map[string]any{"id": "onlySettings", "type": "promptString", "description": "設定の onlySettings"},
@@ -271,6 +275,57 @@ func TestInputsLaunchJSON(t *testing.T) {
 	}
 	h.waitSigns(bp2, exec2)
 	h.stopAndWait()
+
+	// launch.json の inputs の split は、聞かずに知らせて始めない（FR-307）。
+	h.mustExec(cmdStart, 0)
+	p = h.waitPane()
+	h.selectItem(p.id, p.itemID(t, "LS  (launch.json)"))
+	h.waitMessage("split は .vscode/launch.json の inputs では扱えない")
+	h.noAsk("split in launch.json")
+
+	// アダプターの起動の方法の ${input:…} は設定の inputs で引くので、launch.json の inputs に同じ ID があれば始めない。
+	h.mustExec(cmdStart, 0)
+	p = h.waitPane()
+	h.selectItem(p.id, p.itemID(t, "LA  (launch.json)"))
+	h.waitMessage("アダプターの起動の方法の ${input:p}")
+	h.noAsk("adapter input shadowed by launch.json")
+}
+
+// TestInputOrder は、${input:ID} と ${pickProcess} を、inputs の表の順でもキーの辞書順でもなく、構成に書いた順に聞くことを確かめる
+// （VS Code が構成を書いた順にたどって聞くのに合わせた）。
+//
+// req: FR-298
+func TestInputOrder(t *testing.T) {
+	settings := `{
+  "adapters": {"fake": ` + mustJSON(t, fakeDef(transportStdio)) + `},
+  "configurations": {"go": [
+    {"name": "O", "type": "fake", "request": "attach", "z": "${input:b}", "args": ["${input:c}", "${input:a}"], "pid": "${pickProcess}", "y": "${input:a}"}
+  ]},
+  "inputs": [
+    {"id": "a", "type": "promptString", "description": "a"},
+    {"id": "b", "type": "promptString", "description": "b"},
+    {"id": "c", "type": "promptString", "description": "c"}
+  ]
+}`
+	h := newHost(t, settings)
+	h.openFT(srcPath, "go")
+	h.mustExec(cmdToggleBreakpoint, 2)
+	h.mustExec(cmdStart, 0)
+	for _, want := range []string{"b: ", "c: ", "a: "} {
+		if q := h.waitInputAsk(); q.Title != want {
+			t.Errorf("input/ask = %q, want %q", q.Title, want)
+		}
+		h.inputAnswers <- ext.InputAskResult{Value: want[:1]}
+	}
+	p := h.waitPane()
+	h.selectItem(p.id, p.params.Component.Items[0].ID)
+	args := h.waitArgs("attach")
+	if args["z"] != "b" || args["y"] != "a" || mustJSON(t, args["args"]) != `["c","a"]` {
+		t.Errorf("attach args = %v", args)
+	}
+	h.noAsk("after the answers")
+	h.waitSigns(bp2, exec2)
+	h.stopAndWait()
 }
 
 // TestParseInputs は、inputs の形の誤りのうち、表を作れないもの（配列でない、id が無い）は読む誤りにし、
@@ -300,30 +355,44 @@ func TestParseInputs(t *testing.T) {
 		{"id": "badsplit", "type": "promptString", "split": "yes"},
 		{"id": "notype"},
 		{"id": "other", "type": "pickFile"},
-		{"id": "ok", "type": "command"}
+		{"id": "dup", "type": "command"},
+		{"id": "dup", "type": "promptString"},
+		{"id": "split", "type": "promptString", "split": true}
 	]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := newInputAsker(t.Context(), nil, s.inputs)
+	a := newInputAsker(t.Context(), nil, nil, s.inputs)
 	for id, ok := range map[string]bool{
 		"ok": true, "pick": true, "nodefault": false, "noopts": false, "badopts": false, "pw": false, "cmd": false,
-		"nl": false, "badsplit": false, "notype": false, "other": false, "missing": false, "": false,
+		"nl": false, "badsplit": false, "notype": false, "other": false, "missing": false, "": false, "dup": true, "split": true,
 	} {
 		if err := a.check(id); (err == nil) != ok {
 			t.Errorf("check(%q) = %v, want ok %v", id, err, ok)
 		}
 	}
-	// 同じ ID の 2 つ目（command）は使わない。
-	if in, i, _ := s.inputs.find("ok"); i != 0 || in.kind != inputPromptString {
-		t.Errorf("find(ok) = %+v at %d, want the first", in, i)
+	// 同じ表の同じ ID は、後のもの（promptString）を使う（VS Code と同じ）。
+	if in, _ := s.inputs.find("dup"); in.kind != inputPromptString {
+		t.Errorf("find(dup) = %+v, want the last", in)
 	}
-	if in, _, _ := s.inputs.find("pick"); !slices.Equal(in.options, []inputOption{{"a", "a"}, {"L", "b"}}) {
+	if in, _ := s.inputs.find("pick"); !slices.Equal(in.options, []inputOption{{"a", "a"}, {"L", "b"}}) {
 		t.Errorf("pick options = %+v", in.options)
 	}
+	if in, _ := s.inputs.find("split"); !in.split {
+		t.Errorf("settings split = %+v, want split", in)
+	}
 	// 聞けない asker（設定の例の確かめ）は、聞かずに誤りを返す。
-	if _, err := a.value("ok"); err == nil {
+	if _, err := a.inputValue("ok"); err == nil {
 		t.Error("value without a debugger: nil error")
+	}
+
+	// .vscode/launch.json の inputs の split は、扱えない項目にする（FR-307）。
+	lt, lerr := parseInputs([]any{map[string]any{"id": "s", "type": "promptString", "split": true}}, false)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if err := newInputAsker(t.Context(), nil, lt, nil).check("s"); !errors.Is(err, errSplitInLaunchJSON) {
+		t.Errorf("check(launch.json split) = %v, want errSplitInLaunchJSON", err)
 	}
 }
 
@@ -345,16 +414,17 @@ func TestInputTitle(t *testing.T) {
 	}
 }
 
-// TestSpliceSplit は、split の項目の ${input:ID} が配列の要素の全体のときだけ、答えを空白で分けた要素にすることを確かめる。
+// TestSpliceSplit は、split の項目の ${input:ID} が配列の要素の全体のときだけ、答えを ASCII の空白で分けた要素にし、
+// 全角の空白、タブ、引用符では分けないことを確かめる。
 //
-// req: FR-298
+// req: FR-307
 func TestSpliceSplit(t *testing.T) {
-	table := inputTable{{id: "s", kind: inputPromptString, split: true}, {id: "n", kind: inputPromptString}}
+	a := newInputAsker(t.Context(), nil, nil, inputTable{{id: "s", kind: inputPromptString, split: true}, {id: "n", kind: inputPromptString}, {id: "q", kind: inputPromptString, split: true}})
 	before := map[string]any{
-		"args":  []any{"-x", "${input:s}", "pre ${input:s}", "${input:n}", []any{"${input:s}"}},
+		"args":  []any{"-x", "${input:s}", "pre ${input:s}", "${input:n}", []any{"${input:s}"}, "${input:q}"},
 		"whole": "${input:s}",
 	}
-	values := map[string]string{"s": "a  b", "n": "c d"}
+	values := map[string]string{"s": " a  b ", "n": "c d", "q": `"x y"` + " d　e\tf"}
 	r := expand.Resolver{Vars: map[string]expand.Entry{"input": {Value: func(id string) (string, error) {
 		v, ok := values[id]
 		if !ok {
@@ -366,8 +436,8 @@ func TestSpliceSplit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := spliceSplit(after, before, table)
-	want := `{"args":["-x","a","b","pre a  b","c d",["a","b"]],"whole":"a  b"}`
+	got := a.spliceSplit(after, before)
+	want := `{"args":["-x","a","b","pre  a  b ","c d",["a","b"],"\"x","y\"","d　e\tf"],"whole":" a  b "}`
 	if s := mustJSON(t, got); s != want {
 		t.Errorf("spliceSplit = %s, want %s", s, want)
 	}

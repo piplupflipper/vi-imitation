@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -197,9 +196,9 @@ func (d *debugger) candidates(inv invocation, workDir string) []candidate {
 					d.showInfo(fmt.Sprintf("%s の compounds は扱えないので、候補に出さない", path))
 				}
 			}
-			for _, c := range lf.configurations {
+			for i, c := range lf.configurations {
 				name, _ := c["name"].(string)
-				out = append(out, candidate{name: name, source: sourceLaunchJSON, config: c, folder: folder, inputs: lf.inputs})
+				out = append(out, candidate{name: name, source: sourceLaunchJSON, config: c, folder: folder, inputs: lf.inputs, written: lf.written[i]})
 			}
 		}
 	}
@@ -259,10 +258,13 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 	// 3. 変数の展開。構成とアダプターの起動の方法の全体を 1 回の展開にする。
 	unit := map[string]any{"configuration": cfg, "adapter": deepCopy(a.launch)}
 	// ${input:ID} は、launch.json の構成ならその inputs を先に、無ければ設定の inputs を引く（FR-298）。
-	inputs := append(slices.Clone(cand.inputs), s.inputs...)
-	asker := newInputAsker(ctx, d, inputs)
-	r := d.resolver(ctx, inv, folder, asker)
+	// アダプターの起動の方法の ${input:ID} は、設定の inputs だけを引く（checkAdapter）。
+	asker := newInputAsker(ctx, d, cand.inputs, s.inputs)
+	r := resolver(inv, folder, asker)
 	if err = expand.Check(unit, r); err != nil {
+		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
+	}
+	if err = asker.checkAdapter(unit["adapter"]); err != nil {
 		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
 	}
 	var ignored []string
@@ -283,8 +285,8 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 		cfg["console"] = "internalConsole"
 		d.showInfo(fmt.Sprintf("構成 %s の console %s は扱えないので、internalConsole に替えて送る", cand.name, c))
 	}
-	// ${input:ID} を、inputs の表の順に先に聞く（FR-298）。取り消したら、ほかを聞かずに始めない。
-	if err = asker.askAll(unit); err != nil {
+	// ${input:ID} と ${pickProcess} を、構成に書いた順に先に聞く（FR-298）。取り消したら、ほかを聞かずに始めない。
+	if err = asker.askAll(unit, cand.written); err != nil {
 		if errors.Is(err, errPickCancelled) || errors.Is(err, context.Canceled) {
 			return nil, errStartCancelled
 		}
@@ -299,7 +301,7 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 		}
 		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
 	}
-	unit = spliceSplit(v, unitBefore, inputs).(map[string]any)
+	unit = asker.spliceSplit(v, unitBefore).(map[string]any)
 	cfg = numberWholeVar(unit["configuration"], unitBefore.(map[string]any)["configuration"], "pickProcess").(map[string]any)
 	launch := unit["adapter"].(map[string]any)
 
@@ -582,7 +584,7 @@ func applyEnvFile(cfg map[string]any, folder string) error {
 // ${port} と ${clientAddr} は残し、つなぐ段階で置き換える。${input:ID}（FR-298）は ask の表を引いて聞く。
 //
 // req: FR-283, FR-298, FR-299
-func (d *debugger) resolver(ctx context.Context, inv invocation, folder string, ask *inputAsker) expand.Resolver {
+func resolver(inv invocation, folder string, ask *inputAsker) expand.Resolver {
 	noArg := func(f func() (string, error)) expand.Entry {
 		return expand.Entry{
 			Value: func(string) (string, error) { return f() },
@@ -628,8 +630,8 @@ func (d *debugger) resolver(ctx context.Context, inv invocation, folder string, 
 		"userHome":                noArg(os.UserHomeDir),
 		"pathSeparator":           noArg(val(sep)),
 		"/":                       noArg(val(sep)),
-		"pickProcess":             noArg(func() (string, error) { return d.pickProcess(ctx) }),
-		"input":                   {Value: ask.value, Check: ask.check},
+		"pickProcess":             noArg(func() (string, error) { return ask.pickProcessValue("") }),
+		"input":                   {Value: ask.inputValue, Check: ask.check},
 		"port":                    {Defer: true},
 		"clientAddr":              {Defer: true},
 	}

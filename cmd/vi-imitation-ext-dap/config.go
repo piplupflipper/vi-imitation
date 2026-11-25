@@ -8,6 +8,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/piplupflipper/vi-imitation/ext/expand"
 )
 
 // この節は、設定（initialize の settings）の読み方である（基本設計 6.4 の「#399 の DAP の拡張機能」の「設定の形」。FR-279、FR-280）。
@@ -67,6 +69,8 @@ type settings struct {
 	adapters map[string]*adapterDef
 	// configurations は、ファイルの種類から、構成の列への対応である。構成は JSON のオブジェクトで、書いた順に並ぶ。
 	configurations map[string][]map[string]any
+	// written は、configurations と同じ並びの、構成ごとの利用者に聞く変数の書かれた順である（writtenVars）。
+	written map[string][][]expand.Var
 	// inputs は、設定の ${input:ID} の問いの表である（FR-298）。
 	inputs inputTable
 	// legacy は、今までの 1 組の設定の構成である。adapters か configurations を書き、1 組の設定を書かなければ nil。
@@ -110,7 +114,7 @@ func defaultLegacy() *legacySettings {
 
 // defaultSettings は、設定を省いたときの値である。
 func defaultSettings() settings {
-	return settings{adapters: map[string]*adapterDef{}, configurations: map[string][]map[string]any{}, legacy: defaultLegacy()}
+	return settings{adapters: map[string]*adapterDef{}, configurations: map[string][]map[string]any{}, written: map[string][][]expand.Var{}, legacy: defaultLegacy()}
 }
 
 // decodeJSON は、data を UseNumber で any へ読む（2^53 を超える整数を丸めないため。ext/expand の doc）。
@@ -196,11 +200,21 @@ func parseSettings(data []byte) (settings, error) {
 			}
 		}
 	}
-	inputs, ierr := parseInputs(top["inputs"])
+	inputs, ierr := parseInputs(top["inputs"], true)
 	if ierr != nil {
 		return s, ierr
 	}
 	s.inputs = inputs
+	var raws struct {
+		Configurations map[string][]json.RawMessage `json:"configurations"`
+	}
+	if json.Unmarshal(data, &raws) == nil {
+		for ft, list := range raws.Configurations {
+			for _, r := range list {
+				s.written[ft] = append(s.written[ft], writtenVars(r))
+			}
+		}
+	}
 	return s, nil
 }
 
@@ -373,6 +387,8 @@ type candidate struct {
 	folder string
 	// inputs は、.vscode/launch.json の構成のときの、その launch.json の inputs である。ほかの出どころでは nil。
 	inputs inputTable
+	// written は、構成に利用者に聞く変数が書かれた順である（聞く順。FR-298）。1 組の設定の構成では nil。
+	written []expand.Var
 }
 
 // label は、一覧の項目の文字列である。
@@ -390,9 +406,13 @@ func (l *legacySettings) candidate() candidate {
 // settingsCandidates は、設定の configurations のうち、ファイルの種類 fileType の構成を、書いた順に候補にする。
 func (s *settings) settingsCandidates(fileType string) []candidate {
 	var out []candidate
-	for _, c := range s.configurations[fileType] {
+	for i, c := range s.configurations[fileType] {
 		name, _ := c["name"].(string)
-		out = append(out, candidate{name: name, source: sourceSettings, config: c})
+		var w []expand.Var
+		if ws := s.written[fileType]; i < len(ws) {
+			w = ws[i]
+		}
+		out = append(out, candidate{name: name, source: sourceSettings, config: c, written: w})
 	}
 	return out
 }

@@ -787,7 +787,7 @@ func TestConfigExample(t *testing.T) {
 				t.Errorf("%s: %v", ft, err)
 			}
 			unit := map[string]any{"configuration": c.config}
-			r := (&debugger{}).resolver(t.Context(), invocation{}, "/w", newInputAsker(t.Context(), nil, s.inputs))
+			r := resolver(invocation{}, "/w", newInputAsker(t.Context(), nil, nil, s.inputs))
 			if err := expand.Check(unit, r); err != nil {
 				t.Errorf("%s %s: %v", ft, c.name, err)
 			}
