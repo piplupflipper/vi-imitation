@@ -661,7 +661,7 @@ DAP の 7 つの区画を 1 つの部品に代える形が決まらず、ウォ�
 既存の前例は、色コードの着色の拡張機能（`cmd/vi-imitation-ext-colorizer` の `minAPIVersion`。6.12）で、これに合わせる。
 
 - 拡張機能は、要る本体の拡張機能 API の版を定数 `minAPIVersion` で持つ。値は、その拡張機能が使うこの節のメッセージのうち、最後に足した版である。実装の PR がメッセージを使い始めるたびに、その PR がマージの順で決まった版（dev-cycle 4 章 7）に上げる
-- `initialize` の `apiVersion` を `minAPIVersion` と比べ（colorizer の `versionLess` と同じ比べ方）、足りなければ使えない状態にする
+- `initialize` の `apiVersion` を `minAPIVersion` と比べ、足りなければ使えない状態にする。比べる関数は、今 colorizer の中にある `versionLess` を、この節の最初の実装の issue（`view/append`）で `ext` へ移し（`ext.VersionLess`。colorizer もそれを使うように直す）、DAP と ACP の拡張機能はその後に使う。拡張機能ごとに写すと、比べ方が食い違いうるためである（PR #401 の再レビューの推奨 3）
 - DAP の拡張機能は `provides` の操作で初めて起動するので、使えない状態の最初の操作（起動の契機の操作）で、`DAP の拡張機能には本体の拡張機能 API <minAPIVersion> 以上が要ります（この本体は <apiVersion>）` をメッセージの行に出し、その操作を含むすべての操作を `ok` が false で断る。知らせは拡張機能のプロセスが動いている間に 1 回だけ出す。ACP の拡張機能も、`acp.prompt` で同じに扱う
 - 段階 2 の取り決め（ブレークポイントと印、続行とステップ実行）だけを使う操作も断る。どの操作が古い本体で動くかを操作ごとに分けると、利用者から見て一部だけが動く状態になり、知らせが分かりにくいためである
 
@@ -676,32 +676,35 @@ DAP の 7 つの区画を 1 つの部品に代える形が決まらず、ウォ�
 
 | 項目 | 決めたこと |
 |---|---|
-| メソッド | `view/append`（拡張機能 → 本体、通知。`ext.ViewAppendParams`）。params は `view`、`child`（切り替えの部品の子のとき）、`text`（書き足すテキスト。改行を含んでよい）、省ける `style`（書き足した範囲の全体に付ける 7.1 の色の名前。DAP の `stderr` の出力など） |
+| メソッド | `view/append`（拡張機能 → 本体、通知。`ext.ViewAppendParams`）。params は `view`、`child`（切り替えの部品の子のとき）、`text`（書き足すテキスト。改行を含んでよい）、省ける `highlights`（`text` の中のバイトの範囲 `start`、`end` と 7.1 の色の名前 `style` の組の列。DAP の `stderr` の出力など。`ext.ViewSpan` と同じ形で、範囲は `text` の外を指せない）。1 件の中に色の違う断片を並べて持てる |
 | 対象 | `text` の部品と、`console` の部品の出力。それ以外の部品と、閉じた後や知らない ID への書き足しは、黙って捨てる（`view/update` と同じ）。不正な UTF-8 のテキストは、本体がログに残して捨てる |
 | 足し方 | 今の中身の末尾に `text` を足す。末尾が改行で終わっていなければ、その行に続ける（段階 2 の `output/append` と同じ）。部品のバッファは編集を禁止したファイルでないバッファなので、編集の禁止の判定を通らない本体の中の書き込み（4.6 の読み直しの `ApplyReload` と同じ扱い）で足し、アンドゥの履歴に積まない。全文を置き換えずに末尾だけを足す口は、実装で `internal/buffer` に要るかを確かめる。テキストのバッファの中の検索とヤンクは、足した中身にも効く（FR-71） |
 | 末尾の追従 | 書き足す前に、その部品のカーソルが最後の行にあれば、書き足した後の最後の行へカーソルを動かす。最後の行より上にあれば、カーソルと見ている行を動かさない。#244 の `view/update` の末尾の追従（1.2 の「部品の client（#244）」）と同じ判定で、`view/update` と `view/append` のどちらで中身が増えても同じに振る舞う |
 | 上限 | 行数 10000、1 行 4096 バイト（6.7 の出力の欄と同じ値）。行数を超えたら古い行から捨て、カーソルの行を捨てた行数だけずらす。カーソルの行が捨てた範囲にあれば最初の行に置く。1 行の上限は、文字の境目で次の行へ送る |
-| 待ちの間 | 本体が拡張機能の応答を待っている間は、ほかの表示のデータの通知と同じく取っておく（5.3）。ただし、`view/append` は差分なので、取っておく列の上限で捨てない（PR #401 のレビューの必須 4）。代わりに、取っておく列の中で同じ部品（`view` と `child` の組）への `view/append` が続いたら、前の `view/append` の `text` に後の `text` をつないで 1 件にする。つなぐのは、2 つの間に同じ部品への `view/update` と `view/close` が無く、`style` が同じときだけで、そうでなければ別の件にする。つないだ `text` は、FR-272 の行数の上限を超えたら古い行から捨てる（本体の中身に当てたときに捨てる行と同じなので、本体の中身と拡張機能の写しは食い違わない）。このため、取っておく列の `view/append` の件数は、開いている部品の数と、その間の `view/update` の数で決まり、出力の行の数に比例しない。列が上限を超えたときに捨てる通知を選ぶ規則（最も古い通知から）からは、`view/append` を除く。`view/append` だけで上限を超えたとき（数百の部品へ書き足し続けたとき）は、その件を捨て、捨てた部品の末尾に `（書き足しの一部を捨てました）` の行を足して、欠けたことを表示に残す（拡張機能の写しは欠けないので、閉じて開き直せば戻る） |
+| 待ちの間 | 本体が拡張機能の応答を待っている間は、ほかの表示のデータの通知と同じく取っておく（5.3）。ただし、`view/append` は差分なので、取っておく列の上限で捨てない（PR #401 のレビューの必須 4）。代わりに、取っておく列に同じ部品（`view` と `child` の組）への `view/append` が既にあり、それより後に同じ部品への `view/update` と `view/close` が無ければ、その件の `text` に後の `text` をつなぎ、後の `highlights` の範囲を前の `text` の長さだけずらして足し、1 件にする（列の中で隣り合っていなくてよく、間にほかの部品やほかの通知があってもつなぐ。PR #401 の再レビューの推奨 1）。色の違う断片も 1 件の中に持つので、`stdout` と `stderr` へ交互に書き足しても件数は増えない。間に同じ部品への `view/update` か `view/close` があれば、その後ろに新しい件を置く。つないだ `text` は、FR-272 の行数の上限を超えたら古い行から捨てる（本体の中身に当てたときに捨てる行と同じなので、本体の中身と拡張機能の写しは食い違わない）。このため、取っておく列の `view/append` の件数は、開いている部品の数と、その間の `view/update` の数で決まり、出力の行の数に比例しない。列が上限を超えたときに捨てる通知を選ぶ規則（最も古い通知から）からは、`view/append` を除く。`view/append` だけで上限を超えたとき（数百の部品へ書き足し続けたとき）は、その件を捨て、捨てた部品の末尾に `（書き足しの一部を捨てました）` の行を足して、欠けたことを表示に残す（拡張機能の写しは欠けないので、閉じて開き直せば戻る） |
 | 写し（FR-273） | `ext/server` に、書き足すテキストの写しを持つ補助 `server.TextLog` を足す。口は下の表のとおり。写しは本体と同じ上限と規則で古い行を捨てる。行の数え方を本体とそろえるため、上限の処理は `ext` の関数を本体と `ext/server` の両方から呼ぶ |
+| `output/append` | DAP（6.4）と ACP（6.5）が `view/append` に移った後に、`output/append` と出力の欄（6.7）を無くす（#399 の決め）。無くすまでは、今の出力の欄のまま残す。無くす PR で、`docs/usage.md` の「出力の欄」の節を書き換える |
 
-`server.TextLog` の口は次のとおりにする（PR #401 のレビューの必須 5。名前は仮）。
+`server.TextLog` の口は次のとおりにする（PR #401 のレビューの必須 5 と、再レビューの必須 3。名前は仮）。
 1 つの写しは、一度に 1 つの部品（と子）にだけ結びつき、1 つの部品（と子）には一度に 1 つの写しだけを結びつける。
+中身の取り出し、送信、結びつけを、写しの錠の中の 1 つの操作にし、開き直しと付け替えの最中に `Append` が届いても、表示から抜けず、重ならないようにする。
 
 | 口 | 働き |
 |---|---|
 | `server.NewTextLog(s *Server) *TextLog` | 空の写しを作る。行数の上限は本体と同じ値（`ext` の定数）を使う |
-| `(*TextLog).Append(text, style string) error` | 写しに足す。結びついていれば `view/append`（結びついた `view` と `child`）も送る。どの goroutine から呼んでもよく、送る順は呼んだ順にする |
-| `(*TextLog).Component() ext.ViewComponent` | 写しを中身にした `text` の部品を返す。開くとき（`pane/open` の部品か、切り替えの部品の子）と、付け替えたときの `view/update` に使う |
-| `(*TextLog).Attach(view ext.ViewID, child string)` | 写しを、開いた部品（切り替えの部品なら、その子）に結びつける。前に別の部品に結びついていれば、そちらから外す。同じ部品と子に別の写しが結びついていれば、その写しを外す。結びつけた時点の中身は送らないので、呼び出す側は `Component` を入れて開くか、`child` を付けた `view/update` で送る |
-| `(*TextLog).Detach()` | 結びつきを外す。その後の `Append` は写しにだけ足す |
+| `(*TextLog).Append(text, style string) error` | 錠を取って写しに足す。結びついていれば、錠を持ったまま `view/append`（結びついた `view` と `child`）を送る。開いている最中（下の `Open`）なら、送らずに「開いている間の書き足し」に積む。どの goroutine から呼んでもよく、送る順は呼んだ順にする |
+| `(*TextLog).Open(open func(ext.ViewComponent) (ext.ViewID, error), child string) error` | 開き直す。錠の中で写しの中身から部品（`text`）を作り、開いている最中の印を立てて錠を放し、`open`（呼び出す側が、その部品を `pane/open` の部品か切り替えの部品の子に入れて開き、部品の ID を返す関数）を呼ぶ。戻ったら錠を取り直し、`view`（と `child`）に結びつけ、開いている間の書き足しを、積んだ順に `view/append` で送ってから印を下ろす。`open` が誤りを返したら、結びつけずに印を下ろす（積んだ書き足しは写しに入っているので捨てない）。`open` の間は錠を持たないので、`pane/open` の応答を待つ間も `Append` は止まらない |
+| `(*TextLog).Rebind(view ext.ViewID, child string) error` | 開いている部品の子に付け替える。錠の中で、同じ部品と子に結びついていた別の写しを外し、自分の中身を部品にして `child` 付きの `view/update` を送り、結びつける。`view/update` も `view/append` も同じ錠の中で送るので、付け替えの前の書き足しは `view/update` の中身に入り、後の書き足しは `view/update` の後の `view/append` になる |
+| `(*TextLog).Detach()` | 錠の中で結びつきを外す。その後の `Append` は写しにだけ足す |
 | `(*TextLog).Attached() (ext.ViewID, string, bool)` | 結びついた部品と子を返す |
 
 閉じた知らせの受け方は次のとおりである。
 `ext/server` の `OnView`（拡張機能が `view/closed` などを受ける関数）は 1 つだけ登録する形のままにし、`TextLog` は `OnView` を登録しない。
 代わりに `Server` が、結びついている写しの一覧を中に持ち、`view/closed` を受けたら、拡張機能の `OnView` を呼ぶ前に、その `view` に結びついた写しをすべて外す。
 このため、拡張機能は閉じた知らせで写しを外す処理を書かなくてよく、`OnView` の上書きも起きない。
-DAP の出力の区画のように、1 つの子にセッションごとの写しを替えて出すときは、今の写しを `Detach` し、出すセッションの写しを `Attach(view, "console")` して、その `Component` を `child` 付きの `view/update` で送る。
-| `output/append` | DAP（6.4）と ACP（6.5）が `view/append` に移った後に、`output/append` と出力の欄（6.7）を無くす（#399 の決め）。無くすまでは、今の出力の欄のまま残す。無くす PR で、`docs/usage.md` の「出力の欄」の節を書き換える |
+DAP の出力の区画のように、1 つの子にセッションごとの写しを替えて出すときは、出すセッションの写しの `Rebind(view, "console")` を呼ぶ（前の写しは `Rebind` が外す）。
+ペインを開き直すときは、出力の区画の写しの `Open` に、区画をすべて作って `pane/open` を送る関数を渡す。
+`Open` と `Rebind` は `pane/open` と `view/update` を送るので、`ext/server` のメッセージを処理するハンドラーの上から呼ばない（ほかの本体へのリクエストと同じく `ErrEditInHandler`）。
 
 **書き足すテキストと入力の行の組（A3。FR-274）**
 
@@ -2220,7 +2223,7 @@ PR #375 のレビューで、メモリの使用量の拡張機能（6.11）が�
 | 本体 → 拡張機能 | `view/select`、`view/key`、`view/expand`、`input/change` の `child` | 通知の項目 | 切り替えの部品の中で起きた知らせの子の ID | FR-270、FR-271 |
 | 本体 → 拡張機能 | `view/childSelect` | 通知 | 利用者が切り替えの部品の子を切り替えたことを、`view` と `child` で知らせる（`ext.ViewChildSelectParams`） | FR-270 |
 | 宣言ファイル | `contributes.popupKeys` の `children` | 項目 | そのキーが効く切り替えの部品の子の ID の列 | FR-271 |
-| 拡張機能 → 本体 | `view/append` | 通知 | テキストの部品と `console` の部品の出力の末尾へ書き足す（`ext.ViewAppendParams`。`view`、`child`、`text`、`style`） | FR-272 |
+| 拡張機能 → 本体 | `view/append` | 通知 | テキストの部品と `console` の部品の出力の末尾へ書き足す（`ext.ViewAppendParams`。`view`、`child`、`text`、`highlights`） | FR-272 |
 | 拡張機能 → 本体 | 部品の種類 `console` と、部品の `input`、`prompt`、`history` | 項目 | 書き足すテキストと入力の行の組 | FR-274 |
 | 拡張機能 → 本体 | `input/ask` | リクエスト | 1 行の文字列を聞く（`ext.InputAskParams`。`title`、`default`）。result は `value` と `cancelled`（`ext.InputAskResult`） | FR-275 |
 
@@ -3148,11 +3151,9 @@ DAP の拡張機能の設定（`initialize` の `settings`。7 章の拡張機�
   // デバッグアダプターの表（FR-279）。キーは構成の type で引く名前
   "adapters": {
     "go": { "transport": "clientSocket", "command": "dlv", "args": ["dap", "--client-addr=${clientAddr}"] },
-    // attach だけは、python -m debugpy --listen で待つプロセスへ直に繋ぐ。つなぐ先は構成の connect から決める
-    "python": {
-      "transport": "stdio", "command": "debugpy-adapter", "aliases": ["debugpy"],
-      "attach": { "transport": "server", "connectFrom": "connect" }
-    },
+    // 構成が connect を持てば（python -m debugpy --listen で待つプロセスへの attach、子のプロセス）、
+    // アダプターを起動せずに connect の host と port へ直に繋ぐ。持たなければ debugpy-adapter を起動する
+    "python": { "transport": "stdio", "command": "debugpy-adapter", "aliases": ["debugpy"], "connectFrom": "connect" },
     "pwa-node": {
       "transport": "serverPort",
       "command": "node",
@@ -3192,7 +3193,7 @@ DAP の拡張機能の設定（`initialize` の `settings`。7 章の拡張機�
 
 | 項目 | 内容 |
 |---|---|
-| `adapters` | アダプターの名前から、起動の方法への対応。`transport`（下の「つなぎ方」）、`command`、`args`、`env`、`cwd`（`stdio`、`clientSocket`、`serverPort` のとき）、`host`、`port`（`server` のとき。`serverPort` の `host` は省けば `127.0.0.1`）、`adapterID`（`initialize` の `adapterID`。省けばアダプターの名前）、`aliases`（同じアダプターを引く別の名前の列。オーナーの nvim が `dap.adapters.debugpy = dap.adapters.python` としているのに当たる）、`connectFrom`（`server` のとき。つなぐ先の `host` と `port` を読む構成のキー。下の「つなぎ方」）、`launch` と `attach`（その `request` の構成のときだけ、ここに書いた項目でアダプターの項目を置き換える。debugpy の `attach` のように、`request` でつなぎ方が違うアダプターのため） |
+| `adapters` | アダプターの名前から、起動の方法への対応。`transport`（下の「つなぎ方」）、`command`、`args`、`env`、`cwd`（`stdio`、`clientSocket`、`serverPort` のとき）、`host`、`port`（`server` のとき。`serverPort` の `host` は省けば `127.0.0.1`）、`adapterID`（`initialize` の `adapterID`。省けばアダプターの名前）、`aliases`（同じアダプターを引く別の名前の列。オーナーの nvim が `dap.adapters.debugpy = dap.adapters.python` としているのに当たる）、`connectFrom`（どのつなぎ方にも書ける構成のキーの名前。値を当て終えた構成がそのキーのオブジェクトを持てば、`transport` に依らず、アダプターを起動せずにその `host` と `port` へ直に繋ぐ。下の「つなぎ方」） |
 | `configurations` | ファイルの種類の名前から、構成の列への対応。構成は `.vscode/launch.json` の構成と同じ形で、`name`、`type`、`request` と、アダプターへ渡す引数を同じ階層に書く。ほかに、拡張機能が読む項目 `resolveCommand`（FR-282）を書ける |
 | `inputs` | `${input:ID}` の問い。`.vscode/launch.json` の `inputs` と同じ形（下の「`.vscode/launch.json` の読み方」）。`.vscode/launch.json` の構成の `${input:ID}` は、その `launch.json` の `inputs` を先に引き、無ければ設定の `inputs` を引く |
 | `ui` | `autoOpen`（始めたときにペインを開くか。既定は false）、`autoClose`（すべてのセッションが終わったら閉じるか。既定は false）、`direction`（`right` か `down`。既定は `down`）、`size`（元のペインに対する百分率。既定は 25）、`sections`（出す区画の ID とその並び）、`defaultSection`（開いたときに選ぶ区画） |
@@ -3209,7 +3210,12 @@ vscode-js-debug の実行ファイルの置き場は利用者の環境で決ま�
 | `stdio` | 拡張機能が `command` を起動する | 子プロセスの標準入出力で話す。標準エラー出力は拡張機能のログへ書く | 終えた後に終わらなければ止める | debugpy の `debugpy-adapter` |
 | `clientSocket` | 拡張機能が Unix ドメインソケットで待ち受け、そのアドレスを `${clientAddr}` に入れて `command` を起動する | 起動したアダプターが繋いでくるのを待つ。アダプターの標準出力と標準エラー出力は、デバッグ対象の出力として出力の区画に書き足す（今の `dlv dap` と同じ） | 同上 | `dlv dap --client-addr` |
 | `serverPort` | 拡張機能が `127.0.0.1` の空いた TCP のポートを決めて `${port}` に入れ、`command` を起動する | アダプターがそのポートで待ち受けるまで、期限（`timeouts.initialize`）まで間を置いて接続を試し直す。アダプターの標準出力と標準エラー出力は拡張機能のログへ書く | 同上。子のセッション（FR-285）が同じアダプターに繋いでいる間は止めない | vscode-js-debug の `dapDebugServer.js <ポート>` |
-| `server` | 起動しない | `host` と `port` へ接続する。`connectFrom` を書けば、値を当て終えた構成（下の 5 まで）の、そのキーのオブジェクトの `host` と `port` を使う（`connectFrom` が `connect` なら `connect.host` と `connect.port`）。`host` を省けば `127.0.0.1`。`port` は数か、数として読める文字列（`${input:port}` の値）を受ける | 接続を閉じるだけで、アダプターを止めない | 利用者が別に起動したアダプター。`python -m debugpy --listen <ポート>` で待つプロセス |
+| `server` | 起動しない | アダプターの `host` と `port` へ接続する | 接続を閉じるだけで、アダプターを止めない | 利用者が別に起動したアダプター |
+
+アダプターに `connectFrom` を書くと、値を当て終えた構成（下の 5 まで）がそのキーのオブジェクトを持つときだけ、`transport` に依らず `server` と同じく扱い、アダプターを起動せずに、そのオブジェクトの `host` と `port` へ直に繋ぐ（`connectFrom` が `connect` なら `connect.host` と `connect.port`。`host` を省けば `127.0.0.1`。`port` は数か、数として読める文字列（`${input:port}` の値）を受ける）。
+持たないときは、`transport` のとおりにアダプターを起動する。
+切り替えを `request`（`attach` か）で決めないのは、debugpy の `attach` のうち、`processId` と `listen` の形は標準入出力のアダプターが要り（debugpy 1.8.20 の `adapter/clients.py` の `attach_request` の 4 つの場合分け）、`connect` の形だけが直に繋ぐ形だからである（PR #401 の再レビューの推奨 2）。
+子のセッション（FR-285）の構成にも同じ規則を当てる（下の「セッションと状態の分離」）。
 
 `${port}` と `${clientAddr}` は、つなぐ段階で決まる値で、構成の変数の展開（下の 3）とは別の段階で置き換える（PR #401 のレビューの必須 2）。
 
@@ -3219,11 +3225,12 @@ vscode-js-debug の実行ファイルの置き場は利用者の環境で決ま�
 - `debug.runLast` と `debug.restart` が覚えるのは、2 つの変数を残した形で、始めるたびに新しいポートかアドレスを決める
 - `server` 以外のつなぎ方では使えない変数（`stdio` の `${port}` など）を書いたら、始める前に誤りにする
 
-debugpy の `attach` は、2026-11-25 に、debugpy 1.8.22（`pip install debugpy` で一時の venv に入れたもの）で次のとおり確かめた（PR #401 のレビューの必須 3。確かめに使った DAP のクライアントのスクリプトはリポジトリに置いていない）。
+debugpy の `attach` と子のプロセスは、2026-11-25 に、debugpy 1.8.22（`pip install debugpy` で一時の venv に入れたもの）で次のとおり確かめた（PR #401 のレビューの必須 3。確かめに使った DAP のクライアントのスクリプトはリポジトリに置いていない）。
 
 - `python -m debugpy --listen 127.0.0.1:5678 app.py` で起動したプロセスの 5678 へ TCP で繋ぎ、`initialize`、`attach`（引数なしでも、`connect` の `host` と `port` を入れても同じ）を送ると、`initialized` が届き、`setBreakpoints` と `configurationDone` の後にブレークポイントで止まった（`stopped` の `reason` が `breakpoint`）。`disconnect`（`terminateDebuggee` が false）の後も、プロセスは動き続けた
 - `python -m debugpy.adapter`（`debugpy-adapter` と同じアダプター）を標準入出力で起動し、`attach` に `connect` の `host` と `port`（同じく `--listen` で待つプロセス）を渡すと、`debugpyWaitingForServer` の後、25 秒待っても `initialized` が届かなかった。debugpy 1.8.20 のソースの `attach_request` のコメント（`connect` は、`debugpy.listen()` で起動されたアダプターが受ける形）の読み方に合う
-- このため、debugpy の `attach` は `server` のつなぎ方で、つなぐ先を構成の `connect` から決める（`connectFrom`）。オーナーの nvim（nvim-dap）が debugpy の `attach` でどう繋いでいるかと、VS Code の Python の拡張機能の形は確かめていない
+- `subprocess` で Python の子のプロセスを起こすスクリプトを、`python -m debugpy.adapter` を標準入出力で起動して `launch`（`console` は `internalConsole`、`subProcess` は true）し、`initialize` で `supportsStartDebuggingRequest` を true にすると、アダプターから `startDebugging` が届いた。`request` は `attach` で、`configuration` は親の構成に `name`（`Subprocess <PID>`）、`subProcessId`、`connect`（`host` が `127.0.0.1`、`port` は親のアダプターが開いた待ち受けのポート）を足したものだった。その `connect` へ TCP で直に繋いで `initialize`、`attach`（受けた `configuration` のまま）、`configurationDone` を送ると、子のセッションの `attach` が成り立ち、`process` と `thread` が届いた（PR #401 の再レビューの必須 2）
+- このため、debugpy の `attach` は、構成が `connect` を持つときに、アダプターを起動せずに `connect` へ直に繋ぐ（`connectFrom`）。オーナーの nvim（nvim-dap）が debugpy の `attach` でどう繋いでいるかと、VS Code の Python の拡張機能の形は確かめていない
 
 `serverPort` の空いたポートは、拡張機能が `127.0.0.1:0` で待ち受けて番号を得てから閉じ、その番号を渡す。
 閉じてからアダプターが待ち受けるまでの間に、別のプロセスが同じ番号を取ることはありうる（そのときは接続に失敗して始めない）。
@@ -3245,9 +3252,9 @@ vscode-js-debug の `dapDebugServer.js` が、引数の 1 つ目を待ち受け�
 
 選んだ構成の値は、次の順に当てて決める（FR-283）。
 
-1. 構成に書いた値。使うアダプターは、構成の `type` で引き、`request` の項目（`launch` か `attach`）があればそれで置き換える
+1. 構成に書いた値。使うアダプターは、構成の `type` で引く
 2. `linux` の値で上書きする（`.vscode/launch.json` の構成だけ。キーごとに置き換える。`windows` と `osx` は読み捨てる）
-3. 変数を展開する（6.7 の「設定の文字列の変数の展開」）。構成とアダプターの起動の方法（`command`、`args`、`env`、`cwd`、`host`、`port`）の全体を 1 回の展開にし、同じ変数は 1 回だけ評価する。まず全体の変数を並べ、扱えない変数があれば、何も聞かずに挙げて知らせて始めない。無ければ、`${input:ID}`（FR-298）と `${pickProcess}`（FR-299）を聞いて置き換える。`${port}` と `${clientAddr}` は残す
+3. 変数を展開する（6.7 の「設定の文字列の変数の展開」）。構成とアダプターの起動の方法（`command`、`args`、`env`、`cwd`、`host`、`port`）の全体を 1 回の展開にし、同じ変数は 1 回だけ評価する。まず `expand.Check` で、知らない名前と、扱えない `${input:ID}`（`inputs` に無い `ID`、`command` の種類、`password`）を何も聞かずに並べて知らせ、始めない。通れば、`${input:ID}`（FR-298）と `${pickProcess}`（FR-299）を聞いて置き換える。`${port}` と `${clientAddr}` は残す（6.7 の「DAP での使い方」）
 4. `envFile` を読み、`env` に無い名前だけを `env` に足す。`envFile` はアダプターへ送らない
 5. `resolveCommand` を動かし、出した値を重ねる（下の「外部のコマンドの取り決め」）。この値は展開し直さない（`${port}` と `${clientAddr}` だけは、つなぐ段階で置き換える）
 
@@ -3325,7 +3332,7 @@ VS Code の文書「Variables reference」の「Predefined variables」の表の
 4. 値を当てる（上の 1〜4）。`${input:ID}` と `${pickProcess}` はここで聞く
 5. `resolveCommand` を動かす（あれば）
 6. `ui.autoOpen` が真なら、ペインを開く
-7. つなぐ段階。ポートかソケットのアドレスを決めて `${port}` と `${clientAddr}` を置き換え、`server` の `connectFrom` のつなぐ先を構成から読み、アダプターを、つなぎ方に従って起動するか接続する
+7. つなぐ段階。構成が `connectFrom` のキーを持てば、そのつなぐ先へ直に繋ぐ。持たなければ、ポートかソケットのアドレスを決めて `${port}` と `${clientAddr}` だけを置き換え（ほかの `${…}` と `${env:…}` は文字のまま）、アダプターを、つなぎ方に従って起動するか接続する
 8. `initialize` を送る。申し出る client の能力は、`linesStartAt1` と `columnsStartAt1` が true（今と同じ）、`pathFormat` が `path`、`supportsVariableType` が true、`supportsStartDebuggingRequest` が true（FR-285）、`supportsRunInTerminalRequest` は申し出ない（FR-288）
 9. `request` に従って `launch` か `attach` を送り、`initialized` を待って、すべてのブレークポイントの `setBreakpoints`、有効な例外のフィルターの `setExceptionBreakpoints`（FR-294）、`configurationDone`（対応していれば）を送る（DAP の仕様の「Launch Sequencing」。今の `session.start` と同じ順）
 10. 決めた構成とアダプターの起動の方法を、`debug.runLast` のために覚える
@@ -3353,7 +3360,7 @@ DAP の仕様の概観（https://microsoft.github.io/debug-adapter-protocol/over
 DAP の仕様の `startDebugging` は、アダプターからクライアントへ、同じ種類の新しいセッションを、呼んだセッションと同じ方法で始めるよう求める逆向きのリクエストで、`configuration` と `request`（`launch` か `attach`）を持つ（同仕様の「StartDebugging Request」。2026-11-25 に読んだ）。
 拡張機能は、受けたら次のとおりに子のセッションを始め、受け付けたことを応答する。
 
-- つなぎ方は親と同じにする。`stdio` と `clientSocket` はアダプターをもう 1 つ起動し、`serverPort` と `server` は同じホストとポートへ新しく接続する
+- つなぎ方は、親のアダプターの `connectFrom` を子の `configuration` に当てて決める。子の `configuration` がそのキー（debugpy では `connect`）を持てば、そのつなぐ先へ直に繋ぐ（debugpy 1.8.22 の子のプロセスで確かめた。上の「つなぎ方」）。持たなければ親と同じにし、`stdio` と `clientSocket` はアダプターをもう 1 つ起動し、`serverPort` と `server` は同じホストとポートへ新しく接続する（PR #401 のレビューの推奨 4 によると、nvim-dap の `start_debugging` も、`server` の親には同じポートへ繋ぎ直し、`executable` には新しく起動する）。vscode-js-debug の子が何を送るかは未確認で、段 3 で確かめる
 - `initialize` から `configurationDone` までは、親と同じ手順で送る。`launch` か `attach` の引数は、受けた `configuration` をそのまま使い、変数の展開も `resolveCommand` もしない（同仕様は、`configuration` に変数を含めないとしている）
 - 子のセッションは親の下に置き、スレッドの区画の木に親の子として出す
 
@@ -3434,8 +3441,8 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 | Go の `launch` | `dlv dap`（`clientSocket`） | 今の振る舞い（止まる、ステップ実行、出力、ブレークポイント）が変わらない。今までの 1 組の設定のままで動く |
 | Go の `attach` | `dlv dap`（`clientSocket`）の `attach`（`mode` が `local`、`processId` は `${pickProcess}`） | 終えてもデバッグ対象が動き続ける（FR-284）。`dlv dap` が `attach` の `local` に対応することは未確認 |
 | Python の `launch` | `debugpy-adapter`（`stdio`）、`console` は `internalConsole` | 出力が出力の区画に出る。`console` を省いたときに始まらず、`integratedTerminal` を替えて送れば始まる（上の `console` の行の確かめ） |
-| Python の `attach` | `server`（`connectFrom` が `connect`）。`python -m debugpy --listen 5678` で起動したプログラムへ、構成の `connect` の `host` と `port`（`${input:port}`）で直に繋ぐ | 終えてもプログラムが動き続ける。DAP で直に繋いで止まり、`disconnect` の後も動き続けることは、2026-11-25 に debugpy 1.8.22 で、拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、`${input:port}` の文字列のポートで繋げるかを確かめる |
-| Python の子のプロセス | 上の `launch` で、`subprocess` で Python の子のプロセスを起こすプログラム | debugpy 1.8.20 の `adapter/clients.py` の `notify_of_subprocess` は、クライアントが `supportsStartDebuggingRequest` を申し出ていれば `startDebugging`（`request` は `attach`）を送る（2026-11-25 に読んだ）。子のセッションが始まり、子のプロセスのブレークポイントで止まる。`debug.terminate` で、親と一緒に子のプロセスも終わる（子の手順を親の `request` で引くことの確かめ） |
+| Python の `attach` | `python` のアダプター（`connectFrom` が `connect`）。`python -m debugpy --listen 5678` で起動したプログラムへ、構成の `connect` の `host` と `port`（`${input:port}`）で直に繋ぐ | 終えてもプログラムが動き続ける。DAP で直に繋いで止まり、`disconnect` の後も動き続けることは、2026-11-25 に debugpy 1.8.22 で、拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、`${input:port}` の文字列のポートで繋げるかを確かめる |
+| Python の子のプロセス | 上の `launch` で、`subprocess` で Python の子のプロセスを起こすプログラム | debugpy 1.8.22 が `startDebugging`（`request` は `attach`、`configuration` に `connect`）を送り、その `connect` へ直に繋いで子のセッションの `attach` が成り立つことは、2026-11-25 に拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、子のセッションが `connectFrom` で直に繋がり、子のプロセスのブレークポイントで止まる。手元の 1.8.20 でも同じものを送るかは未確認。`debug.terminate` で、親と一緒に子のプロセスも終わる（子の手順を親の `request` で引くことの確かめ） |
 | Node.js の `launch` | vscode-js-debug の `dapDebugServer.js`（`serverPort`）、`type` は `pwa-node` | 子のセッションが要るか。2026-11-25 に、手元の `dapDebugServer.js` が `startDebuggingRequest`（`configuration` に `type`、`name`、`__pendingTargetId` を入れたもの）を送る処理を持つことを読んだが、`launch` のたびに送るかは未確認。送るなら、子のセッションで止まる |
 | Node.js の `attach` | 同上。`port` が 9229 の `pwa-node` の `attach`（`NODE_OPTIONS=--inspect` で起動した開発用のサーバー） | 終えてもサーバーが動き続ける |
 | Chrome の `attach` | 同上。`port` が 9222 の `pwa-chrome` の `attach` | オーナーの nvim の設定にある形。手元に Chrome が無ければ、確かめられなかったと書く |
@@ -4430,8 +4437,9 @@ ACP の拡張機能は、エージェントが書いた内容をそのまま書�
 |---|---|
 | 置き場 | `ext/expand`（拡張機能の側の補助。`ext` と同じ土台の層で、他のパッケージを import しない）。本体（server）では使わない。展開する値（ファイル、カーソル、ワークスペースの根）を持つのは拡張機能で、本体の設定ファイルの読み方（7 章）を変えないためである |
 | 書き方 | `${名前}` と `${名前:引数}`。名前は英字と数字と `/`（`${/}`）、引数は `}` を含まない文字列。`$` の後が `{` でないものと、閉じていない `${` は、文字のまま残す（VS Code の文書に `$` を書き表す方法の記述が無いので、`$$` などの書き表し方は持たない） |
-| 意味を与える口 | 呼び出す側が、変数の名前ごとの扱い（`expand.Resolver`）の表を渡す。表の 1 つの項目は、次の 3 つのどれかである。値を返す関数（値か、決められないことの誤りを返す）、後で決める変数（`expand.Defer`。この展開では置き換えずに文字のまま残す。DAP の `${port}` と `${clientAddr}`）、表に無い名前（知らない変数）。仕組みは `env` だけを持ち、ほかの名前で分けた処理を持たない |
-| 口の関数 | `expand.Vars(v any) []expand.Var` は、値の全体（JSON の値。下の行）に書かれた変数（名前と引数の組）を、評価せずに重ねずに並べる。`expand.Check(v any, r Resolver) error` は、表に無い変数を並べた誤りを返す（評価しない）。`expand.Expand(v any, r Resolver) (any, error)` は、値の全体を 1 回の展開として展開する。DAP の拡張機能は、`Check` で扱えない変数を利用者に何も聞かずに知らせて止め、通れば `Expand` で `${input:ID}` などを聞いて置き換える。つなぐ段階では、`${port}` と `${clientAddr}` だけに関数を与え、ほかの名前をすべて `expand.Defer` にした表で、もう 1 回 `Expand` にかける（6.4 の「つなぎ方」） |
+| 意味を与える口 | 呼び出す側が `expand.Resolver` を渡す。`Resolver` は、名前ごとの項目の表 `Vars`（`map[string]expand.Entry`）、表に無い名前の扱い `Unknown`、`${env:…}` の扱い `Env` の 3 つを持つ（PR #401 の再レビューの必須 1）。`expand.Entry` は、値を返す関数 `Value`（引数を受け、値か、決められないことの誤りを返す。利用者に聞いてよい）と、引数を評価せずに確かめる関数 `Check`（省ける。引数を受け、扱えなければ誤りを返す。利用者に聞いてはならない）を持つ。`Unknown` と `Env` は、`expand.Fail`（誤りにする。`Unknown` の既定）、`expand.Defer`（置き換えずに文字のまま残す）、`expand.Builtin`（`Env` だけ。仕組みが環境変数を読む。`Env` の既定）のどれかで、`Vars` の項目にも `Defer` を書ける。仕組みは `env` の読み方だけを持ち、ほかの名前で分けた処理を持たない |
+| 口の関数 | `expand.Vars(v any) []expand.Var` は、値の全体（JSON の値。下の行）に書かれた変数（名前と引数の組）を、評価せずに重ねずに並べる。`expand.Check(v any, r Resolver) error` は、評価せず利用者に聞かずに、`Unknown` が `Fail` のときの表に無い名前と、`Check` を持つ項目の引数ごとの `Check` の誤りを、すべて並べた 1 つの誤りを返す。`expand.Expand(v any, r Resolver) (any, error)` は、まず `Check` と同じ確かめをし、通れば値の全体を 1 回の展開として展開する（確かめで止まるときは、どの `Value` も呼ばない）。`Defer` の変数は文字のまま残す |
+| DAP での使い方 | 構成の展開（6.4 の値の当て方の 3）は、`Vars` に 6.4 の変数の表の項目、`Unknown` を `Fail`、`Env` を `Builtin`、`port` と `clientAddr` を `Defer` にする。`input` の項目の `Check` は、引数の `ID` が `inputs` にあり、種類が `promptString`（`password` が真でない）か `pickString` であることを確かめる（FR-298。`command` の種類、`password`、無い `ID` は、どの `${input:…}` も聞く前に止まる）。つなぐ段階（6.4 の開始の流れの 7）は、`Vars` に `port` と `clientAddr` の値だけを置き、`Unknown` と `Env` を `Defer` にする。このため、外部のコマンドが返した値の中の `${env:HOME}` や `${foo}` は展開せず、文字のまま渡す（外部のコマンドは自分で値を決めて返す取り決め。FR-283） |
 | 手順 | 1 回の展開の単位は、`Expand` に渡した値の全体（DAP では 1 回の開始の構成とアダプターの起動の方法の全体）である。その中に出てきた変数を名前と引数の組ごとに 1 回だけ評価し、すべてを評価し終えてから置き換える。評価する前に、表に無い変数が無いことを確かめ、あれば何も評価せずに誤りを返す（値を聞く変数で利用者に聞いた後に、別の変数で止まらないため）。置き換えた値の中の `${…}` は展開し直さない（VS Code の文書の「Details of variable substitution」の 2 段の手順。「If a variable occurs more than once, it is only evaluated once.」）。評価の順に意味を持たせない。値を聞く変数（DAP の `${input:ID}`）が評価のたびに利用者へ聞くので、1 回だけ評価することは、同じ問いを 2 回出さないためにも要る |
 | JSON の値 | オブジェクトの値と配列の要素の文字列を、入れ子をたどって展開する。キー、数、真偽は展開しない。配列の 1 つの要素は、値が空白を含んでも 1 つの要素のまま（VS Code の文書の「Variable substitution」）。文字列の全体が 1 つの変数でも、展開した結果は文字列で、数にしない（`"port": "${input:port}"` は文字列の `"5678"` になる。数を要るアダプターには、外部のコマンドで数を返す） |
 | 誤り | 知らない名前、決められない変数は、変数の書き方と理由を並べた誤り（`expand.Error`）にして返し、どの値も置き換えない。決められない変数を空の文字列にする選択は持たない。呼び出した側は、知らせて止める（6.4 の扱えない変数。PR #401 のレビューの必須 2 へのオーケストレータの決め） |
