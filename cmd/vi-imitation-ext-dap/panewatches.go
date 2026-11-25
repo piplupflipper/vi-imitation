@@ -77,6 +77,9 @@ func (w *watchesView) forget(id int) {
 // req: FR-292, FR-305
 func (p *pane) buildWatches() (ext.ViewComponent, error) {
 	ss, cur, started := p.d.snapshot()
+	if anyStopping(ss) {
+		return ext.ViewComponent{}, errStale
+	}
 	x, ok := current(ss, cur)
 	w := &p.watches
 	w.snap = x

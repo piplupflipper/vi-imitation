@@ -71,6 +71,13 @@ func (d *debugger) snapshot() (ss []sessionSnap, cur *session, started bool) {
 // 出し終えたら（showStopped、stoppedWithoutSource）、作り直しの印が付く。
 func (d *debugger) stoppingAny() bool {
 	ss, _, _ := d.snapshot()
+	return anyStopping(ss)
+}
+
+// anyStopping は、写し ss に、止まった位置を出し終える前のセッションがあるかを返す。区画を作り始めた後に止まったとき
+// （refresh の stoppingAny の後、区画の写しを取る前に止まったとき）は、作るのをやめて errStale にする。止まった位置を出し終えると
+// 作り直しの印が付く。スレッドの区画が、選んでいるフレームの決まる前の中身を送っていた（#424 の make check で見つけた揺れ）。
+func anyStopping(ss []sessionSnap) bool {
 	return slices.ContainsFunc(ss, func(x sessionSnap) bool { return x.stopping })
 }
 
@@ -249,6 +256,9 @@ func (p *pane) threadEvent(s *session, e threadEvent) {
 // req: FR-290
 func (p *pane) buildThreads() (ext.ViewComponent, error) {
 	ss, cur, started := p.d.snapshot()
+	if anyStopping(ss) {
+		return ext.ViewComponent{}, errStale
+	}
 	for s := range p.threads.cache {
 		if !slices.ContainsFunc(ss, func(x sessionSnap) bool { return x.s == s }) {
 			delete(p.threads.cache, s)
@@ -667,6 +677,9 @@ func current(ss []sessionSnap, cur *session) (sessionSnap, bool) {
 // req: FR-289, FR-302, FR-305
 func (p *pane) buildScopes() (ext.ViewComponent, error) {
 	ss, cur, started := p.d.snapshot()
+	if anyStopping(ss) {
+		return ext.ViewComponent{}, errStale
+	}
 	x, ok := current(ss, cur)
 	sv := &p.scopes
 	sv.snap = x
