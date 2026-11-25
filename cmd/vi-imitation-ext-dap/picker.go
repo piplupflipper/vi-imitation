@@ -24,9 +24,12 @@ var errPickCancelled = errors.New("選ばずに閉じた")
 
 // pickers は、開いている一覧の、部品の ID から知らせの受け口への対応である。
 // pane/open の応答より先に届いた知らせは early に積み、受け口を置いたときに渡す（ファイラの拡張機能と同じ）。
+// early に積むのは、応答を待っている pane/open があるとき（opening が 0 でない）だけにし、pick が受けなかった ID の知らせは
+// 一覧を閉じたときに捨てる（取り消しの後の view/closed などを溜め続けないため。#408 のレビューの推奨 6）。
 type pickers struct {
 	waiting map[ext.ViewID]chan server.ViewEvent
 	early   map[ext.ViewID][]server.ViewEvent
+	opening int
 }
 
 // onView は、本体からの部品の知らせを、その一覧の受け口へ渡す。ループの上で呼ばれるので待たない。
@@ -40,7 +43,7 @@ func (d *debugger) onView(_ context.Context, e *server.ViewEvent) {
 		}
 		return
 	}
-	if e.Kind == server.ViewSelected || e.Kind == server.ViewClosed {
+	if d.pickers.opening > 0 && (e.Kind == server.ViewSelected || e.Kind == server.ViewClosed) {
 		d.pickers.early[e.View] = append(d.pickers.early[e.View], *e)
 	}
 }
@@ -49,21 +52,30 @@ func (d *debugger) onView(_ context.Context, e *server.ViewEvent) {
 // 閉じたら errPickCancelled を、ctx が終わったら一覧を閉じて ctx.Err() を返す。
 // ext/server のループの外から呼ぶ。
 func (d *debugger) pick(ctx context.Context, title string, items []ext.ViewItem) (string, error) {
+	d.mu.Lock()
+	d.pickers.opening++
+	d.mu.Unlock()
 	res, err := d.srv.OpenPane(ctx, ext.PaneOpenParams{
 		Component:     ext.ViewComponent{Kind: ext.ViewList, Title: title, Items: items},
 		Placement:     ext.PaneCenter,
 		CloseOnSelect: true,
 		Focus:         true,
 	})
+	ch := make(chan server.ViewEvent, 8)
+	d.mu.Lock()
+	d.pickers.opening--
+	var early []server.ViewEvent
+	if err == nil {
+		early = d.pickers.early[res.View]
+		d.pickers.waiting[res.View] = ch
+	}
+	if d.pickers.opening == 0 {
+		clear(d.pickers.early)
+	}
+	d.mu.Unlock()
 	if err != nil {
 		return "", fmt.Errorf("一覧を開けない: %w", err)
 	}
-	ch := make(chan server.ViewEvent, 8)
-	d.mu.Lock()
-	early := d.pickers.early[res.View]
-	delete(d.pickers.early, res.View)
-	d.pickers.waiting[res.View] = ch
-	d.mu.Unlock()
 	defer func() {
 		d.mu.Lock()
 		delete(d.pickers.waiting, res.View)

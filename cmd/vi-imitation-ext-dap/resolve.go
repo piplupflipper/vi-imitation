@@ -238,6 +238,11 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 	linuxType := false
 	if cand.source == sourceLaunchJSON {
 		linuxType = applyPlatform(cfg)
+		// resolveCommand は利用者の設定の構成にだけ書ける。リポジトリの launch.json に書かれた外部のコマンドは、
+		// 構成を選んだだけで動くので、動かさずに始めない（#408 のレビューの裁定要 1 へのオーケストレータの決め）。
+		if _, ok := cfg["resolveCommand"]; ok {
+			return nil, failStart("構成 %s を始めない: resolveCommand は .vscode/launch.json では扱えない（利用者の設定の構成にだけ書ける）", cand.name)
+		}
 	}
 	folder := cand.folder
 	if folder == "" {
@@ -268,6 +273,7 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 		cfg["console"] = "internalConsole"
 		d.showInfo(fmt.Sprintf("構成 %s の console %s は扱えないので、internalConsole に替えて送る", cand.name, c))
 	}
+	cfgBefore := deepCopy(cfg)
 	v, err := expand.Expand(unit, r)
 	if err != nil {
 		// expand.Error の Unwrap は変数ごとの理由を返すので、${pickProcess} の取り消しを見分けられる。
@@ -277,7 +283,7 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
 	}
 	unit = v.(map[string]any)
-	cfg = unit["configuration"].(map[string]any)
+	cfg = numberWholeVar(unit["configuration"], cfgBefore, "pickProcess").(map[string]any)
 	launch := unit["adapter"].(map[string]any)
 
 	// 4. envFile。
@@ -297,7 +303,8 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 		in := resolveInput{Configuration: cfg, Adapter: launch, File: inv.file, FileType: inv.fileType, WorkspaceFolder: folder, WorkDir: workDir}
 		token := "dap.resolve"
 		_ = d.srv.ReportProgress(ext.ProgressReportParams{Token: token, Kind: ext.ProgressBegin, Title: "構成を決めています: " + cand.name})
-		c2, l2, err := runResolveCommand(ctx, rc, folder, in, d.logf)
+		var c2 map[string]any
+		c2, err = runResolveCommand(ctx, rc, folder, in, d.logf)
 		_ = d.srv.ReportProgress(ext.ProgressReportParams{Token: token, Kind: ext.ProgressEnd, Failed: err != nil})
 		if errors.Is(err, errResolveCancelled) {
 			return nil, errStartCancelled
@@ -306,13 +313,17 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 			return nil, failStart("構成 %s を始めない: %v", cand.name, err)
 		}
 		overlay(cfg, c2)
-		overlay(launch, l2)
 	}
 	for _, k := range extensionKeys {
 		delete(cfg, k)
 	}
 	// ${port} と ${clientAddr} は、アダプターの command、args、env、cwd でだけ使える。
-	if left, err := expand.Vars(cfg); err != nil || len(left) > 0 {
+	// ほかの ${…} が残るのは外部のコマンドが返した値の中だけで、展開し直さずに文字のまま送る（基本設計 6.7。#408 のレビューの推奨 1）。
+	left, err := connectVars(cfg)
+	if err != nil {
+		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
+	}
+	if len(left) > 0 {
 		return nil, failStart("構成 %s を始めない: %s はアダプターの command、args、env、cwd でだけ使える", cand.name, varList(left))
 	}
 	spec := &runSpec{
@@ -331,6 +342,67 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 		}
 	}
 	return spec, nil
+}
+
+// numberWholeVar は、展開の前の値 before で、文字列の全体が変数 ${name} だけだった所を、展開した値 after の中で数（json.Number）にする
+// （#408 のレビューの必須 3）。展開した値が 10 進の整数として読めないときは、文字列のまま残す。
+//
+// 展開の口（6.7）は、文字列の全体が 1 つの変数でも結果を文字列にする。
+// ${pickProcess} のプロセス ID を、dlv 1.27.2 の attach は数でしか受けない（service/dap/types.go の ProcessID は int。レビューで確かめた）。
+// オーナーの nvim の dap.utils.pick_process も数を返すので、${pickProcess} だけを数にする。
+// VS Code の ${command:pickProcess} の値がアダプターへどの型で届くかは確かめていない（仮）。
+func numberWholeVar(after, before any, name string) any {
+	switch b := before.(type) {
+	case map[string]any:
+		a, ok := after.(map[string]any)
+		if !ok {
+			return after
+		}
+		for k, v := range a {
+			if bv, ok := b[k]; ok {
+				a[k] = numberWholeVar(v, bv, name)
+			}
+		}
+		return a
+	case []any:
+		a, ok := after.([]any)
+		if !ok || len(a) != len(b) {
+			return after
+		}
+		for i := range a {
+			a[i] = numberWholeVar(a[i], b[i], name)
+		}
+		return a
+	case string:
+		if b != "${"+name+"}" {
+			return after
+		}
+		s, ok := expand.Plain(after).(string)
+		if !ok {
+			return after
+		}
+		if _, err := strconv.ParseInt(s, 10, 64); err != nil {
+			return after
+		}
+		return json.Number(s)
+	default:
+		return after
+	}
+}
+
+// connectVars は、値 v に書かれた変数のうち、つなぐ段階の変数（${port} と ${clientAddr}）だけを返す。
+func connectVars(v any) ([]expand.Var, error) {
+	vars, err := expand.Vars(v)
+	if err != nil {
+		return nil, err
+	}
+	var out []expand.Var
+	for _, x := range vars {
+		if x.Name == "port" || x.Name == "clientAddr" {
+			out = append(out, x)
+		}
+	}
+	return out, nil
 }
 
 // varList は、変数の一覧を「${port}、${clientAddr}」の形にする。

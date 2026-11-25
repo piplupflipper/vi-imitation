@@ -433,6 +433,7 @@ func TestLaunchJSON(t *testing.T) {
     { "name": "hidden", "type": "fake", "request": "launch", "presentation": { "hidden": true } },
     { "name": "task", "type": "fake", "request": "launch", "preLaunchTask": "build" },
     { "name": "cmd", "type": "fake", "request": "launch", "program": "${command:pickFile}" },
+    { "name": "rc", "type": "fake", "request": "attach", "resolveCommand": { "command": ["touch", "${workspaceFolder}/ran"] } },
   ],
   "compounds": [{ "name": "c", "configurations": ["L1", "task"] }],
 }`)
@@ -449,7 +450,7 @@ func TestLaunchJSON(t *testing.T) {
 	h.mustExec(cmdStart, 0)
 	h.waitMessage("compounds は扱えない")
 	p := h.waitPane()
-	if want := []string{"L1  (launch.json)", "task  (launch.json)", "cmd  (launch.json)", "S  (設定)"}; !slices.Equal(p.labels(), want) {
+	if want := []string{"L1  (launch.json)", "task  (launch.json)", "cmd  (launch.json)", "rc  (launch.json)", "S  (設定)"}; !slices.Equal(p.labels(), want) {
 		t.Fatalf("items = %q, want %q", p.labels(), want)
 	}
 	h.selectItem(p.id, p.itemID(t, "L1  (launch.json)"))
@@ -507,6 +508,41 @@ func TestLaunchJSON(t *testing.T) {
 		}
 		break
 	}
+
+	// launch.json の resolveCommand は動かさずに始めない（#408 のレビューの裁定要 1）。
+	h.mustExec(cmdStart, 0)
+	p = h.waitPane()
+	h.selectItem(p.id, p.itemID(t, "rc  (launch.json)"))
+	h.waitMessage("resolveCommand は .vscode/launch.json では扱えない")
+	if _, err := os.Stat(filepath.Join(root, "ran")); err == nil {
+		t.Error("the resolveCommand in launch.json ran")
+	}
+}
+
+// TestRefuseChildSession は、アダプターが子のセッション（startDebugging）を求めたら、まだ対応していないことを知らせて
+// デバッグを終え、アダプターとデバッグ対象を残さないことを確かめる（#408 のレビューの必須 2）。
+//
+// req: FR-284
+func TestRefuseChildSession(t *testing.T) {
+	h := newHost(t, mustJSON(t, map[string]any{
+		"adapters": map[string]any{"fake": fakeDef(transportStdio)},
+		"configurations": map[string]any{"go": []any{
+			map[string]any{"name": "js", "type": "fake", "request": "launch", "fake": map[string]any{"startDebugging": true, "child": true}},
+		}},
+	}))
+	h.openFT(srcPath, "go")
+	h.mustExec(cmdToggleBreakpoint, 2)
+	h.mustExec(cmdStart, 0)
+	adapter := h.waitPID("adapter")
+	child := h.waitPID("child")
+	m := h.waitMessage("子のセッション（startDebugging）")
+	if m.Level != ext.MessageError || !strings.Contains(m.Text, "アダプター fake") {
+		t.Errorf("message = %+v", m)
+	}
+	h.waitEnded()
+	h.waitOutput("disconnect terminateDebuggee=true")
+	waitGone(t, "adapter", adapter)
+	waitGone(t, "debuggee", child)
 }
 
 // TestVariables は、構成の変数（ファイル、カーソル、ワークスペースの根、環境変数）を展開し、
@@ -566,24 +602,45 @@ func TestVariables(t *testing.T) {
 	h.waitMessage("つなぎ方 stdio では ${port} を使えない")
 }
 
-// TestResolveCommand は、構成の resolveCommand の標準出力の JSON を構成とアダプターの起動の方法に重ね、
-// 失敗（0 でない終了コード、不正な JSON、扱えない項目、期限）では始めずに理由を知らせ、
-// 動いている間の debug.terminate でコマンドを止めて始めないことを確かめる。
+// TestResolveCommand は、構成の resolveCommand の標準出力の JSON を構成に重ね（値の中の ${…} は文字のまま送る）、
+// アダプターの起動の方法を置き換える adapter と、失敗（0 でない終了コード、不正な JSON、扱えない項目、期限）では始めずに理由を知らせ、
+// 標準出力を開いたままの子を残しても期限と取り消しが効き、動いている間の debug.terminate でコマンドを止めて始めないことを確かめる。
 //
 // req: FR-282, FR-283
 func TestResolveCommand(t *testing.T) {
 	dir := t.TempDir()
 	stdin := filepath.Join(dir, "stdin.json")
 	pidFile := filepath.Join(dir, "pid")
-	ok := `cat > ` + stdin + `; echo '{"configuration":{"program":"/resolved","stopOnEntry":null},"adapter":{"env":{"FAKEADAPTER_ENV":"resolved"}}}'`
+	// 出力の ${x} は、構成に書くと 1 段目の展開で知らない変数になるので、printf の \044（$）で書く。
+	ok := `cat > ` + stdin + `; printf '{"configuration":{"program":"/resolved","stopOnEntry":null,"env":{"P":"pa\044{x}ss"}}}'`
+	// setsid で、プロセスグループの外に、標準出力を開いたままの子を残す（#408 のレビューの必須 4）。
+	bgPidFiles := []string{filepath.Join(dir, "bg1"), filepath.Join(dir, "bg2")}
+	leakyN := 0
+	leaky := func() string {
+		f := bgPidFiles[leakyN]
+		leakyN++
+		return `setsid sh -c 'echo $$ > ` + f + `; exec sleep 30' & `
+	}
 	cases := []map[string]any{
 		{"name": "ok", "stopOnEntry": true, "resolveCommand": map[string]any{"command": []any{"sh", "-c", ok}}},
 		{"name": "exit", "resolveCommand": map[string]any{"command": []any{"sh", "-c", "echo first >&2; echo boom >&2; exit 3"}}},
 		{"name": "badjson", "resolveCommand": map[string]any{"command": []any{"sh", "-c", "echo '{'"}}},
 		{"name": "badkey", "resolveCommand": map[string]any{"command": []any{"sh", "-c", `echo '{"configuration":{"envFile":"x"},"other":1}'`}}},
+		{"name": "adapter", "resolveCommand": map[string]any{"command": []any{"sh", "-c", `echo '{"adapter":{"command":"/bin/sh"}}'`}}},
 		{"name": "timeout", "resolveCommand": map[string]any{"command": []any{"sh", "-c", "sleep 10"}, "timeoutMs": 300}},
+		{"name": "leaky", "resolveCommand": map[string]any{"command": []any{"sh", "-c", leaky() + `echo '{"configuration":{"program":"/leaky"}}'`}, "timeoutMs": 3000}},
+		{"name": "leakytimeout", "resolveCommand": map[string]any{"command": []any{"sh", "-c", leaky() + "sleep 10"}, "timeoutMs": 300}},
 		{"name": "cancel", "resolveCommand": map[string]any{"command": []any{"sh", "-c", "echo $$ > " + pidFile + "; exec sleep 30"}}},
 	}
+	t.Cleanup(func() {
+		for _, f := range bgPidFiles {
+			if b, err := os.ReadFile(f); err == nil {
+				if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			}
+		}
+	})
 	var configs []any
 	for _, c := range cases {
 		c["type"] = "fake"
@@ -605,10 +662,10 @@ func TestResolveCommand(t *testing.T) {
 
 	pick("ok")
 	args := h.waitArgs("launch")
-	if args["program"] != "/resolved" || args["stopOnEntry"] != nil || args["resolveCommand"] != nil {
+	env, _ := args["env"].(map[string]any)
+	if args["program"] != "/resolved" || args["stopOnEntry"] != nil || args["resolveCommand"] != nil || env["P"] != "pa${x}ss" {
 		t.Errorf("launch args = %v", args)
 	}
-	h.waitOutput("adapterenv resolved")
 	h.waitSigns(bp2, exec2)
 	h.stopAndWait()
 	data, err := os.ReadFile(stdin)
@@ -634,8 +691,24 @@ func TestResolveCommand(t *testing.T) {
 	h.waitMessage("JSON でない")
 	pick("badkey")
 	h.waitMessage("扱えない項目がある: configuration.envFile, other")
+	pick("adapter")
+	h.waitMessage("扱えない項目がある: adapter")
 	pick("timeout")
 	h.waitMessage("期限")
+
+	// 標準出力を開いたままの子が残っても、コマンドが終われば出力を使い、期限も効く。
+	start := time.Now()
+	pick("leaky")
+	if args := h.waitArgs("launch"); args["program"] != "/leaky" {
+		t.Errorf("launch args = %v", args)
+	}
+	h.waitSigns(bp2, exec2)
+	h.stopAndWait()
+	pick("leakytimeout")
+	h.waitMessage("期限")
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("leaky commands took %v", d)
+	}
 
 	pick("cancel")
 	var pid int
@@ -654,8 +727,8 @@ func TestResolveCommand(t *testing.T) {
 	waitGone(t, "resolve command", pid)
 }
 
-// TestPickProcess は、${pickProcess} で利用者のプロセスの一覧を中央のポップアップに出し、選んだプロセス ID を文字列で入れ、
-// 閉じたら始めないことを確かめる。
+// TestPickProcess は、${pickProcess} で利用者のプロセスの一覧を中央のポップアップに出し、選んだプロセス ID を、
+// 値の全体が ${pickProcess} だけなら数で、ほかの文字と混ざれば文字列で入れ、閉じたら始めないことを確かめる。
 //
 // req: FR-299
 func TestPickProcess(t *testing.T) {
@@ -671,7 +744,7 @@ func TestPickProcess(t *testing.T) {
 	h := newHost(t, mustJSON(t, map[string]any{
 		"adapters": map[string]any{"fake": fakeDef(transportStdio)},
 		"configurations": map[string]any{"go": []any{
-			map[string]any{"name": "pick", "type": "fake", "request": "attach", "processId": "${pickProcess}"},
+			map[string]any{"name": "pick", "type": "fake", "request": "attach", "processId": "${pickProcess}", "label": "pid ${pickProcess}"},
 		}},
 	}))
 	h.openFT(srcPath, "go")
@@ -682,8 +755,9 @@ func TestPickProcess(t *testing.T) {
 		t.Fatalf("items = %q, want %s sleep 30", p.labels(), pid)
 	}
 	h.selectItem(p.id, pid)
-	if args := h.waitArgs("attach"); args["processId"] != pid {
-		t.Errorf("attach args = %v, want processId %s", args, pid)
+	// dlv の attach は processId を数でしか受けない（#408 のレビューの必須 3）。
+	if args := h.waitArgs("attach"); args["processId"] != float64(sleeper.Process.Pid) || args["label"] != "pid "+pid {
+		t.Errorf("attach args = %v, want processId %s as a number and label as a string", args, pid)
 	}
 	h.waitSigns(bp2, exec2)
 	h.stopAndWait()

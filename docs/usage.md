@@ -2869,17 +2869,25 @@ Go 以外の言語と、`attach` を使うときは、`extensions.settings.dap` 
 - `envFile` は、1 行に 1 つの `名前=値` を読み、`env` に無い名前だけを足す
 - `console` が `integratedTerminal` か `externalTerminal` の構成は、`internalConsole` に替えて送り、そのことを知らせる。デバッグ対象の標準入力へは書けないので、入力の要るプログラムは端末で起動してから attach する
 - `preLaunchTask`、`postDebugTask`、`serverReadyAction` を含む構成は、無視して続けるかを聞く。`compounds` は候補に出さない
-- `resolveCommand` に書いた外部のコマンド（`{ "command": ["コマンド", "引数"], "timeoutMs": 10000 }`）は、標準入力に構成と文脈の JSON を受け、標準出力に `{"configuration": {...}, "adapter": {...}}` を返す。返した値で、構成とアダプターの起動の方法の同じ名前の項目を置き換える（`null` は消す）。venv の python や作業ディレクトリを、始めるたびに決めるのに使う。失敗したとき、期限を超えたとき、JSON が不正なときは始めない。動いている間の `<leader>dt` で止める
+- `${pickProcess}` は、値の全体がその変数だけなら、プロセス ID を数にして送る（dlv の `attach` は数でしか受けない）
+- `resolveCommand` に書いた外部のコマンド（`{ "command": ["コマンド", "引数"], "timeoutMs": 10000 }`）は、標準入力に構成と文脈の JSON を受け、標準出力に `{"configuration": {...}}` を返す。返した値で、構成の同じ名前の項目を置き換える（`null` は消す。値の中の `${…}` は展開し直さずに文字のまま送る）。venv の python や作業ディレクトリを、始めるたびに決めるのに使う。失敗したとき、期限を超えたとき、JSON が不正なときは始めない。動いている間の `<leader>dt` で止める
+- `resolveCommand` は、利用者の設定の構成にだけ書ける。`.vscode/launch.json` の構成に書かれていれば、動かさずに知らせて始めない（リポジトリのファイルが、構成を選んだだけでコマンドを動かさないため）。アダプターの起動の方法（`adapters` の `command`、`args`、`env`、`cwd`、`transport`）は、利用者の設定だけが決め、外部のコマンドの出力と `.vscode/launch.json` からは変えられない
+- 外部のコマンドが背景に子プロセスを残して終わっても、0 で終わっていれば、それまでに出した JSON を使う
 
 `<leader>dl`（`debug.runLast`）と `<leader>dr`（`debug.restart`）は、前回に選んで値を決め終えた構成を、聞き直さず、`resolveCommand` も動かし直さずに使う。
 マクロの再生の中の `<leader>dc` も、一覧を出さずに前回の構成で始める（前回が無ければ失敗する）。
 
 `<leader>dt` の終え方は、構成の `request` で変わる。
-`launch` で始めたデバッグ対象は終わらせ、`attach` で繋いだデバッグ対象は動かし続ける。
+`launch` で始めたデバッグ対象は終わらせる。
+`attach` で繋いだデバッグ対象は、置いたブレークポイントを外し、止まっていれば続けさせてから切り離し、動かし続ける。
 拡張機能が起動したアダプターは止め、`server` と `connectFrom` で繋いだアダプターは止めない。
 
-vscode-js-debug は、`launch` の後に子のセッション（DAP の `startDebugging`）を求める。
-拡張機能はまだ子のセッションを作らないので、今は Node.js の `launch` でブレークポイントに止まらない（2026-11-25 に、手元の vscode-js-debug で確かめた）。
+Linux では、拡張機能が強制終了されても、拡張機能が起動したアダプターと、アダプターが起動したデバッグ対象は残らない（拡張機能はアダプターを見張りのプロセスの下で起動する）。
+Linux 以外では、アダプターが後始末をしないデバッグ対象（vscode-js-debug の node など）が残りうる。
+
+vscode-js-debug は、`launch` と `attach` の後に子のセッション（DAP の `startDebugging`）を求める。
+拡張機能はまだ子のセッションを作らないので、そのことをメッセージの行に出してデバッグを終える（2026-11-25 に、手元の vscode-js-debug で確かめた）。
+Node.js のブレークポイントで止まるのは、子のセッションを作った後である。
 
 ### ACP のエージェント
 

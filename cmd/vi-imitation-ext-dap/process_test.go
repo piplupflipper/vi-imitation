@@ -76,8 +76,8 @@ func TestKillTerminatesDebuggee(t *testing.T) {
 	h.d.mu.Unlock()
 	s.kill()
 	waitGone(t, "debuggee", child)
-	if ws, ok := s.cmd.ProcessState.Sys().(syscall.WaitStatus); !ok || ws.Signaled() {
-		t.Errorf("adapter exit = %v, want exit by itself on SIGTERM", s.cmd.ProcessState)
+	if ws, ok := s.getProc().cmd.ProcessState.Sys().(syscall.WaitStatus); !ok || ws.Signaled() {
+		t.Errorf("adapter exit = %v, want exit by itself on SIGTERM", s.getProc().cmd.ProcessState)
 	}
 }
 
@@ -116,6 +116,47 @@ func TestExtensionKilled(t *testing.T) {
 	h.waitSigns(bp2, exec2)
 
 	// 本体の強制終了と同じく、拡張機能のプロセスグループへ SIGKILL を送る。
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	waitGone(t, "adapter", adapter)
+	waitGone(t, "debuggee", child)
+}
+
+// TestExtensionKilledOrphaningAdapter は、SIGTERM で子を残して終わるアダプター（vscode-js-debug の dapDebugServer.js の代役）でも、
+// 拡張機能が SIGKILL で終わったら、見張り（guard_linux.go）がアダプターとデバッグ対象を止めることを確かめる（#408 のレビューの必須 1）。
+//
+// req: FR-31
+func TestExtensionKilledOrphaningAdapter(t *testing.T) {
+	h := newHostState(t)
+	cmd := exec.Command(extBinary)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = h.conn.Close()
+		_ = cmd.Wait()
+	})
+	h.conn = rpc.NewConn(stdout, stdin, rpc.HandlerFuncs{Notification: h.notification, Request: h.request})
+	h.initialize(fakeSettings(t, nil, map[string]any{"child": true, "orphanOnTerm": true}))
+	h.open(1, srcPath, srcText)
+	h.mustExec(cmdToggleBreakpoint, 2)
+	h.mustExec(cmdStart, 0)
+	adapter := h.waitPID("adapter")
+	child := h.waitPID("child")
+	killAtCleanup(t, child)
+	h.waitSigns(bp2, exec2)
+
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
@@ -172,8 +213,8 @@ func TestShutdownStopsSession(t *testing.T) {
 	default:
 		t.Fatal("the session has not ended when the connection is closed")
 	}
-	if !s.cmd.ProcessState.Success() {
-		t.Errorf("adapter exit = %v, want success (exited by disconnect, not killed)", s.cmd.ProcessState)
+	if !s.getProc().cmd.ProcessState.Success() {
+		t.Errorf("adapter exit = %v, want success (exited by disconnect, not killed)", s.getProc().cmd.ProcessState)
 	}
 	if !gone(child) {
 		t.Errorf("debuggee (pid %d) remains", child)
@@ -194,7 +235,7 @@ func TestShutdownHungAdapter(t *testing.T) {
 		t.Errorf("shutdown took %s, want in [%s, %s)", d, shutdownTimeout, hostShutdownTimeout)
 	}
 	select {
-	case <-s.procDone:
+	case <-s.procDone():
 	default:
 		t.Fatal("the adapter remains after the connection is closed")
 	}

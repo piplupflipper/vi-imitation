@@ -38,6 +38,8 @@ import (
 )
 
 func main() {
+	// アダプターの見張り（guard_linux.go）として起動されたなら、見張りとして動いて終わる。
+	maybeRunGuard()
 	if err := run(); err != nil {
 		log.Fatalf("vi-imitation-ext-dap: %v", err)
 	}

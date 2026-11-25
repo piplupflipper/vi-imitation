@@ -101,6 +101,8 @@ type threadsResponse struct {
 type disconnectArguments struct {
 	// TerminateDebuggee は、切断のときにデバッグ対象を終わらせるかどうかである。
 	TerminateDebuggee bool `json:"terminateDebuggee"`
+	// SuspendDebuggee は、切断のときにデバッグ対象を止めたままにするかどうかである。常に false を送る（session.disconnect）。
+	SuspendDebuggee bool `json:"suspendDebuggee"`
 }
 
 // stoppedEvent は、stopped の event の body である。ThreadID は省かれることがある。

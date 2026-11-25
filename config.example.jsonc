@@ -394,8 +394,8 @@
           },
           // vscode-js-debug の dapDebugServer.js。拡張機能が決めた空いたポート（${port}）で待ち受けさせて繋ぐ（serverPort）。
           // 置き場は入れ方で変わるので、自分の置き場に書き換える。1 つのアダプターで pwa-node と pwa-chrome を type で分ける。
-          // vscode-js-debug は launch の後に子のセッション（startDebugging）を求めるが、拡張機能はまだ子のセッションを作らないので、
-          // 今は launch してもブレークポイントで止まらない（docs/usage.md）
+          // vscode-js-debug は launch と attach の後に子のセッション（startDebugging）を求めるが、拡張機能はまだ子のセッションを作らないので、
+          // 今はそのことを知らせてデバッグを終える（ブレークポイントでは止まらない。docs/usage.md）
           "pwa-node": {
             "transport": "serverPort",
             "command": "node",

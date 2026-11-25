@@ -55,6 +55,10 @@ type fakeOptions struct {
 	ExceptionOnContinue bool `json:"exceptionOnContinue"`
 	// NoSource は、stackTrace のフレームの source を省く（止まった位置のソースが分からない停止の代役）。
 	NoSource bool `json:"noSource"`
+	// OrphanOnTerm は、SIGTERM で子プロセスを止めずに終わる（vscode-js-debug の dapDebugServer.js の代役）。
+	OrphanOnTerm bool `json:"orphanOnTerm"`
+	// StartDebugging は、configurationDone の後に、逆向きの request の startDebugging を送る（vscode-js-debug の子のセッションの代役）。
+	StartDebugging bool `json:"startDebugging"`
 }
 
 type message struct {
@@ -130,7 +134,12 @@ func main() {
 	signal.Notify(sigs, syscall.SIGTERM)
 	go func() {
 		<-sigs
-		a.killChild()
+		a.stateMu.Lock()
+		orphan := a.opts.OrphanOnTerm
+		a.stateMu.Unlock()
+		if !orphan {
+			a.killChild()
+		}
 		os.Exit(0)
 	}()
 	for {
@@ -246,6 +255,10 @@ func (a *adapter) output(category, text string) {
 func (a *adapter) handle(m *message) {
 	if m.Type == "response" {
 		// 逆向きの request への応答である。
+		if a.opts.StartDebugging {
+			a.output("console", fmt.Sprintf("startDebugging success=%v\n", m.Success))
+			return
+		}
 		a.output("console", fmt.Sprintf("runInTerminal success=%v\n", m.Success))
 		a.run()
 		return
@@ -276,7 +289,9 @@ func (a *adapter) handle(m *message) {
 			Fake    fakeOptions `json:"fake"`
 		}
 		_ = json.Unmarshal(m.Arguments, &args)
+		a.stateMu.Lock()
 		a.opts = args.Fake
+		a.stateMu.Unlock()
 		if a.opts.FailLaunch {
 			a.respondError(m, "cannot build "+args.Program)
 			return
@@ -340,6 +355,11 @@ func (a *adapter) handle(m *message) {
 		a.output("telemetry", "telemetry must not be shown\n")
 		if a.opts.Reverse {
 			a.send(message{Type: "request", Command: "runInTerminal", Arguments: json.RawMessage(`{"args":["true"]}`)})
+			return
+		}
+		if a.opts.StartDebugging {
+			// 子のセッションを求め、応答を待つ（ブレークポイントでは止まらない）。
+			a.send(message{Type: "request", Command: "startDebugging", Arguments: json.RawMessage(`{"request":"launch","configuration":{"type":"fake"}}`)})
 			return
 		}
 		a.run()

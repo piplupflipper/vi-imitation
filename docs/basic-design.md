@@ -3318,12 +3318,13 @@ nvim の設定で Lua と個人の CLI の両方に書いていた検査は、CL
 
 | 項目 | 取り決め |
 |---|---|
+| 書ける場所 | 利用者の設定（本体の設定ファイル）の構成だけ。`.vscode/launch.json` の構成に書かれていれば、動かさずに扱えない項目として始める前に知らせ、始めない（#408 のレビューの裁定要 1 へのオーケストレータの決め。リポジトリの中のファイルが、構成を選んだだけでコマンドを動かさないため。VS Code の `launch.json` には無い項目なので、外しても互換を損なわない） |
 | 書き方 | `"resolveCommand": { "command": ["<実行ファイル>", "<引数>", ...], "timeoutMs": 10000 }`。`command` は配列で、シェルを通さない。要素には変数を書ける（展開の 3 の段で展開する）。`timeoutMs` は省けば 10000 |
 | 起動の時機 | 構成を選び、扱えない項目を確かめ、変数を展開し、`envFile` を読んだ後で、アダプターを起動する前。`debug.runLast` と `debug.restart` では動かさない |
 | 作業ディレクトリ | ワークスペースの根（`${workspaceFolder}`） |
 | 環境 | 拡張機能のプロセスの環境（server の環境）をそのまま渡す。構成の `env` は渡さない（構成の `env` はデバッグ対象のためのもので、コマンドの動きを変えないため） |
 | 標準入力 | 1 つの JSON のオブジェクトを書いて閉じる。項目は `configuration`（展開の 4 の段までを当てた構成）、`adapter`（使うアダプターの起動の方法。`${port}` と `${clientAddr}` は文字のまま残した形）、`file`（カーソルのあるバッファのファイルの絶対パス。ファイルでなければ空）、`fileType`、`workspaceFolder`、`workDir`（操作中の client の作業ディレクトリ）である |
-| 標準出力 | 1 つの JSON のオブジェクト。`configuration` の値は、構成の同じ名前のキーを置き換える（キーの 1 段目だけを置き換え、中のオブジェクトは混ぜない。`null` はそのキーを消す）。`adapter` の値は、使うアダプターの `command`、`args`、`env`、`cwd`、`host`、`port` を置き換える（`${port}` と `${clientAddr}` を書けば、つなぐ段階で置き換える）。ほかの項目と、`configuration` の中の拡張機能が読む項目（`envFile`、`resolveCommand`、`linux` など。4 の段までに読み終えたもの）は、黙って捨てずに誤りにして始めない（PR #401 のレビューの推奨 2）。大きさの上限は 1 MiB |
+| 標準出力 | 1 つの JSON のオブジェクト。`configuration` の値は、構成の同じ名前のキーを置き換える（キーの 1 段目だけを置き換え、中のオブジェクトは混ぜない。`null` はそのキーを消す）。#408 のレビューの裁定要 1 へのオーケストレータの決めで、`adapter` の値でアダプターの起動の方法を置き換えることはやめ、`adapter` は扱えない項目にした（アダプターの起動の方法は、利用者の設定の `adapters` だけが決める）。ほかの項目と、`configuration` の中の拡張機能が読む項目（`envFile`、`resolveCommand`、`linux` など。4 の段までに読み終えたもの）は、黙って捨てずに誤りにして始めない（PR #401 のレビューの推奨 2）。大きさの上限は 1 MiB |
 | 標準エラー出力 | 末尾の 4 KiB を覚え、失敗したときにメッセージの行へ要旨（最後の空でない行）を出し、全体を拡張機能のログへ書く。成り立ったときはログにだけ書く |
 | 失敗 | 起動できない、0 でない終了コード、期限を超えた、標準出力が 1 つの JSON のオブジェクトでない、上限を超えた、扱えない項目がある。どれも始めずに、理由をメッセージの行に出す |
 | 取り消し | 動いている間に `debug.terminate` を受けたとき、拡張機能が `shutdown` を受けたときは、コマンドのプロセスグループへ SIGKILL を送って止め、始めない。コマンドは `Setpgid` と `Pdeathsig` の組で起動し、拡張機能が強制終了されても残らないようにする（5.2） |
@@ -3503,6 +3504,18 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 - 開始の準備（候補の一覧、問い、`${pickProcess}`、`resolveCommand`）の間は、もう一度の `debug.continue` と `debug.runLast` を断り、`debug.terminate` で取り消す（一覧を `view/close` で閉じ、外部のコマンドのプロセスグループへ SIGKILL を送る）
 - `${workspaceFolder:名前}` のように引数を付けた変数は、扱えない変数にする。`${columnNumber}` は文字の数で数える。`${pickProcess}` の一覧からは拡張機能のプロセスを除き、コマンドラインを 200 文字で切る
 
+PR #410 のレビュー（2026-11-25）を受けて、次のとおりに改めた。
+
+- **アダプターの見張り**（必須 1）: Linux では、アダプターを直に起動せず、拡張機能の実行ファイルを見張りとして起動し（引数 `--vi-imitation-ext-dap-guard`）、見張りにアダプターを起動させる（`guard_linux.go`）。見張りは子の回収役（`PR_SET_CHILD_SUBREAPER`）になり、`SIGTERM`（拡張機能が SIGKILL で終わったときの `Pdeathsig` を含む）を受けたときと、アダプターが終わったときに、アダプターへ `SIGTERM` を送って 500 ミリ秒待ち、残った子孫（`/proc` の親のプロセス ID でたどる）へ `SIGKILL` を送る。vscode-js-debug の `dapDebugServer.js` は `SIGTERM` で終わるときにデバッグ対象の node を残すので、拡張機能が SIGKILL で終わるとデバッグ対象が孤児で残っていた。アダプターの子孫から抜け出したプロセス（`attach` の相手、二重の fork の後に別の回収役の下に入ったもの）は止めない。Linux 以外では見張りを使わず、今までどおり直に起動する（子孫は残りうる）
+- **子のセッションを求められたとき**（必須 2）: アダプターから `startDebugging` が届いたら、失敗で応答し、「アダプター <名前> が子のセッション（startDebugging）を求めたが、まだ対応していないので、デバッグを終える」をメッセージの行に出して、終え方の表のとおりに終える（FR-285 の issue まで）
+- **`${pickProcess}` の型**（必須 3）: 構成の値の全体が `${pickProcess}` だけの文字列なら、展開した値（プロセス ID）を数（JSON の数）にして送る。6.7 の展開の口の「文字列の全体が 1 つの変数でも、展開した結果は文字列で、数にしない」の例外で、展開の口は変えずに DAP の拡張機能が展開の後に直す。dlv 1.27.2 の `attach` は `processId` を数でしか受けない（`service/dap/types.go` の `ProcessID int`。レビューで確かめた）。オーナーの nvim の `dap.utils.pick_process` も数を返す。ほかの文字と混ざった値（`"pid ${pickProcess}"`）は文字列のままにする。VS Code の `${command:pickProcess}` の値がアダプターへどの型で届くかは確かめていない。`${input:…}` を数に直すかは 10 章の未決に残す
+- **外部のコマンドの待ち**（必須 4）: 外部のコマンドが、標準出力の書き込み口を持ったままの子プロセスを、プロセスグループの外（`setsid`）に残しても、コマンドが終わった（か止めた）後 500 ミリ秒で読むのを打ち切る（`exec.Cmd` の `WaitDelay`）。0 で終わっていれば、それまでに読んだ出力を使い、その旨をログに書く
+- **外部のコマンドの値の中の `${…}`**（推奨 1）: 展開し直さずに文字のまま送る（上の「つなぐ段階」と 6.7 の取り決めどおり）。構成に残ったときに誤りにするのは `${port}` と `${clientAddr}` だけにした
+- **外部のコマンドの失敗の知らせ**（推奨 2）: コマンドの名前を実行ファイルの最後の名前にし、標準エラー出力の要旨を文の前に置く（メッセージの行は画面の幅で切れるため）。コマンドの全体と失敗の全文はログに書く
+- **`serverPort` のポートの取り合い**（推奨 4）: 決めたポートを別のプロセスに先に取られてアダプターが待ち受ける前に終わったら、ポートを選び直して 1 回だけ起動し直す。別のプロセスが先に待ち受けていて、そこへ繋がってしまう場合は防げない（ソケットのパスを渡す形は、vscode-js-debug が子のセッションの接続もそのパスで受けるかを確かめてから、子のセッションの issue で決める）
+- **既に動いている dlv への `attach` の終え方**（推奨 3）: `attach` のセッションを終えるときは、`disconnect` の前に、置いたブレークポイントを空の `setBreakpoints` で外し、止まっていれば `continue` を送る。`disconnect` の `suspendDebuggee` は false で明示する。DAP の仕様の `DisconnectArguments.suspendDebuggee` は「If unspecified, the debuggee should resume execution」だが、dlv 1.27.2 の `--accept-multiclient` のサーバーは、切断の後もデバッグ対象を止まったまま残し（`service/dap/server.go` の `onDisconnectRequest`。レビューで確かめた）、ブレークポイントも残すので、続けても次のブレークポイントでまた止まった（2026-11-25 に、`dlv exec --headless --accept-multiclient --continue` で確かめた）
+- **一覧の知らせの溜め置き**（推奨 6）: 応答を待っている `pane/open` があるときだけ、受け口の無い部品の知らせを溜め、待つものが無くなったら捨てる
+
 2026-11-25 に、実物のアダプターで次のとおり確かめた（拡張機能を本体の役のテストから動かした。dlv の `launch` は `make dist` の本体を tmux で起動した画面でも確かめた）。
 
 | アダプターと版 | つなぎ方 | `request` | 止まったか |
@@ -3510,7 +3523,8 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 | dlv 1.27.2 | `clientSocket`（設定の構成と、今までの 1 組の設定） | `launch` | 止まった。ステップ実行と出力も出た |
 | debugpy 1.8.22 の `debugpy-adapter` | `stdio` | `launch`（`console` が `internalConsole`、`integratedTerminal`、省いた） | 3 つとも止まった |
 | debugpy 1.8.22 の `python -m debugpy --listen` | `connectFrom`（`connect` の `port` は文字列） | `attach` | 止まった。`disconnect` の後もデバッグ対象は動き続けた |
-| vscode-js-debug（`dapDebugServer.js`。版は置き場に無く未確認） | `serverPort` | `launch` | 止まらなかった。`launch` は成り立ち、node がデバッグ対象を起動したが、アダプターが `startDebugging`（`request` が `launch`、`configuration` に `type`、`name`、`__pendingTargetId`）を送り、子のセッションが無いので止まらない。`supportsStartDebuggingRequest` を申し出なくても送ってきた |
+| vscode-js-debug（`dapDebugServer.js`。版は置き場に無く未確認） | `serverPort` | `launch` | 止まらなかった。`launch` は成り立ち、node がデバッグ対象を起動したが、アダプターが `startDebugging`（`request` が `launch`、`configuration` に `type`、`name`、`__pendingTargetId`）を送り、子のセッションが無いので止まらない。`supportsStartDebuggingRequest` を申し出なくても送ってきた。レビューの後は、そのことを知らせて終える。デバッグ対象の node が動いている間に拡張機能へ SIGKILL を送り、アダプターと node が残らないことを `ps` で確かめた |
+| dlv 1.27.2（`dlv exec --headless --accept-multiclient --continue`） | `server` | `attach`（`mode` が `remote`） | 止まった。終えた後もデバッグ対象は動き続けた（出力が増え続けた） |
 
 上の `console` の行の「省いたときも `runInTerminal` を求めて始めない」という見込み（debugpy 1.8.20 のソースを読んだもの）は、debugpy 1.8.22 では当たらなかった（`console` を省いても始まり、出力も `output` の event で届いた）。
 同梱の設定の例は、版に依らないよう `console` を `internalConsole` と書いたままにした。
@@ -6109,7 +6123,7 @@ tmux の中の構成（server と編集の client が別のプロセス）の起
 | ペインの部品（`pane/open`）の書き足し（`view/append` など）、末尾を追う指定、`contributes.popupKeys` のモードの宣言（今はノーマルモードだけで引く）。ACP の返答（FR-111）、デバッグ対象の出力（FR-108）、ファインダー（FR-106）で要る（PR #242 のレビューの推奨 5）。#399 で、書き足しを `view/append` にし、末尾の追従をカーソルが最後の行にあるかで決める形にした（1.4 の「#399 の切り替えの部品と書き足し」。FR-272）。`popupKeys` のモードの宣言は、ACP の取り消しのキー（FR-111）の issue で決める | 1.4、5.3 |
 | DAP の `${workspaceFolder}` と `.vscode/launch.json` の探し方。#408 で、ファイルの Git の根（外なら作業ディレクトリ）と、ファイルから Git の根までたどる形にし、構成に書いていない値（venv の python、`cwd`）は `ext/project` で補わないことにした（6.4 の「#408 の設定の作り替え」。仮で、オーナーの確認が要る） | 6.4、6.7 |
 | 切り替えの部品（FR-269）の中でだけ別の操作にするキーの割り当ての口。オーナーの nvim は DAP のペインの中の `<Tab>` と `<S-Tab>` で区画を切り替えるが、本体の `<Tab>` はタブの移動（FR-98）で、`keymap` は部品を区別しない（1.4 の「#399 の切り替えの部品と書き足し」）。裁定までは既定のキーと子の `key` だけで作り（PR #401 の裁定要 1 の A）、部品の中だけの割り当てを後で足せるよう、キーを引く順の 2 番目を空けておく。推奨は、`keymap` に部品の中だけの割り当ての置き場を足す形（同じく B） | 1.4、7 |
-| `${input:ID}` のように文字列で展開した値を、数を要る構成の項目に渡すときに数に直すか（6.7 の「設定の文字列の変数の展開」） | 6.4、6.7 |
+| `${input:ID}` のように文字列で展開した値を、数を要る構成の項目に渡すときに数に直すか（6.7 の「設定の文字列の変数の展開」）。`${pickProcess}` だけは、#408 で、値の全体がその変数だけなら数にした（6.4 の「#408 の設定の作り替え」） | 6.4、6.7 |
 | DAP の `serverPort` のつなぎ方で、空いたポートを決めてからアダプターが待ち受けるまでの間に、別のプロセスが同じ番号を取りうること（6.4 の「アダプターのつなぎ方」） | 6.4 |
 | tmux の中の構成（server と編集の client が別のプロセス）の起動時間と RSS を NFR-05 の対象にするか | 9.1 |
 | herdr のポップアップにプレビュー（FR-149）を出すかを、端末の幅で決める方法。herdr の層は端末の幅を返す口を持たず、今は開いた client のペインの幅で代える（分割した狭いペインから開くと、端末の幅で数えるより出しにくい）。herdr のポップアップでの見え方は確かめていない（#288） | 1.4 |

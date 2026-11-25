@@ -29,6 +29,8 @@ var fakeAdapter string
 var extBinary string
 
 func TestMain(m *testing.M) {
+	// テストの中の拡張機能は、アダプターの見張りに、このテストの実行ファイルを使う（os.Executable）。
+	maybeRunGuard()
 	dir, err := os.MkdirTemp("", "ext-dap-test-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -958,12 +960,12 @@ func TestStop(t *testing.T) {
 	h.waitMessage("デバッグを終了した")
 	h.waitEnded()
 	select {
-	case <-s.procDone:
+	case <-s.procDone():
 	case <-time.After(testTimeout):
 		t.Fatal("adapter process did not exit")
 	}
-	if !s.cmd.ProcessState.Success() {
-		t.Errorf("adapter exit = %v, want success (exited by disconnect, not killed)", s.cmd.ProcessState)
+	if !s.getProc().cmd.ProcessState.Success() {
+		t.Errorf("adapter exit = %v, want success (exited by disconnect, not killed)", s.getProc().cmd.ProcessState)
 	}
 }
 
@@ -984,8 +986,8 @@ func TestStopWithTerminate(t *testing.T) {
 	h.waitOutput("terminate requested")
 	h.waitMessage("デバッグを終了した")
 	h.waitEnded()
-	if !s.cmd.ProcessState.Success() {
-		t.Errorf("adapter exit = %v, want success (exited by disconnect)", s.cmd.ProcessState)
+	if !s.getProc().cmd.ProcessState.Success() {
+		t.Errorf("adapter exit = %v, want success (exited by disconnect)", s.getProc().cmd.ProcessState)
 	}
 }
 

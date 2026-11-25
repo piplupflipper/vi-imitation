@@ -50,7 +50,8 @@ func expandConnect(launch map[string]any, transport string, values map[string]st
 	if err != nil {
 		return nil, err
 	}
-	left, err := expand.Vars(v)
+	// ${port} と ${clientAddr} のうち、このつなぎ方で置き換えなかったものだけを誤りにする。ほかの ${…} は文字のまま渡す。
+	left, err := connectVars(v)
 	if err != nil {
 		return nil, err
 	}
@@ -144,16 +145,33 @@ func spawn(d *debugger, spec *runSpec) (*session, error) {
 		// dlv の --client-addr の書き方（unix: に続けてソケットのパス）に合わせる。
 		values["clientAddr"] = "unix:" + path
 	case transportServerPort:
-		port, err := freePort()
-		if err != nil {
-			return nil, err
-		}
 		host := "127.0.0.1"
 		if h, ok := a.launch["host"].(string); ok && h != "" && !strings.Contains(h, "${") {
 			host = h
 		}
-		values["port"] = strconv.Itoa(port)
-		s.dial = &endpoint{host: host, port: port}
+		start := func() error {
+			port, err := freePort()
+			if err != nil {
+				return err
+			}
+			launch, err := expandConnect(a.launch, a.transport, map[string]string{"port": strconv.Itoa(port)})
+			if err != nil {
+				return err
+			}
+			p, err := processOf(launch)
+			if err != nil {
+				return err
+			}
+			s.dial = &endpoint{host: host, port: port}
+			return s.startProcess(p)
+		}
+		if err := start(); err != nil {
+			return nil, err
+		}
+		// 決めたポートを、アダプターが待ち受ける前に別のプロセスに取られると、アダプターは待ち受けられずに終わる。
+		// そのときは、ポートを選び直して 1 回だけ起動し直す（#408 のレビューの推奨 4）。
+		s.respawn = start
+		return s, nil
 	default:
 	}
 	launch, err := expandConnect(a.launch, a.transport, values)
@@ -177,7 +195,16 @@ func spawn(d *debugger, spec *runSpec) (*session, error) {
 func (s *session) startProcess(p adapterProcess) error {
 	d := s.d
 	// 子プロセスの実行ファイルと引数は、利用者の設定から来る。拡張機能はそれを起動するためにある。
-	cmd := exec.Command(p.command, p.args...) //nolint:gosec // 利用者が設定したデバッグアダプターを起動する
+	// Linux では、アダプターを見張り（guard_linux.go）の下で起動し、拡張機能が SIGKILL で終わってもデバッグ対象を残さない。
+	var cmd *exec.Cmd
+	if guardAvailable {
+		var err error
+		if cmd, err = guardCommand(p); err != nil {
+			return err
+		}
+	} else {
+		cmd = exec.Command(p.command, p.args...) //nolint:gosec // 利用者が設定したデバッグアダプターを起動する
+	}
 	cmd.Dir = p.cwd
 	cmd.Env = p.env
 	var parentEnds, childEnds []*os.File
@@ -235,15 +262,21 @@ func (s *session) startProcess(p adapterProcess) error {
 		// 標準入出力で話すときは、標準エラー出力はデバッグアダプターのログなので、拡張機能のログ（本体が記録する）へ書く。
 		go s.forward(errR, func(text string) { d.logf("adapter: %s", strings.TrimRight(text, "\n")) })
 	}
-	s.cmd = cmd
 	if err := startAdapter(cmd); err != nil {
-		s.cmd = nil
 		return fail(err)
 	}
+	proc := newAdapterProc(cmd)
+	s.procMu.Lock()
+	s.proc = proc
+	s.procMu.Unlock()
 	closeAll(childEnds)
 	go func() {
 		_ = cmd.Wait()
-		s.markProcDone()
+		proc.markDone()
+		if s.getProc() != proc {
+			// ポートを選び直して起動し直した後の、前のプロセスの終わりである。
+			return
+		}
 		// 子プロセスが終わったら、接続とソケットを閉じ、読み取りと Accept を終わらせる。
 		s.closeSocket()
 		if c := s.getConn(); c != nil {
@@ -264,11 +297,20 @@ func (s *session) dialAdapter(timeout time.Duration) (net.Conn, error) {
 		if err == nil {
 			return c, nil
 		}
-		if s.cmd == nil {
+		if !s.owned() {
 			return nil, fmt.Errorf("connect to adapter %s: %w", s.dial, err)
 		}
 		select {
-		case <-s.procDone:
+		case <-s.procDone():
+			if s.respawn != nil {
+				respawn := s.respawn
+				s.respawn = nil
+				s.d.logf("adapter exited before listening on %s; retrying with another port", s.dial)
+				if rerr := respawn(); rerr != nil {
+					return nil, rerr
+				}
+				continue
+			}
 			return nil, fmt.Errorf("adapter exited before listening on %s", s.dial)
 		case <-ctx.Done():
 			return nil, fmt.Errorf("connect to adapter %s: %w", s.dial, err)
