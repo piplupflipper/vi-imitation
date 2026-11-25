@@ -129,8 +129,10 @@ type Choice struct {
 type Input struct {
 	// Prompt は、問いの文である。入力の前置きとして、入力の中身の前に続けて出す。改行を含めない。
 	Prompt string
-	// Text は、打っている入力の中身である。カーソルは常にその末尾に置く。
+	// Text は、打っている入力の中身である。
 	Text string
+	// Cursor は、Text の中のカーソルのバイトの位置（0 から len(Text)）である。範囲の外なら末尾として描く。
+	Cursor int
 	// Index は、続けて届いた問いのうち何件目か（1 から数える）である。0 より大きければ、問いの文の前に "問い 2: " の形で出す
 	// （Choice.Index と同じ。#151）。
 	Index int
@@ -297,7 +299,7 @@ type Frame struct {
 	Choice *Choice
 	// Input は、出している 1 行の入力の問い（input/ask。FR-275）である。nil なら問いを出していない。Choice と同時には出さない。
 	// nil でなければ、Message とコマンドラインの代わりに、最後の行（CommandLinePopup なら画面の上の中央のポップアップの枠）に
-	// 問いの文と入力の中身を出し、カーソル（縦線）を中身の末尾に置く。知らせ（Input.Note）は、その上の行から上へ出す。
+	// 問いの文と入力の中身を出し、カーソル（縦線）を Input.Cursor の位置に置く。知らせ（Input.Note）は、その上の行から上へ出す。
 	// キーの扱いは internal/editor が行う。
 	Input *Input
 	// Decorations は、構文の色の範囲を行ごとに分けたもの（NewDecorations で作る）である。nil なら色を付けない。

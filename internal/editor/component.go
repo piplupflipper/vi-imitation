@@ -291,6 +291,11 @@ func (e *Editor) noteViewClient(f *floatState, selected bool) {
 		return
 	}
 	e.extClient[f.ext] = e.view
+	if f.pane {
+		e.notePane(f.ext, f)
+	} else {
+		e.notePane(f.ext, e.paneActive)
+	}
 	if selected && f.pane && f == e.paneActive {
 		mp := ""
 		if f.remote != nil {
@@ -582,6 +587,8 @@ func (e *Editor) popupComponentFrame(f *floatState) *ui.Frame {
 // paneComponentFrame は、ペインの部品 p を描くペインの部品の client の画面を作る。
 // 部品を表示領域の全体に広げ、ステータス行とコマンドラインには、ペインのバッファの名前、モード、打ちかけのコマンドラインを出す。
 // メッセージは元の client の画面に出す（ペインの横に見えている）。
+// ただし、このペインのキーから頼んだ拡張機能の問い（choice/ask、input/ask）は、元の client の画面と一緒に、このペインの画面にも出す
+// （questionPane。端末多重化ソフトでペインを拡大していても問いが見えるようにする。PR #411 のレビューの裁定要 1）。
 //
 // プレビューにフォーカスを移している（previewState.focus）なら、ステータス行とコマンドラインは、キーを受けるプレビューのバッファのもの
 // にする（FR-149、FR-71。中央のポップアップで、ui がステータス行をプレビューのバッファのものにするのと同じ。PR #298 のレビューの必須 2）。
@@ -598,7 +605,19 @@ func (e *Editor) paneComponentFrame(p *floatState) *ui.Frame {
 	fl := e.floatFrame(p)
 	p.focused = focused
 	fl.Fill = true
+	var input *ui.Input
+	var choice *ui.Choice
+	if e.showsQuestion() && e.questionPane() == p {
+		// このペインのキーから頼んだ拡張機能の問いは、このペインの画面にも出す（inputask.go の questionPane。PR #411 の裁定要 1）。
+		if e.choices[0].input != nil {
+			input = e.uiInput()
+		} else {
+			choice = e.uiChoice()
+		}
+	}
 	return &ui.Frame{
+		Input:            input,
+		Choice:           choice,
 		Name:             bufferTitle(bs),
 		Modified:         bs.buf.Modified(),
 		ReadOnly:         bs.buf.ReadOnly(),

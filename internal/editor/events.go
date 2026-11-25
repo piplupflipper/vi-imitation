@@ -494,10 +494,18 @@ func (e *Editor) diagnosticList(p ext.DiagnosticListParams) ext.DiagnosticListRe
 
 // activeChoice は、表示中の拡張機能の問い（choice/ask か input/ask）を返す。取り下げられた問い（Done が閉じた）は、
 // 待たせている問いからも捨て、答えた問いと同じく choiceDone に数える。
+// 表示中の問い（列の先頭）を取り下げたなら、そのことを知らせ、問いに向けて打ち続けるキーを捨て始める（noteWithdrawn）。
 func (e *Editor) activeChoice() *extQuestion {
 	n := len(e.choices)
+	var head *extQuestion
+	if n > 0 && closed(e.choices[0]) {
+		head = e.choices[0]
+	}
 	e.choices = slices.DeleteFunc(e.choices, func(c *extQuestion) bool { return closed(c) })
 	e.choiceDone += n - len(e.choices)
+	if head != nil {
+		e.noteWithdrawn(head)
+	}
 	if len(e.choices) == 0 {
 		return nil
 	}

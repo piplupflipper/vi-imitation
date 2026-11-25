@@ -36,8 +36,8 @@ func (h *harness) outputOf(channel string) string {
 	return strings.Join(h.e.outputs[outputKey{"fake", channel}], "\n") // 行に分けて持つので、改行でつなぐと書き足した中身に戻る
 }
 
-// input/ask は、コマンドラインの行に問いの文を前置きにして初めの中身を出し、: と同じキーで編集させる。
-// <BS>、<C-w>、<C-u>、<Tab>、貼り付け、多バイト文字と全角文字を入れられ、空の中身の <BS> では取り消さない。
+// input/ask は、コマンドラインの行に問いの文を前置きにして初めの中身を出し、: と同じキーとインサートモードの <C-w> と <C-u> で
+// 編集させる。<BS>、<Tab>、貼り付け、多バイト文字と全角文字を入れられ、空の中身の <BS> では取り消さない。
 // <CR> で確定した中身（空の文字列を含む）と、<Esc> と <C-c> の取り消しを区別して返す。問いの間のキーでバッファを編集しない。
 //
 // req: FR-275
@@ -95,6 +95,95 @@ func TestInputAsk(t *testing.T) {
 	}
 	if h.mode() != command.ModeNormal {
 		t.Errorf("mode = %v", h.mode())
+	}
+}
+
+// 入力の行の中では、<Left>、<Right>、<Home>、<End> でカーソルを動かし、<Del> でカーソルの後の文字を消して、既定値の途中を直せる。
+// <BS>、<Del>、<Left>、<Right> は、結合文字を前の文字と一緒に 1 文字として扱う（Vim 9.1 のコマンドラインの既定と同じ）。
+// 貼り付けと <C-w> と <C-u> も、カーソルの位置で働く。
+//
+// req: FR-275
+func TestInputAskCursor(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	cursor := func() int {
+		var c int
+		h.e.do(func() { c = h.e.choices[0].cursor })
+		return c
+	}
+	h.keys(":fake.input --port 5678 -v<CR>")
+	h.waitInput("既定値", "--port 5678 -v", "名前: --port 5678 -v")
+	// 5678 を 9000 に直す。
+	h.keys("<Left><Left><Left><BS><BS><BS><BS>9000")
+	h.waitInput("途中を直す", "--port 9000 -v", "名前: --port 9000 -v")
+	if got := cursor(); got != len("--port 9000") {
+		t.Errorf("cursor = %d", got)
+	}
+	h.keys("<Home><Del><Del>")
+	h.waitInput("<Home> と <Del>", "port 9000 -v", "名前: port 9000 -v")
+	h.keys("<Right><Right><Right><Right><C-u>")
+	h.waitInput("カーソルの前を <C-u> で消す", " 9000 -v", "名前:  9000 -v")
+	h.keys("<End><Left><Left><C-w>")
+	h.waitInput("カーソルの前の単語を <C-w> で消す", " -v", "名前:  -v")
+	h.paste("x")
+	h.waitInput("カーソルの位置に貼り付ける", " x-v", "名前:  x-v")
+	h.keys("<End><C-u>")
+	// 「か」と結合文字の濁点（U+3099）の「が」を、<BS> と <Del> と <Left> で 1 文字として扱う。
+	h.keys("xがy")
+	h.waitInput("結合文字", "xがy", "名前: xがy")
+	h.keys("<Left><BS>")
+	h.waitInput("結合文字ごと <BS> で消す", "xy", "名前: xy")
+	h.keys("<BS>が<Left><Del>")
+	h.waitInput("結合文字ごと <Del> で消す", "y", "名前: y")
+	h.keys("<CR>")
+	h.eventually("確定", func() bool { return strings.Contains(h.outputOf("input"), `value="y" cancelled=false`) })
+}
+
+// 拡張機能が入力の問いを取り下げたら、そのことをメッセージの行に知らせ、問いに向けて打ち続けたキーを、<Esc> か <CR> を打つまで
+// 編集のコマンドにせずに捨てる（PR #411 のレビューの必須 1。問いの中身の le の後に n(items) を打つと、バッファを書き換えていた）。
+// 選択肢の問いの取り下げでは、答えになるキー（番号と <Esc>）を 1 つだけ捨てる。
+//
+// req: FR-275
+func TestInputAskWithdrawn(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\ndef\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	h.keys(":fake.inputcancel<CR>")
+	h.waitInput("取り下げる問い", "", "式:")
+	h.keys("le")
+	h.waitInput("打ちかけ", "le", "式: le")
+	h.eventually("取り下げ", func() bool { return h.e.activeChoice() == nil })
+	h.keys("n(items)")
+	h.settle()
+	if got := h.text(); got != "abc\ndef" {
+		t.Errorf("取り下げの後のキーで編集した: %q", got)
+	}
+	if h.mode() != command.ModeNormal {
+		t.Errorf("mode = %v", h.mode())
+	}
+	if msg := h.message(); !strings.Contains(msg, "問い「式:」は拡張機能が取り下げました") {
+		t.Errorf("message = %q", msg)
+	}
+	h.paste("dd")
+	h.keys("<CR>")
+	h.settle()
+	if msg := h.message(); msg != "取り下げた問いに向けて打ったキーを捨てました" {
+		t.Errorf("<CR> の後の message = %q", msg)
+	}
+	// <CR> の後は、キーを元どおりに処理する。
+	h.keys("dd")
+	h.settle()
+	if got := h.text(); got != "def" {
+		t.Errorf("捨て終えた後の dd = %q", got)
+	}
+
+	// 選択肢の問いの取り下げの後は、番号のキーを 1 つだけ捨て、次のキーから元どおりに処理する。
+	h.keys(":fake.inputcancel choice<CR>")
+	h.eventually("選択肢の問い", func() bool { q := h.e.activeChoice(); return q != nil && q.choice != nil })
+	h.eventually("選択肢の問いの取り下げ", func() bool { return h.e.activeChoice() == nil })
+	h.keys("2x")
+	h.settle()
+	if got := h.text(); got != "ef" {
+		t.Errorf("選択肢の問いの取り下げの後の 2x = %q, want ef（2 を捨てて x だけ）", got)
 	}
 }
 
@@ -186,7 +275,8 @@ func TestInputAskOtherClient(t *testing.T) {
 	}
 }
 
-// 問いを出した拡張機能が答えを待つ間に終わったら、その問いを取り下げ、キーを元どおりに処理する。
+// 問いを出した拡張機能が答えを待つ間に終わったら、その問いを取り下げて知らせる。問いに向けて打ったキーを <Esc> まで捨てた後は、
+// キーを元どおりに処理する。
 //
 // req: FR-275
 func TestInputAskExtensionExit(t *testing.T) {
@@ -197,12 +287,67 @@ func TestInputAskExtensionExit(t *testing.T) {
 	h.keys("e")
 	h.eventually("問いを取り下げる", func() bool { return h.e.activeChoice() == nil && h.e.asker == nil })
 	h.settle()
-	h.eventually("問いを消す", func() bool { return !strings.Contains(h.term.screen(), "終わる:") })
+	// 知らせは、拡張機能の異常終了の知らせと前後するので、後に出た方がメッセージの行に残る。捨てる状態に入ったことを確かめる。
+	h.eventually("問いを消して捨て始める", func() bool {
+		return !strings.Contains(h.term.screen(), "終わる: d") && h.e.withdrawn != nil && h.e.withdrawn.input
+	})
+	h.keys("x")
+	h.settle()
+	if msg := h.message(); !strings.Contains(msg, "問い「終わる:」は拡張機能が取り下げました") {
+		t.Errorf("捨てたキーの後の message = %q", msg)
+	}
+	h.keys("<Esc>")
+	h.settle()
+	if got := h.text(); got != "abc" {
+		t.Errorf("取り下げた問いに向けた x で編集した: %q", got)
+	}
 	h.keys("x")
 	h.settle()
 	if got := h.text(); got != "bc" {
-		t.Errorf("取り下げた後の x = %q, want bc", got)
+		t.Errorf("捨て終えた後の x = %q, want bc", got)
 	}
+}
+
+// ペインの部品の client のキーから頼んだ問いは、そのペインの画面にも出し、ペインで打ったキーで答えられる（PR #411 の裁定要 1。
+// 端末多重化ソフトでペインを拡大していても問いが見える）。ペインを閉じた後に頼んだ問いは、元の client の画面にだけ出す。
+//
+// req: FR-275
+func TestInputAskPane(t *testing.T) {
+	var calls muxCalls
+	cfg := Config{Extensions: fakeSpecs(t)}
+	calls.config(&cfg)
+	h := start(t, cfg)
+	peer := h.attach(ClientInfo{ID: 2, Pane: "%9"})
+	peer.keys(":fake.pane list<CR>")
+	h.eventually("OpenPane", func() bool { _, ok := calls.last(true); return ok })
+	call, _ := calls.last(true)
+	h.waitPaneOpened(call.view)
+	comp := h.attachComponent(call.view, true)
+	comp.waitScreen("close me")
+
+	comp.keys("zw")
+	h.eventually("ペインからの問い", func() bool { q := h.e.activeChoice(); return q != nil && q.input != nil })
+	comp.keys("len(items)")
+	h.eventually("ペインの画面の最後の行", func() bool {
+		lines := strings.Split(comp.term.screen(), "\n")
+		return strings.TrimRight(lines[len(lines)-1], " ") == "ウォッチ式: len(items)"
+	})
+	if !strings.Contains(peer.term.screen(), "ウォッチ式: len(items)") {
+		t.Errorf("元の client の画面に問いが無い:\n%s", peer.term.screen())
+	}
+	comp.keys("<CR>")
+	h.eventually("ペインで打った答え", func() bool { return strings.Contains(h.outputOf("input"), `value="len(items)" cancelled=false`) })
+
+	// 元の client のキーから頼んだ問いは、ペインの画面には出さない。
+	peer.keys(`:fake.input<CR>`)
+	h.eventually("元の client の問い", func() bool { q := h.e.activeChoice(); return q != nil && q.input != nil })
+	h.eventually("元の client の画面の問い", func() bool { return strings.Contains(peer.term.screen(), "名前:") })
+	h.e.do(h.e.render)
+	if strings.Contains(comp.term.screen(), "名前:") {
+		t.Errorf("元の client から頼んだ問いがペインに出た:\n%s", comp.term.screen())
+	}
+	peer.keys("<Esc>")
+	h.eventually("取り消し", func() bool { return h.e.activeChoice() == nil })
 }
 
 // 設定 commandLine.popup が真なら、入力の問いを画面の上の中央のポップアップの枠に出し、枠の題を commandLine.title.input にする。

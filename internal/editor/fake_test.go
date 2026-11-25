@@ -278,6 +278,13 @@ func runFakeExt(mode string) int {
 				msg += fmt.Sprintf(" seq=%d input=%s", e.Seq, e.Input)
 			}
 			_ = s.ShowMessage(ext.MessageInfo, msg)
+			if e.Kind == server.ViewKey && e.Key == "fake.watch" {
+				// ペインの中のキーから input/ask を送る（DAP のウォッチ式の追加。PR #411 の裁定要 1）。
+				go func() {
+					r, err := s.AskInput(hostCtx, ext.InputAskParams{Title: "ウォッチ式: "})
+					_ = s.AppendOutput("input", fmt.Sprintf("value=%q cancelled=%v err=%v\n", r.Value, r.Cancelled, err))
+				}()
+			}
 			switch {
 			case e.Kind == server.ViewInputChanged && strings.HasPrefix(e.Item, "f:"):
 				// ファインダー（入力が f: で始まる）は、候補のうち入力の残りを含むものを、同じ seq で返す（FR-106）。
@@ -523,6 +530,23 @@ func runFakeExt(mode string) int {
 			}
 			return ext.CommandExecuteResult{OK: true}, nil
 		})
+		// fake.inputcancel は、input/ask（引数が choice なら choice/ask）を送り、答えを待たずに 400 ms で取り消す（拡張機能の側からの取り下げ）。
+		s.Command("fake.inputcancel", func(_ context.Context, _ *server.Buffer, p *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
+			var a struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(p.Args, &a)
+			go func() {
+				ctx, cancel := context.WithTimeout(hostCtx, 400*time.Millisecond)
+				defer cancel()
+				if a.Text == "choice" {
+					_, _ = s.AskChoice(ctx, ext.ChoiceAskParams{Title: "どれ?", Choices: []ext.Choice{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}}})
+					return
+				}
+				_, _ = s.AskInput(ctx, ext.InputAskParams{Title: "式: "})
+			}()
+			return ext.CommandExecuteResult{OK: true}, nil
+		})
 		// fake.inputexit は、input/ask を送り、答えを待つ間に拡張機能のプロセスを終わらせる（FR-275 の取り下げ）。
 		s.Command("fake.inputexit", func(context.Context, *server.Buffer, *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
 			go func() {
@@ -733,7 +757,7 @@ func fakeSpecs(t *testing.T) []exthost.Spec {
 				act(ext.ActivationCommand, "fake.write"), act(ext.ActivationCommand, "fake.touch"),
 				act(ext.ActivationCommand, "fake.popup"), act(ext.ActivationCommand, "fake.headdiff"),
 				act(ext.ActivationCommand, "fake.pane"), act(ext.ActivationCommand, "fake.list"), act(ext.ActivationCommand, "fake.exec"),
-				act(ext.ActivationCommand, "fake.input"),
+				act(ext.ActivationCommand, "fake.input"), act(ext.ActivationCommand, "fake.inputcancel"),
 			},
 			Contributes: ext.Contributes{
 				TextObjects: []ext.Contribution{contrib("fake.line", "il"), contrib("fake.slow", "is"), contrib("fake.hang", "ih")},
@@ -747,10 +771,11 @@ func fakeSpecs(t *testing.T) []exthost.Spec {
 					contrib("fake.write", ""), contrib("fake.touch", ""), contrib("fake.ft", `\y`),
 					contrib("fake.popup", ""), contrib("fake.headdiff", ""), contrib("fake.pane", ""), contrib("fake.list", ""),
 					contrib("fake.exec", ""), contrib("fake.input", `\i`), contrib("fake.mixed", `\m`), contrib("fake.inputexit", `\x`),
+					contrib("fake.inputcancel", ""),
 				},
 				// ポップアップの中だけで効くキー（FR-69）。x は本体では文字を消すキーで、ポップアップの中ではこちらが先に効く。
 				// gx は g で始まるので、gg はキーの列が当たらずに本体の gg として動く。
-				PopupKeys: []ext.Contribution{contrib("fake.pick", "x"), contrib("fake.two", "zq"), contrib("fake.gx", "gx")},
+				PopupKeys: []ext.Contribution{contrib("fake.pick", "x"), contrib("fake.two", "zq"), contrib("fake.gx", "gx"), contrib("fake.watch", "zw")},
 			},
 		},
 		{

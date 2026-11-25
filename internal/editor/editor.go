@@ -340,6 +340,9 @@ type Editor struct {
 	// extFromPane は、拡張機能の ID のうち、最後の操作がペインの部品の client のキーだったものから、そのキーを処理した時刻への表である
 	// （noteViewClient、focusAfterPane）。
 	extFromPane map[string]paneMark
+	// extPane は、拡張機能の ID のうち、最後の問い合わせか利用者の操作の知らせがペインの部品の client のキーから始まったものから、
+	// そのペインへの表である。その拡張機能の問い（choice/ask、input/ask）を、頼んだペインに出すのに使う（questionPane。#409）。
+	extPane map[string]*floatState
 	// paneFocus は、ペインで選んでからフォーカスを戻すまでの上限である（focusAfterPane）。0 なら paneFocusWindow を使う。
 	// テストが長くして、負荷で応答が遅れても上限の内に届いたものとして扱わせる（#313）。
 	paneFocus time.Duration
@@ -460,6 +463,9 @@ type Editor struct {
 	choiceNote string
 	// choiceDropped は、表示中の問いに対して、答えにならずに捨てたキーと貼り付けの数である。答えるたびに 0 に戻す（#151）。
 	choiceDropped int
+	// withdrawn は、拡張機能が表示中の問いを取り下げた後に、問いに向けて打ち続けたキーを捨てている間の状態である。nil なら捨てていない
+	// （discardAfterWithdrawn。PR #411 のレビューの必須 1）。
+	withdrawn *withdrawnQuestion
 	// confirm は、表示中の Ex の確認の問いと、問いを出したバッファである。
 	confirm   *ex.Confirm
 	confirmBS *bufferState
@@ -630,6 +636,7 @@ func New(term Terminal, cfg Config) (*Editor, error) {
 		keyFireCh:     make(chan keyFire),
 		extClient:     map[string]*clientView{},
 		extFromPane:   map[string]paneMark{},
+		extPane:       map[string]*floatState{},
 		finished:      make(chan struct{}),
 		diff:          newDiffState(),
 		outputs:       map[outputKey][]string{},

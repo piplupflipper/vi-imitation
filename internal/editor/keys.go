@@ -280,6 +280,10 @@ func (e *Editor) handleKey(k editcmd.Key) {
 		e.choiceKey(k)
 		return
 	}
+	if e.discardAfterWithdrawn(k) {
+		// 拡張機能が取り下げた問いに向けて打ち続けたキーは、編集のコマンドにしない（inputask.go。PR #411 のレビューの必須 1）。
+		return
+	}
 	e.endChoices()
 	if e.regList != nil {
 		e.message = noMessage
@@ -338,6 +342,10 @@ func (e *Editor) handlePaste(text string) {
 			return
 		}
 		e.dropChoiceInput()
+		return
+	}
+	if w := e.withdrawn; w != nil && w.input && w.c == e.op {
+		// 取り下げた入力の問いに向けた貼り付けも、編集にしない（discardAfterWithdrawn）。
 		return
 	}
 	e.endChoices()
