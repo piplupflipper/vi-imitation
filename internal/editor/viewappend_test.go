@@ -152,25 +152,47 @@ func TestViewAppendNoFollowWhileSelecting(t *testing.T) {
 		if c := f.bs.state.Cursor(); c.Line != 1 {
 			t.Errorf("cursor followed in visual mode: %v", c)
 		}
+		// ビジュアルモードを抜けた時点で、カーソルが止めたときの行にあれば、最後の行へ戻して追従を続ける（afterKey が呼ぶ）。
 		f.bs.state.FeedUnrecorded(editcmd.Esc)
-		f.bs.state.FeedUnrecorded(editcmd.Rune('G'))
+		e.resumeFollow(f)
+		if c := f.bs.state.Cursor(); c.Line != 3 {
+			t.Errorf("cursor after leaving visual mode = %v, want the last line", c)
+		}
+		appendTo(e, f, "\ne")
+		if c := f.bs.state.Cursor(); c.Line != 4 {
+			t.Errorf("cursor did not follow after leaving visual mode: %v", c)
+		}
+		// yy の途中（y の後）も同じ。
 		f.bs.state.FeedUnrecorded(editcmd.Rune('y'))
 		if !f.bs.state.Pending() {
 			t.Fatalf("y is not pending")
 		}
-		appendTo(e, f, "\ne")
-		if c := f.bs.state.Cursor(); c.Line != 3 {
+		appendTo(e, f, "\nf")
+		if c := f.bs.state.Cursor(); c.Line != 4 {
 			t.Errorf("cursor followed while an operator is pending: %v", c)
 		}
-		f.bs.state.FeedUnrecorded(editcmd.Esc)
-		appendTo(e, f, "\nf")
-		if c := f.bs.state.Cursor(); c.Line != 3 {
-			t.Errorf("cursor moved after leaving the operator: %v", c)
+		f.bs.state.FeedUnrecorded(editcmd.Rune('y'))
+		e.resumeFollow(f)
+		if c := f.bs.state.Cursor(); c.Line != 5 {
+			t.Errorf("cursor after yy = %v, want the last line", c)
 		}
-		f.bs.state.FeedUnrecorded(editcmd.Rune('G'))
+		// 抜けたことをキーで知らせずに書き足しが届いても、書き足す前に戻す。
+		f.bs.state.FeedUnrecorded(editcmd.Rune('V'))
 		appendTo(e, f, "\ng")
+		f.bs.state.FeedUnrecorded(editcmd.Esc)
+		appendTo(e, f, "\nh")
+		if c := f.bs.state.Cursor(); c.Line != 7 {
+			t.Errorf("cursor did not follow after leaving visual mode without a key hook: %v", c)
+		}
+		// ビジュアルモードの中で利用者が上へ動かしたら、抜けた後も追従を止めたままにする。
+		f.bs.state.FeedUnrecorded(editcmd.Rune('V'))
+		appendTo(e, f, "\ni")
+		f.bs.state.FeedUnrecorded(editcmd.Rune('k'))
+		f.bs.state.FeedUnrecorded(editcmd.Esc)
+		e.resumeFollow(f)
+		appendTo(e, f, "\nj")
 		if c := f.bs.state.Cursor(); c.Line != 6 {
-			t.Errorf("cursor did not follow after G: %v", c)
+			t.Errorf("cursor moved after the user moved up in visual mode: %v", c)
 		}
 		e.closeFloat(false)
 	})
@@ -259,6 +281,29 @@ func TestViewAppendMatchesModel(t *testing.T) {
 			t.Errorf("editor and model differ: %d vs %d lines, eol %v vs %v", f.bs.buf.LineCount(), len(lines), f.textEOL, eol)
 		}
 		e.closeFloat(false)
+	})
+}
+
+// 同じ部品への書き足しでも、つなぐと 1 件の大きさが ext.ViewAppendJoinMaxBytes を超えるなら、新しい件にする（PR #405 の再レビュー）。
+// 本体の取っておく列と exthost の列は、同じ exthost.MergeInto でつなぐ。
+func TestHoldViewAppendSizeLimit(t *testing.T) {
+	h := start(t, Config{})
+	h.e.do(func() {
+		e := h.e
+		big := strings.Repeat("x", ext.ViewAppendJoinMaxBytes/3) // 改行の無い出力
+		for range 5 {
+			e.hold(&exthost.ViewAppend{Extension: "fake", Params: ext.ViewAppendParams{View: 1, Text: big}})
+		}
+		var sizes []int
+		for _, ev := range e.held {
+			a := ev.(*exthost.ViewAppend)
+			a.Flush()
+			sizes = append(sizes, len(a.Params.Text))
+		}
+		if want := []int{3 * len(big), 2 * len(big)}; !slices.Equal(sizes, want) {
+			t.Errorf("held sizes = %v, want %v", sizes, want)
+		}
+		e.held = nil
 	})
 }
 

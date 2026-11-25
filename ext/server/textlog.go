@@ -86,9 +86,12 @@ type TextLog struct {
 	bound bool
 	view  ext.ViewID
 	child string
-	// opening は、Open が open を呼んでいる間であることを表す。pending は、その間に書き足した分を 1 件につないだものである。
+	// opening は、Open が open を呼んでいる間であることを表す。pending は、その間に書き足した分をつないだものである。
+	// つないだ 1 件の大きさが ext.ViewAppendJoinMaxBytes を超えるときは、つなぐのをやめて replace を立て、開き終えたときに
+	// 写しの中身の全体を view/update で送る（本体の受信の上限に当たらず、開いている間の出力の量に依らない大きさで済むため）。
 	opening bool
 	pending *ext.ViewAppendJoin
+	replace bool
 	// detached は、Open が open を呼んでいる間に Detach を呼んだことを表す。Open は、open が戻っても結びつけない。
 	detached bool
 }
@@ -119,10 +122,16 @@ func (t *TextLog) Append(text, style string) error {
 	defer t.mu.Unlock()
 	t.add(p.Text, p.Highlights)
 	if t.opening {
-		if t.pending == nil {
+		switch {
+		case t.replace:
+		case t.pending == nil:
 			t.pending = &ext.ViewAppendJoin{}
+			t.pending.Add(p.Text, p.Highlights)
+		case t.pending.Fits(p.Text, p.Highlights):
+			t.pending.Add(p.Text, p.Highlights)
+		default:
+			t.pending, t.replace = nil, true
 		}
-		t.pending.Add(p.Text, p.Highlights)
 		return nil
 	}
 	return t.sendLocked(p)
@@ -237,8 +246,8 @@ func (t *TextLog) Open(open func(ext.ViewComponent) (ext.ViewID, error), child s
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.opening = false
-	pending := t.pending
-	t.pending = nil
+	pending, replace := t.pending, t.replace
+	t.pending, t.replace = nil, false
 	if err != nil {
 		return err
 	}
@@ -249,7 +258,13 @@ func (t *TextLog) Open(open func(ext.ViewComponent) (ext.ViewID, error), child s
 	l := &t.s.textLogs
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !t.bindLocked(id, child) || pending == nil {
+	if !t.bindLocked(id, child) {
+		return nil
+	}
+	if replace {
+		return t.s.notify(ext.MethodViewUpdate, ext.ViewUpdateParams{View: id, Component: t.component()})
+	}
+	if pending == nil {
 		return nil
 	}
 	return t.s.notify(ext.MethodViewAppend, pending.Params(id, child))

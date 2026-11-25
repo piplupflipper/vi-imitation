@@ -151,6 +151,8 @@ func init() {
 		"StatusLineText":             reflect.ValueOf(ext.StatusLineText),
 		"ValidateManifests":          reflect.ValueOf(ext.ValidateManifests),
 		"VersionLess":                reflect.ValueOf(ext.VersionLess),
+		"ViewAppendJoinMaxBytes":     reflect.ValueOf(constant.MakeFromLiteral("4194304", token.INT, 0)),
+		"ViewAppendSize":             reflect.ValueOf(ext.ViewAppendSize),
 		"ViewFinder":                 reflect.ValueOf(ext.ViewFinder),
 		"ViewInput":                  reflect.ValueOf(ext.ViewInput),
 		"ViewList":                   reflect.ValueOf(ext.ViewList),

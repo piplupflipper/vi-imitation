@@ -157,6 +157,11 @@ type floatState struct {
 	// decsOwned は、部品のバッファの色の範囲の一覧（popupDecorationOwner）が、view/append で写し取った自分の列であることを表す。
 	// 自分の列なら、書き足した範囲をその後ろへ足す（viewappend.go）。開いたときと view/update のたびに false に戻す。
 	decsOwned bool
+	// followHeld は、カーソルが最後の行にあったのに、ビジュアルモードかキーの列の途中だったので、view/append で追従しなかったことを表す。
+	// heldLine は、そのときのカーソルの行（そのときの最後の行）である。ビジュアルモードとキーの列を抜けた時点でカーソルがまだ
+	// heldLine にあれば、最後の行へ戻して追従を続ける（resumeFollow。FR-272）。
+	followHeld bool
+	heldLine   int
 }
 
 // popupDecorationOwner は、ポップアップの部品の色を付ける範囲を、バッファの構文の色に入れるときの持ち主の名前である。
@@ -1033,7 +1038,7 @@ func (e *Editor) drawFloatContent(f *floatState, c ext.ViewComponent) {
 	if c.Kind == ext.ViewText {
 		f.textEOL = strings.HasSuffix(c.Text, "\n")
 	}
-	f.decsOwned = false
+	f.decsOwned, f.followHeld = false, false
 	e.setPopupDecorations(f.bs, decs)
 }
 

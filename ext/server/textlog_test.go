@@ -348,6 +348,44 @@ func TestTextLog(t *testing.T) {
 	}
 }
 
+// 開いている間の書き足しが、つないだ 1 件の大きさの上限（ext.ViewAppendJoinMaxBytes）を超えたら、つなぐのをやめ、
+// 開き終えたときに写しの中身の全体を view/update で送る。本体の役の中身は写しと同じになる（PR #405 の再レビュー）。
+//
+// req: FR-273
+func TestTextLogOpenLargePending(t *testing.T) {
+	s := server.New()
+	vh := startViewHost(t, s)
+	log := server.NewTextLog(s)
+	chunk := strings.Repeat("z", 1<<20) // 改行の無い出力
+	if err := log.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
+		for range 5 {
+			_ = log.Append(chunk, "")
+		}
+		return openPane(s)(c)
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	view, _, _ := log.Attached()
+	vh.sync(t)
+	if n := vh.last(); n.Method != ext.MethodViewUpdate {
+		t.Errorf("last notification = %s, want view/update", n.Method)
+	}
+	if got := vh.text(view); got != log.Text() {
+		t.Errorf("shown text differs from the copy (%d vs %d bytes)", len(got), len(log.Text()))
+	}
+	// 小さい書き足しは、今までどおり view/append でつないで送る。
+	if err := log.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
+		_ = log.Append("small\n", "")
+		return openPane(s)(c)
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	vh.sync(t)
+	if n := vh.last(); n.Method != ext.MethodViewAppend {
+		t.Errorf("last notification = %s, want view/append", n.Method)
+	}
+}
+
 // 写しは本体と同じ上限で古い行を捨てるので、開き直した中身は、本体が閉じる前に出していた中身と同じである。
 //
 // req: FR-273

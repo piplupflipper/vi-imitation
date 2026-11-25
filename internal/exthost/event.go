@@ -400,6 +400,15 @@ func (a *ViewAppend) Merge(b *ViewAppend) {
 	a.join.Add(b.Params.Text, b.Params.Highlights)
 }
 
+// fits は、b をつないでも、つないだ 1 件の大きさが ext.ViewAppendJoinMaxBytes を超えないかを返す。
+func (a *ViewAppend) fits(b *ViewAppend) bool {
+	b.Flush()
+	if a.join != nil {
+		return a.join.Fits(b.Params.Text, b.Params.Highlights)
+	}
+	return ext.ViewAppendSize(a.Params.Text, a.Params.Highlights)+ext.ViewAppendSize(b.Params.Text, b.Params.Highlights) <= ext.ViewAppendJoinMaxBytes
+}
+
 // Flush は、Merge でつないだ中身を Params に入れる。つないでいなければ何もしない。
 func (a *ViewAppend) Flush() {
 	if a.join == nil {
@@ -422,7 +431,8 @@ func closesView(ev Event, extID string, view ext.ViewID) bool {
 }
 
 // MergeInto は、列 events に、a と同じ部品への書き足しがあり、それより後に同じ部品への view/update と view/close が無ければ、
-// a をそれにつないで true を返す。列の中で隣り合っていなくてよい。accept が nil でなければ、accept が true を返す件だけを見る
+// a をそれにつないで true を返す。列の中で隣り合っていなくてよい。つなぐと 1 件の大きさが ext.ViewAppendJoinMaxBytes を超えるなら、
+// つながずに false を返す（呼び出し側は a を新しい件にする）。accept が nil でなければ、accept が true を返す件だけを見る
 // （Host は、同じプロセスから届いた件だけを見る）。本体が取っておく列（internal/editor）も同じ規則でつなぐ（基本設計 1.4 の「待ちの間」）。
 func MergeInto[T any](events []T, ev func(T) Event, accept func(T) bool, a *ViewAppend) bool {
 	for i := len(events) - 1; i >= 0; i-- {
@@ -431,6 +441,10 @@ func MergeInto[T any](events []T, ev func(T) Event, accept func(T) bool, a *View
 		}
 		e := ev(events[i])
 		if h, ok := e.(*ViewAppend); ok && h.SameView(a) {
+			if !h.fits(a) {
+				// つないだ 1 件の大きさの上限（ext.ViewAppendJoinMaxBytes）を超えるので、新しい件にする。
+				return false
+			}
 			h.Merge(a)
 			return true
 		}

@@ -41,6 +41,8 @@ func (e *Editor) viewAppend(ev *exthost.ViewAppend) {
 // カーソルの行が捨てた範囲にあれば最初の行に置く。
 // ビジュアルモードの間と、キーの列の途中（オペレーターの後のモーションを待つ間など）は、最後の行にあっても追従しない。
 // 選択とオペレーターの範囲が、書き足した分だけ広がらないようにするためである（PR #405 のレビューの推奨 2）。
+// そのときは、止める前にカーソルが最後の行にあったことを覚え、抜けた時点でカーソルがまだその行にあれば、最後の行へ戻して追従を続ける
+// （resumeFollow。PR #405 の再レビューの推奨へのオーケストレータの決め）。利用者が自分で上へ動かしたときだけ、追従を止めたままにする。
 //
 // 色の範囲は、部品の一覧（decorationSet）の後ろへ足し、先頭の行を捨てたときは一覧を作り直さずに shift を増やす。
 // 1 件の手間が、部品の色の範囲の数でなく、書き足した量と捨てた範囲の数に比例するようにするためである（同じレビューの推奨 3）。
@@ -51,9 +53,13 @@ func (e *Editor) appendFloatText(f *floatState, text string, spans []ext.ViewSpa
 	b := bs.buf
 	lastIdx := b.LineCount() - 1
 	last := b.Line(lastIdx)
+	e.resumeFollow(f) // 抜けた後の最初の書き足しより前に、キーを経ずに抜けていた（時間切れなど）ときも戻す
 	cursor := bs.state.Cursor()
-	mode := bs.state.Mode()
-	follow := cursor.Line >= lastIdx && mode != command.ModeVisual && mode != command.ModeVisualLine && !bs.state.Pending()
+	atTail := cursor.Line >= lastIdx
+	follow := atTail && !holdingFollow(bs)
+	if atTail && !follow && !f.followHeld {
+		f.followHeld, f.heldLine = true, cursor.Line
+	}
 	ds := bs.decorations[popupDecorationOwner]
 	decs, shift := ds.decorations, ds.shift
 	if !f.decsOwned {
@@ -134,6 +140,11 @@ func (e *Editor) appendFloatText(f *floatState, text string, spans []ext.ViewSpa
 	}
 	cursor.Byte = min(cursor.Byte, len(b.Line(cursor.Line)))
 	bs.state.SetCursor(cursor)
+	if f.followHeld {
+		if f.heldLine -= drop; f.heldLine < 0 {
+			f.followHeld = false
+		}
+	}
 	if drop > 0 && !follow {
 		// 見ている行を動かさない。窓の最初の行の番号を、捨てた行数だけずらす。
 		vp := floatViewport{f: f, r: e.renderer}
@@ -142,6 +153,30 @@ func (e *Editor) appendFloatText(f *floatState, text string, spans []ext.ViewSpa
 			top, skip = 0, 0
 		}
 		vp.SetView(top, skip, -1)
+	}
+}
+
+// holdingFollow は、テキストの部品のバッファ bs が、ビジュアルモードかキーの列の途中（オペレーターの後のモーションを待つ間など）で、
+// 書き足しで追従しない状態かを返す（FR-272）。
+func holdingFollow(bs *bufferState) bool {
+	mode := bs.state.Mode()
+	return mode == command.ModeVisual || mode == command.ModeVisualLine || bs.state.Pending()
+}
+
+// resumeFollow は、テキストの部品 f が、ビジュアルモードかキーの列の途中で追従を止めていて（floatState.followHeld）、
+// それを抜けていれば、カーソルがまだ止めたときの行にあるときだけ最後の行へ戻して追従を続ける。
+// 抜けた後にカーソルが別の行にあれば（利用者が動かした、ビジュアルモードの選択の先頭へ戻った）、追従を止めたままにする。
+// キーを処理した後（afterKey）と、書き足す前に呼ぶ。
+//
+// req: FR-272
+func (e *Editor) resumeFollow(f *floatState) {
+	if f == nil || !f.followHeld || f.kind != floatText || holdingFollow(f.bs) {
+		return
+	}
+	f.followHeld = false
+	if c := f.bs.state.Cursor(); c.Line == f.heldLine {
+		last := f.bs.buf.LineCount() - 1
+		f.bs.state.SetCursor(buffer.Position{Line: last, Byte: min(c.Byte, len(f.bs.buf.Line(last)))})
 	}
 }
 

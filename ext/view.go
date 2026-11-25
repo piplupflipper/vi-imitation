@@ -505,6 +505,25 @@ func (j *ViewAppendJoin) Add(text string, hs []ViewSpan) {
 // Len は、つないだテキストのバイト数を返す。
 func (j *ViewAppendJoin) Len() int { return len(j.text) }
 
+// ViewAppendJoinMaxBytes は、つないだ 1 件の大きさ（ViewAppendSize）の上限（仮に 4 MiB）である。
+// 改行の無い出力は行数の上限で捨てられないので、上限を置かないと 1 件が際限なく大きくなる（PR #405 の再レビュー）。
+// 本体が受け取る 1 件のメッセージの上限（64 MiB。internal/rpc の DefaultMaxMessageSize）に対して、JSON の文字列のエスケープで
+// 本文が最大 6 倍（制御文字の \u00XX）になっても収まる値にした。拡張機能の側（TextLog）がつないだ 1 件を送っても、上限に当たらない。
+const ViewAppendJoinMaxBytes = 4194304
+
+// ViewAppendSize は、text と色の範囲 hs の書き足し 1 件の大きさを、ViewAppendJoinMaxBytes と比べる値で返す。
+// 色の範囲 1 つは、JSON で 64 バイトと数える。
+func ViewAppendSize(text string, hs []ViewSpan) int { return len(text) + 64*len(hs) }
+
+// Fits は、text と hs をつないでも、つないだ 1 件の大きさが ViewAppendJoinMaxBytes を超えないかを返す。
+// 空のときは、1 件だけで上限を超えても true を返す（新しい件にしても大きさは同じなので）。
+func (j *ViewAppendJoin) Fits(text string, hs []ViewSpan) bool {
+	if len(j.text) == 0 && len(j.hs) == 0 {
+		return true
+	}
+	return len(j.text)+64*len(j.hs)+ViewAppendSize(text, hs) <= ViewAppendJoinMaxBytes
+}
+
 // trim は、つないだテキストの行数が ViewTextMaxLines を超えていれば、古い行を捨てて ViewTextMaxLines 行を残す。
 func (j *ViewAppendJoin) trim() {
 	n := j.newlines + 1

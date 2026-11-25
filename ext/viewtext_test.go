@@ -225,6 +225,28 @@ func TestViewAppendMerge(t *testing.T) {
 	}
 }
 
+// つないだ 1 件の大きさは ViewAppendJoinMaxBytes を超えない。改行の無い出力は行数の上限で捨てられないので、
+// 大きさで新しい件に分ける（PR #405 の再レビュー）。空の件には、上限を超える 1 件も入る。
+func TestViewAppendJoinFits(t *testing.T) {
+	var j ViewAppendJoin
+	chunk := strings.Repeat("x", 1000)
+	n := 0
+	for j.Fits(chunk, nil) {
+		j.Add(chunk, nil)
+		n++
+	}
+	if j.Len() > ViewAppendJoinMaxBytes || j.Len()+len(chunk) <= ViewAppendJoinMaxBytes {
+		t.Errorf("joined %d bytes in %d adds", j.Len(), n)
+	}
+	if j.Fits("", make([]ViewSpan, ViewAppendJoinMaxBytes/64)) {
+		t.Errorf("highlights are not counted")
+	}
+	var empty ViewAppendJoin
+	if !empty.Fits(strings.Repeat("y", ViewAppendJoinMaxBytes+1), nil) {
+		t.Errorf("an empty join does not accept a large append")
+	}
+}
+
 // つなぐ手間は、つないだ全体でなく、足した量に比例する（PR #405 のレビューの推奨 4）。
 // 1 行ずつ 3 万回つなぐ間の 1 回あたりの時間が、最初の 1 万回と最後の 1 万回で大きく変わらないことで確かめる。
 func TestViewAppendJoinLinear(t *testing.T) {
