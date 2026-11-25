@@ -344,7 +344,7 @@ func (e *Editor) handlePaste(text string) {
 		e.dropChoiceInput()
 		return
 	}
-	if w := e.withdrawn; w != nil && w.input && w.c == e.op {
+	if w := e.withdrawn; w != nil && w.input && w.c == e.op && !time.Now().After(w.until) {
 		// 取り下げた入力の問いに向けた貼り付けも、編集にしない（discardAfterWithdrawn）。
 		return
 	}

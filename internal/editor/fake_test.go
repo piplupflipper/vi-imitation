@@ -551,7 +551,8 @@ func runFakeExt(mode string) int {
 		s.Command("fake.inputexit", func(context.Context, *server.Buffer, *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
 			go func() {
 				go func() { _, _ = s.AskInput(hostCtx, ext.InputAskParams{Title: "終わる: ", Default: "d"}) }()
-				time.Sleep(300 * time.Millisecond)
+				// テストが問いに 1 キーを打ち終えるまで待つ（負荷で遅れても打ち終えるように、長めにした）。
+				time.Sleep(1500 * time.Millisecond)
 				os.Exit(3)
 			}()
 			return ext.CommandExecuteResult{OK: true}, nil

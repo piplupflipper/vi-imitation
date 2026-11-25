@@ -119,6 +119,8 @@
     "commandLine.title.command": " Cmdline",
     "commandLine.title.searchForward": "  Search",
     "commandLine.title.searchBackward": "  Search",
+    // 拡張機能が 1 行の入力を聞く問い（DAP のウォッチ式など）を同じ枠に出すときの題。本体の既定と同じ Input で、Nerd Font の印は付けない
+    "commandLine.title.input": "Input",
   },
 
   // ファジーファインダーとファイラの項目の前に、ファイルの種類のアイコンを付ける（本体の既定も付ける）。

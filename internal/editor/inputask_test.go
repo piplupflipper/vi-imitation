@@ -2,6 +2,7 @@ package editor
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +19,18 @@ func (h *harness) lastRow() string {
 	return strings.TrimRight(lines[len(lines)-1], " ")
 }
 
-// waitInput は、1 行の入力の問いを出し、その中身が want になり、最後の行に row が描かれるまで待つ。
+// waitInput は、送ったキーをすべて処理し終えてから、1 行の入力の問いの中身が want で、最後の行に row が描かれることを確かめる。
+// 先にキーを処理し終えるのを待つのは、途中の中身が want と同じになる手順（x|y の <BS> の後の y）で早く抜けないためである
+// （PR #411 の再レビューの必須 1）。
 func (h *harness) waitInput(what, want, row string) {
+	h.t.Helper()
+	h.settle()
+	h.waitInputHeld(what, want, row)
+}
+
+// waitInputHeld は、waitInput のうち、キーを処理し終えるのを待たないものである。問いの間に待たせている別の client のキーがあり、
+// settle が終わらないときに使う。
+func (h *harness) waitInputHeld(what, want, row string) {
 	h.t.Helper()
 	h.eventually(what, func() bool {
 		q := h.e.activeChoice()
@@ -139,22 +150,30 @@ func TestInputAskCursor(t *testing.T) {
 	h.eventually("確定", func() bool { return strings.Contains(h.outputOf("input"), `value="y" cancelled=false`) })
 }
 
-// 拡張機能が入力の問いを取り下げたら、そのことをメッセージの行に知らせ、問いに向けて打ち続けたキーを、<Esc> か <CR> を打つまで
-// 編集のコマンドにせずに捨てる（PR #411 のレビューの必須 1。問いの中身の le の後に n(items) を打つと、バッファを書き換えていた）。
+// 拡張機能が入力の問いを取り下げたら、キーを待たずに問いを画面から消してメッセージの行に知らせ、問いに向けて打ち続けたキーを、
+// <Esc> か <CR> を打つまで編集のコマンドにせずに捨てる（PR #411 のレビューの必須 1。問いの中身の le の後に n(items) を打つと、
+// バッファを書き換えていた）。捨てるのは取り下げから短い間（withdrawnDiscardWindow）だけで、問いに何も打っていなければ捨てない。
+// 時間が経ってから打った dd と @a は効く（PR #411 の再レビューの推奨 1）。
 // 選択肢の問いの取り下げでは、答えになるキー（番号と <Esc>）を 1 つだけ捨てる。
 //
 // req: FR-275
 func TestInputAskWithdrawn(t *testing.T) {
-	dir := writeFiles(t, map[string]string{"a.txt": "abc\ndef\n"})
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\ndef\nghi\njkl\n"})
 	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	// 負荷で遅れても捨てる間が切れないように、捨てる間を長くしておく。
+	h.e.do(func() { h.e.withdrawWindow = time.Minute })
 	h.keys(":fake.inputcancel<CR>")
 	h.waitInput("取り下げる問い", "", "式:")
 	h.keys("le")
 	h.waitInput("打ちかけ", "le", "式: le")
-	h.eventually("取り下げ", func() bool { return h.e.activeChoice() == nil })
+	h.eventually("取り下げ", func() bool { return h.e.withdrawn != nil })
+	// キーを打たなくても、取り下げた時点で描き直して問いを消す（PR #411 の再レビューの推奨 2）。
+	h.eventually("問いを画面から消す", func() bool {
+		return strings.Contains(h.lastRow(), "問い「式:」は拡張機能が取り下げました") && !strings.Contains(h.term.screen(), "式: le")
+	})
 	h.keys("n(items)")
 	h.settle()
-	if got := h.text(); got != "abc\ndef" {
+	if got := h.text(); got != "abc\ndef\nghi\njkl" {
 		t.Errorf("取り下げの後のキーで編集した: %q", got)
 	}
 	if h.mode() != command.ModeNormal {
@@ -172,18 +191,46 @@ func TestInputAskWithdrawn(t *testing.T) {
 	// <CR> の後は、キーを元どおりに処理する。
 	h.keys("dd")
 	h.settle()
-	if got := h.text(); got != "def" {
+	if got := h.text(); got != "def\nghi\njkl" {
 		t.Errorf("捨て終えた後の dd = %q", got)
 	}
 
+	// 問いに何も打たないまま取り下げられたら、直後のキーも捨てない。
+	h.keys(":fake.inputcancel<CR>")
+	h.waitInput("何も打たない問い", "", "式:")
+	h.eventually("何も打たない問いの取り下げ", func() bool { return h.e.activeChoice() == nil })
+	h.keys("dd")
+	h.settle()
+	if got := h.text(); got != "ghi\njkl" {
+		t.Errorf("何も打たなかった問いの取り下げの後の dd = %q", got)
+	}
+
+	// 取り下げから捨てる間が過ぎた後に打った dd と @a は、<Esc> を打たなくても効く。
+	h.e.do(func() {
+		h.e.withdrawWindow = 100 * time.Millisecond
+		h.e.cur.state.Registers().Set('a', command.Register{Text: "x"})
+	})
+	h.keys(":fake.inputcancel<CR>")
+	h.waitInput("打ってから待つ問い", "", "式:")
+	h.keys("q")
+	h.waitInput("打ちかけ", "q", "式: q")
+	h.eventually("待つ問いの取り下げ", func() bool { return h.e.withdrawn != nil })
+	time.Sleep(200 * time.Millisecond)
+	h.keys("dd@a")
+	h.settle()
+	if got := h.text(); got != "kl" {
+		t.Errorf("時間が経ってから打った dd@a = %q, want kl", got)
+	}
+
 	// 選択肢の問いの取り下げの後は、番号のキーを 1 つだけ捨て、次のキーから元どおりに処理する。
+	h.e.do(func() { h.e.withdrawWindow = time.Minute })
 	h.keys(":fake.inputcancel choice<CR>")
 	h.eventually("選択肢の問い", func() bool { q := h.e.activeChoice(); return q != nil && q.choice != nil })
 	h.eventually("選択肢の問いの取り下げ", func() bool { return h.e.activeChoice() == nil })
 	h.keys("2x")
 	h.settle()
-	if got := h.text(); got != "ef" {
-		t.Errorf("選択肢の問いの取り下げの後の 2x = %q, want ef（2 を捨てて x だけ）", got)
+	if got := h.text(); got != "l" {
+		t.Errorf("選択肢の問いの取り下げの後の 2x = %q, want l（2 を捨てて x だけ）", got)
 	}
 }
 
@@ -256,7 +303,7 @@ func TestInputAskOtherClient(t *testing.T) {
 	h.eventually("A の問い", func() bool { q := h.e.activeChoice(); return q != nil && q.input != nil })
 	b.keys("x")
 	h.keys("ok")
-	h.waitInput("A の入力", "ok", "名前: ok")
+	h.waitInputHeld("A の入力", "ok", "名前: ok")
 	time.Sleep(50 * time.Millisecond)
 	if got := h.bufferText("b.txt"); got != "bb" {
 		t.Fatalf("問いの間に B のキーを処理した: b.txt = %q", got)
@@ -282,14 +329,20 @@ func TestInputAskOtherClient(t *testing.T) {
 func TestInputAskExtensionExit(t *testing.T) {
 	dir := writeFiles(t, map[string]string{"a.txt": "abc\n"})
 	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	h.e.do(func() { h.e.withdrawWindow = time.Minute })
 	h.keys(`\x`)
 	h.waitInput("終わる拡張機能の問い", "d", "終わる: d")
 	h.keys("e")
+	h.waitInput("終わる前に打つ", "de", "終わる: de")
 	h.eventually("問いを取り下げる", func() bool { return h.e.activeChoice() == nil && h.e.asker == nil })
 	h.settle()
 	// 知らせは、拡張機能の異常終了の知らせと前後するので、後に出た方がメッセージの行に残る。捨てる状態に入ったことを確かめる。
 	h.eventually("問いを消して捨て始める", func() bool {
-		return !strings.Contains(h.term.screen(), "終わる: d") && h.e.withdrawn != nil && h.e.withdrawn.input
+		return !strings.Contains(h.term.screen(), "終わる: de") && h.e.withdrawn != nil && h.e.withdrawn.input
+	})
+	// 異常終了の知らせが届いてから打つ（捨てたキーで取り下げの知らせを出し直すことを確かめるため）。
+	h.eventually("異常終了の知らせ", func() bool {
+		return slices.ContainsFunc(h.e.msgHistory, func(m ui.Message) bool { return strings.Contains(m.Text, "異常終了") })
 	})
 	h.keys("x")
 	h.settle()

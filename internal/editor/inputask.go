@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -36,6 +37,9 @@ type extQuestion struct {
 	cursor int
 	// pane は、問いを頼んだキーが来たペインの部品である。nil なら問いを出した client の画面に出す（questionPane）。
 	pane *floatState
+	// typed は、利用者がこの入力の問いにキーか貼り付けを 1 つでも打ったかである。取り下げの後のキーを捨てるかを決めるのに使う
+	// （noteWithdrawn）。
+	typed bool
 }
 
 // Done は、問いのリクエストが取り消されたか、拡張機能の接続が閉じたか、応答した後に閉じるチャネルを返す（request）。
@@ -82,6 +86,22 @@ func (e *Editor) enqueueQuestion(extID string, q *extQuestion) {
 	q.pane = e.extPane[extID]
 	e.withdrawn = nil
 	e.choices = append(e.choices, q)
+	go e.watchQuestion(q)
+}
+
+// watchQuestion は、問い q の Done が閉じたら（答えたか、拡張機能が取り下げたか、接続が閉じた）、イベントループを起こす。
+// 起こされたイベントループは activeChoice で取り下げに気づき、知らせてから描き直す。キーを待たずに問いを画面から消すためである
+// （PR #411 の再レビューの推奨 2）。答えた問いで起こしても、activeChoice は何もしない。
+func (e *Editor) watchQuestion(q *extQuestion) {
+	defer e.recoverPanic()
+	select {
+	case <-q.Done():
+		select {
+		case e.questionGone <- struct{}{}:
+		default: // 既に知らせてある
+		}
+	case <-e.finished:
+	}
 }
 
 // notePane は、拡張機能 extID へのいまの問い合わせか知らせが、ペインの部品 p（nil なら、ペインの部品の client のキーでない）から
@@ -119,44 +139,58 @@ type withdrawnQuestion struct {
 	// input は、取り下げた問いが 1 行の入力の問いかである。真なら <Esc> か <CR> までのキーを、偽（選択肢の問い）なら
 	// 答えになるキー（番号と <Esc>）を 1 つだけ捨てる。
 	input bool
+	// until は、キーを捨てる期限である。取り下げの時点から withdrawnDiscardWindow の後で、それより後に処理するキーは捨てない。
+	until time.Time
 	// notice は、取り下げの知らせである。キーを捨てるたびにメッセージの行に出し直す（拡張機能の異常終了の知らせなど、
 	// 後から届いたメッセージに上書きされていても、キーを捨てている理由が見えるようにするため）。
 	notice string
 }
 
+// withdrawnDiscardWindow は、拡張機能が問いを取り下げた後に、問いに向けて打ち続けたキーとみなして捨てる間である（仮）。
+// 打ち続けている途中の取り下げだけを守り、取り下げから時間が経った後のふつうの操作（dd、@a）は捨てない
+// （PR #411 の再レビューの推奨 1 へのオーケストレータの決め）。
+const withdrawnDiscardWindow = time.Second
+
 // noteWithdrawn は、表示中の問い q を拡張機能が取り下げた（Done が閉じた）ことを知らせる（activeChoice から呼ぶ）。
-// 待たせている問いが無ければ、問いを出していた client がその後に打つキーを捨てる（discardAfterWithdrawn）。
+// 待たせている問いが無く、入力の問いなら利用者がそこへ何かを打っていれば（選択肢の問いならいつでも）、問いを出していた client が
+// 取り下げから withdrawnDiscardWindow の間に打つキーを捨てる（discardAfterWithdrawn）。
 // 入力の問いに式やパスを続けて打っている途中で取り下げられると、残りの文字がノーマルモードのコマンドになってバッファを
 // 書き換えるためである（PR #411 のレビューの必須 1）。
 //
 // req: FR-275
 func (e *Editor) noteWithdrawn(q *extQuestion) {
-	if len(e.choices) > 0 {
-		e.message = warnMessage(fmt.Sprintf("問い「%s」は拡張機能が取り下げました", strings.TrimSpace(q.title())))
+	title := strings.TrimSpace(q.title())
+	if len(e.choices) > 0 || (q.input != nil && !q.typed) {
+		e.message = warnMessage(fmt.Sprintf("問い「%s」は拡張機能が取り下げました", title))
 		return
 	}
 	c := e.asker
 	if c == nil {
 		c = e.op
 	}
-	what := "番号か <Esc> を打っても捨てます"
+	what := "直後に打った番号か <Esc> は捨てます"
 	if q.input != nil {
-		what = "<Esc> か <CR> を打つまで、打ったキーは捨てます"
+		what = "直後に打ったキーは、<Esc> か <CR> まで捨てます"
 	}
-	notice := fmt.Sprintf("問い「%s」は拡張機能が取り下げました（%s）", strings.TrimSpace(q.title()), what)
-	e.withdrawn = &withdrawnQuestion{c: c, input: q.input != nil, notice: notice}
+	notice := fmt.Sprintf("問い「%s」は拡張機能が取り下げました（%s）", title, what)
+	window := withdrawnDiscardWindow
+	if e.withdrawWindow > 0 {
+		window = e.withdrawWindow
+	}
+	e.withdrawn = &withdrawnQuestion{c: c, input: q.input != nil, until: time.Now().Add(window), notice: notice}
 	e.message = warnMessage(notice)
 }
 
 // discardAfterWithdrawn は、取り下げた問いに向けて打ったキー k を捨てるかを決め、捨てるなら true を返す（handleKey から呼ぶ）。
-// 問いを出していた client の、マウスでないキーだけを捨てる。入力の問いなら <Esc> か <CR> まで（そのキーも含めて）、
-// 選択肢の問いなら答えになるキー（1〜9 と <Esc>）を 1 つだけ捨てる。ほかのキーが来たら、捨てるのをやめてそのキーを処理する。
+// 問いを出していた client の、取り下げから withdrawnDiscardWindow の間に処理する、マウスでないキーだけを捨てる。
+// 入力の問いなら <Esc> か <CR> まで（そのキーも含めて）、選択肢の問いなら答えになるキー（1〜9 と <Esc>）を 1 つだけ捨てる。
+// ほかのキーが来たら、捨てるのをやめてそのキーを処理する。
 func (e *Editor) discardAfterWithdrawn(k editcmd.Key) bool {
 	w := e.withdrawn
 	if w == nil {
 		return false
 	}
-	if w.c != e.op || k.IsMouse() {
+	if w.c != e.op || k.IsMouse() || time.Now().After(w.until) {
 		e.withdrawn = nil
 		return false
 	}
@@ -187,6 +221,7 @@ func (e *Editor) discardAfterWithdrawn(k editcmd.Key) bool {
 // req: FR-275
 func (e *Editor) inputKey(k editcmd.Key) {
 	q := e.choices[0]
+	q.typed = true
 	switch {
 	case k == editcmd.Esc:
 		_ = q.input.Reply(ext.InputAskResult{Cancelled: true})
@@ -272,6 +307,7 @@ func nextCharEnd(text string, at int) int {
 // 改行は空白にし、タブ文字の他の制御文字は捨てる（答えを 1 行に保つため。: の貼り付けと同じく制御文字は入れない）。
 func (e *Editor) inputPaste(text string) {
 	q := e.choices[0]
+	q.typed = true
 	var b strings.Builder
 	for _, r := range strings.ReplaceAll(text, "\r\n", "\n") {
 		switch {

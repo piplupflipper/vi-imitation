@@ -356,6 +356,9 @@ type Editor struct {
 	endErr error
 	// finished は、Run が戻ると閉じる。Attach が、イベントループの終わりを知るために使う。
 	finished chan struct{}
+	// questionGone は、拡張機能の問いの Done が閉じたことを、イベントループへ知らせる（watchQuestion。容量は 1）。
+	// 拡張機能が問いを取り下げた時点で、問いを画面から消して知らせるために使う（PR #411 の再レビューの推奨 2）。
+	questionGone chan struct{}
 	// diff は、見比べ（diff.go。基本設計 6.8）の状態である。
 	diff *diffState
 	// intro は、起動の案内（intro.go。FR-205〜FR-207）の状態である。
@@ -466,6 +469,8 @@ type Editor struct {
 	// withdrawn は、拡張機能が表示中の問いを取り下げた後に、問いに向けて打ち続けたキーを捨てている間の状態である。nil なら捨てていない
 	// （discardAfterWithdrawn。PR #411 のレビューの必須 1）。
 	withdrawn *withdrawnQuestion
+	// withdrawWindow は、テストが替える、取り下げの後のキーを捨てる間である。0 なら withdrawnDiscardWindow を使う。
+	withdrawWindow time.Duration
 	// confirm は、表示中の Ex の確認の問いと、問いを出したバッファである。
 	confirm   *ex.Confirm
 	confirmBS *bufferState
@@ -638,6 +643,7 @@ func New(term Terminal, cfg Config) (*Editor, error) {
 		extFromPane:   map[string]paneMark{},
 		extPane:       map[string]*floatState{},
 		finished:      make(chan struct{}),
+		questionGone:  make(chan struct{}, 1),
 		diff:          newDiffState(),
 		outputs:       map[outputKey][]string{},
 		nextID:        1,
@@ -939,6 +945,9 @@ func (e *Editor) Run(ctx context.Context) error {
 			e.handleKeys()
 		case <-e.resizeCh:
 			e.applySize()
+		case <-e.questionGone:
+			// 取り下げた問いを列から外して知らせる（activeChoice の noteWithdrawn）。この後の描画で問いを画面から消す。
+			e.activeChoice()
 		case <-e.intrCh:
 			// <C-c> のキーそのものは列から届くので、ここでは外部のコマンドと再生中の拡張機能の待ちの中断だけをする。
 			e.interruptShell()
