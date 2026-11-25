@@ -24,7 +24,7 @@ import (
 // 本体との接続の既定値（rpc.DefaultMaxMessageSize）に揃える。
 const maxDAPMessageSize = rpc.DefaultMaxMessageSize
 
-// reverseRequestEvent は、対応しない逆向きの request を受けたことを onEvent へ渡すときの名前の前置きである
+// reverseRequestEvent は、逆向きの request を、session の event の列へ積むときの名前の前置きである
 // （後ろに request の command を付ける。DAP の event の名前と重ならない）。body は、その request の引数である。
 const reverseRequestEvent = "$reverseRequest:"
 
@@ -94,14 +94,16 @@ func (e *dapError) Error() string {
 // 読み取りは、newDAPConn が起動する 1 つの goroutine が行う。
 // event は受け取った順に onEvent へ渡す。onEvent は読み取りの goroutine から呼ばれるので、
 // その中で call の応答を待ってはならない（応答を読む goroutine が止まる）。
-// 逆向きの request（runInTerminal、startDebugging）には、最初の範囲では対応しないので、
-// 読み取りの goroutine が success を false にした response を返す。
+// 逆向きの request は onRequest へ渡し、onRequest が false を返したら（引き受けないなら）、
+// 読み取りの goroutine が success を false にした response を返す（runInTerminal は作らない。FR-288）。
+// 引き受けた request（startDebugging。FR-285）には、引き受けた側が後から respond で応答する。
 //
 // call は複数の goroutine から並行に呼んでよい。書き込みは mu で直列にする。
 type dapConn struct {
-	w       io.Writer
-	closer  io.Closer
-	onEvent func(event string, body json.RawMessage)
+	w         io.Writer
+	closer    io.Closer
+	onEvent   func(event string, body json.RawMessage)
+	onRequest func(seq int, command string, args json.RawMessage) bool
 
 	mu      sync.Mutex
 	seq     int
@@ -112,13 +114,15 @@ type dapConn struct {
 
 // newDAPConn は、r から読み、w へ書く接続を作り、読み取りを始める。
 // closer は、close で閉じるもの（子プロセスの標準入力やソケット）で、nil でもよい。
-func newDAPConn(r io.Reader, w io.Writer, closer io.Closer, onEvent func(string, json.RawMessage)) *dapConn {
+// onRequest は nil でもよく、nil ならどの逆向きの request も断る。
+func newDAPConn(r io.Reader, w io.Writer, closer io.Closer, onEvent func(string, json.RawMessage), onRequest func(int, string, json.RawMessage) bool) *dapConn {
 	c := &dapConn{
-		w:       w,
-		closer:  closer,
-		onEvent: onEvent,
-		pending: make(map[int]chan *dapMessage),
-		done:    make(chan struct{}),
+		w:         w,
+		closer:    closer,
+		onEvent:   onEvent,
+		onRequest: onRequest,
+		pending:   make(map[int]chan *dapMessage),
+		done:      make(chan struct{}),
 	}
 	go c.readLoop(bufio.NewReader(r))
 	return c
@@ -167,21 +171,24 @@ func (c *dapConn) readLoop(r *bufio.Reader) {
 				c.onEvent(m.Event, m.Body)
 			}
 		case "request":
-			// 逆向きの request には対応しない（runInTerminal は作らない。FR-288。startDebugging は子のセッションの issue で作る）。
-			// 何を求められたかをログに残せるよう、reverseRequestEvent の名前で onEvent へも渡す。
-			if c.onEvent != nil {
-				c.onEvent(reverseRequestEvent+m.Command, m.Arguments)
+			if c.onRequest == nil || !c.onRequest(m.Seq, m.Command, m.Arguments) {
+				_ = c.respond(m.Seq, m.Command, errors.New("not supported by vi-imitation-ext-dap"))
 			}
-			_ = c.write(func(seq int) any {
-				return dapResponse{
-					Seq: seq, Type: "response", RequestSeq: m.Seq, Success: false,
-					Command: m.Command, Message: "not supported by vi-imitation-ext-dap",
-				}
-			})
 		default:
 			// 知らない種類のメッセージは捨てる。
 		}
 	}
+}
+
+// respond は、seq の逆向きの request（command）へ応答する。err が nil なら success を true にし、そうでなければ err の文を message にする。
+func (c *dapConn) respond(seq int, command string, err error) error {
+	return c.write(func(s int) any {
+		r := dapResponse{Seq: s, Type: "response", RequestSeq: seq, Success: err == nil, Command: command}
+		if err != nil {
+			r.Message = err.Error()
+		}
+		return r
+	})
 }
 
 // write は、次の seq を振ってメッセージを書く。

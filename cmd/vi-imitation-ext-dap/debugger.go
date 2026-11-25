@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
+	"github.com/piplupflipper/vi-imitation/ext/expand"
 	"github.com/piplupflipper/vi-imitation/ext/server"
 )
 
@@ -122,13 +123,20 @@ type debugger struct {
 	buffers map[string]bufState
 	// paths は、開いているバッファの番号からパスへの対応である。
 	paths map[ext.BufferID]string
-	exec  *execPoint
-	sess  *session
+	// sessions は、動いているセッション（最上位のセッションと子のセッション）を、始めた順に並べたものである（FR-285）。
+	// 最上位のセッションは一度に 1 つで、デバッグ中かどうかは sessions が空でないかで決める。
+	sessions []*session
+	// cur は、今のセッション（最後に止まったセッション。selectSession で選び直せる）である。sessions が空なら nil。
+	cur *session
+	// nextID は、次に振るセッションの番号である。
+	nextID int
+	// bpRes は、ファイルのパスごとの、セッションごとの最後の setBreakpoints の応答である（applyBreakpoints）。
+	bpRes map[string]map[*session]bpResult
+	// onSelect は、今のセッションか、その選んでいるスレッドかフレームが変わったときに呼ぶ関数である（後の issue のデバッグのペインが使う）。
+	// mu を持たずに呼ぶ。nil なら呼ばない。
+	onSelect func(selection)
 	// shutdownOnce は、shutdown の後始末を 1 回だけ行うためのものである。
 	shutdownOnce sync.Once
-	// configured は、sess の初期化で setBreakpoints を送る対象を決め終えたことを表す。
-	// これより後に変わったブレークポイントは、その都度送る。
-	configured bool
 	// last は、最後に始めたデバッグの、値を決め終えた構成とアダプターの起動の方法である。まだ始めていなければ nil。
 	last *runSpec
 	// preparing は、デバッグを始める準備の途中の仕事である。無ければ nil。
@@ -145,6 +153,24 @@ type debugger struct {
 	// stopWaiter は、再生中（sync）に呼ばれた、デバッグ対象を動かす操作の応答の受け口である（waitStopLocked）。
 	// 次の停止（showStopped、stoppedWithoutSource）かデバッグの終わり（sessionEnded）で結果を届ける。無ければ nil。
 	stopWaiter *waiter
+	// waitScope は、stopWaiter が待つセッションである。そのセッションか、その子孫のセッションの停止と、そのセッションの終わりで結果を届ける。
+	// nil なら、どのセッションの停止でも届ける（debug.restart で、始め直すセッションをまだ作っていない間）。
+	waitScope *session
+}
+
+// bpResult は、1 つのセッションの、1 つのファイルの setBreakpoints の応答である。gen は、送ったときのブレークポイントの列の世代（debugger.gens）である。
+type bpResult struct {
+	gen uint64
+	res []breakpoint
+}
+
+// selection は、今のセッションと、そのセッションの選んでいるスレッドとフレームである（基本設計 6.4 の「セッションと状態の分離」）。
+// 後の issue のデバッグのペイン（スレッドとスタックの木、スコープ、ウォッチ式、REPL）は、これを引いて表示を作る。
+type selection struct {
+	// session は、今のセッションである。デバッグ中でなければ nil。
+	session *session
+	// thread と frame は、選んでいるスレッドとフレームの ID である。0 は未知。
+	thread, frame int
 }
 
 // opHandler は、この拡張機能の操作のハンドラーである。
@@ -245,11 +271,18 @@ func (d *debugger) openLater(open *ext.EditorOpenParams) {
 	}
 }
 
-// waitStopLocked は、デバッグ対象の次の停止かデバッグの終わりに結果を届ける waiter を置いて返す。mu を持って呼ぶ。
+// waitStopLocked は、セッション scope（とその子孫）の次の停止か、scope の終わりに結果を届ける waiter を置いて返す。mu を持って呼ぶ。
+// scope が nil なら、どのセッションの停止でも届ける。
 // 前の waiter が残っていれば（本体が待つのをやめた後の取り消しがまだ届いていないなど）、失敗を届けて置き換える。
-func (d *debugger) waitStopLocked() *waiter {
+//
+// 複数のセッションがあるとき、再生中の操作（FR-19）は、その操作を送ったセッションの停止を待つ（基本設計 5.5）。
+// デバッグの開始は、最上位のセッションか、その子のセッションの最初の停止を待つ（vscode-js-debug は子のセッションで止まる）。
+//
+// req: FR-19
+func (d *debugger) waitStopLocked(scope *session) *waiter {
 	d.stopWaiter.resolve(ext.ProviderInvokeResult{OK: false})
 	d.stopWaiter = newWaiter()
+	d.waitScope = scope
 	return d.stopWaiter
 }
 
@@ -257,13 +290,24 @@ func (d *debugger) waitStopLocked() *waiter {
 func (d *debugger) takeStopWaiterLocked() *waiter {
 	w := d.stopWaiter
 	d.stopWaiter = nil
+	d.waitScope = nil
 	return w
 }
 
-// takeStopWaiter は、takeStopWaiterLocked の mu を取る版である。
-func (d *debugger) takeStopWaiter() *waiter {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+// takeStopWaiterForLocked は、置いてある waiter が s の停止を待っていれば（s が待つセッションかその子孫なら）外して返す。
+// そうでなければ nil。mu を持って呼ぶ。
+func (d *debugger) takeStopWaiterForLocked(s *session) *waiter {
+	if d.stopWaiter == nil {
+		return nil
+	}
+	for x := s; d.waitScope != nil; x = x.parent {
+		if x == nil {
+			return nil
+		}
+		if x == d.waitScope {
+			break
+		}
+	}
 	return d.takeStopWaiterLocked()
 }
 
@@ -273,6 +317,7 @@ func (d *debugger) dropStopWaiter(w *waiter) {
 	defer d.mu.Unlock()
 	if d.stopWaiter == w {
 		d.stopWaiter = nil
+		d.waitScope = nil
 	}
 }
 
@@ -285,6 +330,7 @@ func newDebugger() *debugger {
 		gens:     make(map[string]uint64),
 		buffers:  make(map[string]bufState),
 		paths:    make(map[ext.BufferID]string),
+		bpRes:    make(map[string]map[*session]bpResult),
 		pickers: pickers{
 			waiting: make(map[ext.ViewID]chan server.ViewEvent),
 			early:   make(map[ext.ViewID][]server.ViewEvent),
@@ -334,7 +380,7 @@ func (d *debugger) newServer() *server.Server {
 func (d *debugger) shutdown() {
 	d.shutdownOnce.Do(func() {
 		d.mu.Lock()
-		s := d.sess
+		s := d.rootLocked()
 		if d.preparing != nil {
 			// 始める準備（resolveCommand など）を取り消す（FR-282）。
 			d.preparing.cancel()
@@ -400,6 +446,118 @@ func (d *debugger) noArgs(h opHandler) opHandler {
 	}
 }
 
+// rootLocked は、最上位のセッションを返す。デバッグ中でなければ nil。mu を持って呼ぶ。
+func (d *debugger) rootLocked() *session {
+	for _, s := range d.sessions {
+		if s.parent == nil {
+			return s
+		}
+	}
+	return nil
+}
+
+// addSessionLocked は、s に番号を振り、動いているセッションに足す。子のセッションは親の children にも足す。
+// 今のセッションが無ければ、s を今のセッションにする。mu を持って呼ぶ。
+func (d *debugger) addSessionLocked(s *session) {
+	d.nextID++
+	s.id = d.nextID
+	d.sessions = append(d.sessions, s)
+	if s.parent != nil {
+		s.parent.children = append(s.parent.children, s)
+	}
+	if d.cur == nil {
+		d.cur = s
+	}
+}
+
+// selectionLocked は、今の選択を返す。mu を持って呼ぶ。
+func (d *debugger) selectionLocked() selection {
+	if d.cur == nil {
+		return selection{}
+	}
+	return selection{session: d.cur, thread: d.cur.thread, frame: d.cur.frame}
+}
+
+// currentSelection は、今のセッションと、その選んでいるスレッドとフレームを返す（後の issue のデバッグのペインが引く）。
+func (d *debugger) currentSelection() selection {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.selectionLocked()
+}
+
+// notifySelect は、選択が変わったことを onSelect へ知らせる。mu を持たずに呼ぶ。
+func (d *debugger) notifySelect(sel selection) {
+	d.mu.Lock()
+	f := d.onSelect
+	d.mu.Unlock()
+	if f != nil {
+		f(sel)
+	}
+}
+
+// selectSession は、s を今のセッションにする（後の issue のスレッドの区画でセッションを選んだとき）。s の世代を進める（FR-287）。
+// s が動いていなければ false を返す。
+//
+// req: FR-285, FR-287
+func (d *debugger) selectSession(s *session) bool {
+	d.mu.Lock()
+	if !slices.Contains(d.sessions, s) {
+		d.mu.Unlock()
+		return false
+	}
+	d.cur = s
+	s.gen.Add(1)
+	sel := d.selectionLocked()
+	d.mu.Unlock()
+	d.notifySelect(sel)
+	return true
+}
+
+// selectFrame は、s を今のセッションにし、そのスレッド thread とフレーム frame（0 ならフレームを選ばない）を選ぶ
+// （後の issue のスレッドの区画でスレッドかフレームを選んだとき）。s の世代を進めるので、それより前に送った stackTrace などの応答は捨てる（FR-287）。
+// s が動いていなければ false を返す。
+//
+// req: FR-285, FR-287
+func (d *debugger) selectFrame(s *session, thread, frame int) bool {
+	d.mu.Lock()
+	if !slices.Contains(d.sessions, s) {
+		d.mu.Unlock()
+		return false
+	}
+	d.cur = s
+	s.thread, s.frame = thread, frame
+	s.gen.Add(1)
+	sel := d.selectionLocked()
+	d.mu.Unlock()
+	d.notifySelect(sel)
+	return true
+}
+
+// markStopped は、s が止まった（stopped の event）ことを記録する。s を今のセッションにし、止まったスレッド tid（0 は未知）を選び、
+// フレームの選択を外し、世代を進めて、その世代を返す（FR-285、FR-287）。
+func (d *debugger) markStopped(s *session, tid int) uint64 {
+	d.mu.Lock()
+	s.halted = true
+	s.thread, s.frame = tid, 0
+	gen := s.gen.Add(1)
+	if slices.Contains(d.sessions, s) {
+		d.cur = s
+	}
+	sel := d.selectionLocked()
+	d.mu.Unlock()
+	d.notifySelect(sel)
+	return gen
+}
+
+// continued は、s の continued の event を処理する。s の実行位置の印を消し、世代を進める（FR-287）。
+func (d *debugger) continued(s *session) {
+	d.mu.Lock()
+	s.halted = false
+	s.gen.Add(1)
+	d.mu.Unlock()
+	d.clearExecution(s)
+}
+
 // appendOutput は、デバッグ対象の出力を output/append の dap の欄へ書き足す（基本設計 6.4）。
 //
 // req: FR-31
@@ -459,7 +617,7 @@ func (d *debugger) onBufferOpen(_ context.Context, e *server.BufferOpenEvent) {
 	defer d.mu.Unlock()
 	d.buffers[path] = bufState{id: e.Buffer.ID(), version: e.Buffer.Version()}
 	d.paths[e.Buffer.ID()] = path
-	if len(d.bps[path]) > 0 || (d.exec != nil && d.exec.path == path) {
+	if len(d.bps[path]) > 0 || slices.ContainsFunc(d.sessions, func(s *session) bool { return s.exec != nil && s.exec.path == path }) {
 		d.publishLocked(path)
 	}
 }
@@ -479,9 +637,11 @@ func (d *debugger) onBufferChange(_ context.Context, e *server.BufferChangeEvent
 		d.bps[path] = shiftBreakpoints(bps, e.Edits)
 		d.gens[path]++
 	}
-	if d.exec != nil && d.exec.path == path {
-		for _, ed := range e.Edits {
-			d.exec.line = shiftLine(d.exec.line, ed)
+	for _, s := range d.sessions {
+		if s.exec != nil && s.exec.path == path {
+			for _, ed := range e.Edits {
+				s.exec.line = shiftLine(s.exec.line, ed)
+			}
 		}
 	}
 }
@@ -502,13 +662,27 @@ func (d *debugger) onBufferDidSave(_ context.Context, e *server.BufferDidSaveEve
 	if path == "" && e.Buffer != nil {
 		path = e.Buffer.Path()
 	}
+	if path == "" {
+		return
+	}
 	d.mu.Lock()
-	s := d.sess
-	send := s != nil && d.configured && path != ""
+	targets := d.configuredLocked()
 	d.mu.Unlock()
-	if send {
+	for _, s := range targets {
 		go d.sendBreakpoints(s, path) //nolint:gosec // G118: ハンドラーとフックの ctx は戻ると無効になるので引き継がない
 	}
+}
+
+// configuredLocked は、setBreakpoints をその都度送るセッション（初期化で送る対象を決め終えたもの）を返す。
+// ブレークポイントは、すべてのセッションに送る（FR-285）。mu を持って呼ぶ。
+func (d *debugger) configuredLocked() []*session {
+	var out []*session
+	for _, s := range d.sessions {
+		if s.configured {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // sendBreakpoints は、ループの外で setBreakpoints を送る。
@@ -579,30 +753,37 @@ func (d *debugger) editBreakpoints(b *server.Buffer, sync bool, edit func([]bp) 
 	}
 	d.gens[path]++
 	d.publishLocked(path)
-	s := d.sess
-	send := s != nil && d.configured
+	targets := d.configuredLocked()
 	d.mu.Unlock()
-	if !send {
+	if len(targets) == 0 {
 		return ok()
 	}
 	// ハンドラーの ctx は戻ると無効になるので引き継がない。
-	return d.sendBreakpointsAll(s, []string{path}, sync)
+	return d.sendBreakpointsAll(targets, []string{path}, sync)
 }
 
-// sendBreakpointsAll は、paths のブレークポイントをループの外で setBreakpoints で送る。
-// sync なら、すべて送り終えてから成功を届ける waiter を返す。
-func (d *debugger) sendBreakpointsAll(s *session, paths []string, sync bool) (ext.ProviderInvokeResult, *waiter) {
-	if !sync {
-		for _, path := range paths {
-			go d.sendBreakpoints(s, path)
+// sendBreakpointsAll は、paths のブレークポイントを、セッション targets のそれぞれへ、ループの外で setBreakpoints で送る（FR-285）。
+// wait（再生中）なら、すべて送り終えてから成功を届ける waiter を返す。
+func (d *debugger) sendBreakpointsAll(targets []*session, paths []string, wait bool) (ext.ProviderInvokeResult, *waiter) {
+	if !wait {
+		for _, s := range targets {
+			for _, path := range paths {
+				go d.sendBreakpoints(s, path)
+			}
 		}
 		return ok()
 	}
 	w := newWaiter()
 	go func() {
-		for _, path := range paths {
-			d.sendBreakpoints(s, path)
+		var wg sync.WaitGroup
+		for _, s := range targets {
+			wg.Go(func() {
+				for _, path := range paths {
+					d.sendBreakpoints(s, path)
+				}
+			})
 		}
+		wg.Wait()
 		w.resolve(ext.ProviderInvokeResult{OK: true})
 	}()
 	return ext.ProviderInvokeResult{}, w
@@ -620,14 +801,13 @@ func (d *debugger) clearBreakpoints(_ context.Context, _ *server.Buffer, p *ext.
 		d.gens[path]++
 		d.publishLocked(path)
 	}
-	s := d.sess
-	send := s != nil && d.configured
+	targets := d.configuredLocked()
 	d.mu.Unlock()
 	d.showInfo(fmt.Sprintf("ブレークポイントを消した（%d ファイル）", len(paths)))
-	if !send {
+	if len(targets) == 0 {
 		return ok()
 	}
-	return d.sendBreakpointsAll(s, paths, p.Sync)
+	return d.sendBreakpointsAll(targets, paths, p.Sync)
 }
 
 // continueOrStart は、本体の操作 debug.continue を処理する。デバッグ中なら続行し、始まっていなければ始める（要件定義 4.11）。
@@ -635,7 +815,7 @@ func (d *debugger) clearBreakpoints(_ context.Context, _ *server.Buffer, p *ext.
 // req: FR-31, FR-94
 func (d *debugger) continueOrStart(ctx context.Context, b *server.Buffer, p *ext.ProviderInvokeParams) (ext.ProviderInvokeResult, *waiter) {
 	d.mu.Lock()
-	running := d.sess != nil
+	running := len(d.sessions) > 0
 	preparing := d.preparing != nil
 	d.mu.Unlock()
 	if preparing {
@@ -663,49 +843,86 @@ func (d *debugger) runLast(_ context.Context, _ *server.Buffer, p *ext.ProviderI
 	return d.startLocked(d.last, p.Sync)
 }
 
-// restart は、デバッグを終えてから、前回と同じ設定で始め直す（本体の操作 debug.restart）。
+// restart は、デバッグを始め直す（本体の操作 debug.restart）。
 // デバッグ中でなければ、runLast と同じく前回の設定で始める。
-// 終えるのは debug.terminate と同じ手順で、終わった後（sessionEnded）に始める。
+// 最上位のセッションのアダプターが restart に対応していれば（supportsRestartRequest）、そのセッションへ restart を送る（FR-286）。
+// 引数は、前回の構成（DAP の仕様の RestartArguments の「The latest version of the launch or attach configuration」）である。
+// 対応していなければ、debug.terminate と同じ手順で終えてから、終わった後（sessionEnded）に前回の設定で始める。
 // 再生中（sync）なら、始め直したデバッグ対象が最初に止まるまで応答を遅らせる（start と同じ）。
 //
-// req: FR-94
+// req: FR-94, FR-286
 func (d *debugger) restart(ctx context.Context, b *server.Buffer, p *ext.ProviderInvokeParams) (ext.ProviderInvokeResult, *waiter) {
 	d.mu.Lock()
-	s := d.sess
+	s := d.rootLocked()
+	if s == nil {
+		d.mu.Unlock()
+		return d.runLast(ctx, b, p)
+	}
+	byRequest := s.supports(func(c *capabilities) bool { return c.SupportsRestartRequest })
 	var w *waiter
-	if s != nil {
+	switch {
+	case byRequest && p.Sync:
+		w = d.waitStopLocked(s)
+	case byRequest:
+	default:
 		d.restartPending = true
 		if p.Sync {
 			// 始め直すのは sessionEnded なので、waiter は終わりでは外さずに、始め直した後の停止まで残す。
-			w = d.waitStopLocked()
+			w = d.waitStopLocked(nil)
 		}
 	}
 	d.mu.Unlock()
-	if s == nil {
-		return d.runLast(ctx, b, p)
+	if byRequest {
+		go d.restartByRequest(s, w) //nolint:gosec // G118: ハンドラーの ctx は応答すると取り消されるので引き継がない
+	} else {
+		s.stopping.Store(true)
+		go s.stop(context.Background(), killGrace) //nolint:gosec // ハンドラーが戻った後も止め終えるまで続けるので、ハンドラーの ctx は使わない
 	}
-	s.stopping.Store(true)
-	go s.stop(context.Background(), killGrace) //nolint:gosec // ハンドラーが戻った後も止め終えるまで続けるので、ハンドラーの ctx は使わない
 	if w != nil {
 		return ext.ProviderInvokeResult{}, w
 	}
 	return ok()
 }
 
+// restartByRequest は、s へ restart を送る（FR-286）。送る前に、実行位置の印を消し、世代を進める。
+// 失敗したら知らせ、再生中の waiter に失敗を届ける。
+func (d *debugger) restartByRequest(s *session, w *waiter) {
+	ctx, cancel := context.WithTimeout(context.Background(), d.timeouts.launch)
+	defer cancel()
+	c := s.getConn()
+	if c == nil {
+		return
+	}
+	d.mu.Lock()
+	s.halted = false
+	s.gen.Add(1)
+	d.mu.Unlock()
+	d.clearExecution(s)
+	if err := c.call(ctx, "restart", restartArguments{Arguments: expand.Plain(s.spec.config)}, nil); err != nil {
+		d.logf("restart: %v", err)
+		d.dropStopWaiter(w)
+		w.resolve(ext.ProviderInvokeResult{OK: false})
+		d.showError(fmt.Sprintf("restart に失敗した: %v", err))
+		return
+	}
+	d.showInfo(fmt.Sprintf("デバッグを始め直した（%s）", s.spec.name))
+}
+
 // pause は、実行中のデバッグ対象を一時停止する（本体の操作 debug.pause）。止まったことは stopped の event で知らせる。
+// pause は、今のセッションの選んでいるスレッドへ送る（FR-285）。
 // 再生中（sync）なら、止まるまで応答を遅らせる。
 // 再生中で既に止まっていれば、pause を送らずにすぐに応答する。送ると、デバッグアダプターによっては stopped の event が後から届き、
 // 再生の次の操作（続行など）の停止として取り違えるためである。
 //
-// req: FR-94, FR-19
+// req: FR-94, FR-19, FR-285
 func (d *debugger) pause(_ context.Context, _ *server.Buffer, p *ext.ProviderInvokeParams) (ext.ProviderInvokeResult, *waiter) {
 	d.mu.Lock()
-	s := d.sess
-	ready := d.configured
-	stopped := d.exec != nil
+	s := d.cur
+	ready := s != nil && s.configured
+	stopped := s != nil && s.halted
 	var w *waiter
-	if s != nil && ready && p.Sync && !stopped {
-		w = d.waitStopLocked()
+	if ready && p.Sync && !stopped {
+		w = d.waitStopLocked(s)
 	}
 	d.mu.Unlock()
 	if s == nil || !ready {
@@ -749,7 +966,7 @@ func (d *debugger) start(_ context.Context, b *server.Buffer, p *ext.ProviderInv
 		}
 		return d.startLocked(d.last, true)
 	}
-	if d.preparing != nil || d.sess != nil {
+	if d.preparing != nil || len(d.sessions) > 0 {
 		return d.fail("デバッグは既に始まっている")
 	}
 	// 本体が不正な UTF-8 のためにバッファを送っていない（p.Withheld）なら b は nil で、ファイルに対応しないバッファと同じに扱う。
@@ -790,19 +1007,21 @@ func (d *debugger) prepareAndStart(ctx context.Context, job *prepJob, inv invoca
 // sync なら、デバッグ対象が最初に止まるか、デバッグが終わるまで応答を遅らせる waiter を返す。
 // waiter は mu を持ったまま、セッションを動かし始める前に置くので、最初の停止を取りこぼさない。
 func (d *debugger) startLocked(spec *runSpec, sync bool) (ext.ProviderInvokeResult, *waiter) {
-	if d.sess != nil {
+	if len(d.sessions) > 0 {
 		return d.fail("デバッグは既に始まっている")
 	}
 	s, err := spawn(d, spec)
 	if err != nil {
 		return d.fail(fmt.Sprintf("デバッグアダプター %s を起動できない: %v", spec.adapter.name, err))
 	}
-	d.sess = s
-	d.configured = false
+	d.addSessionLocked(s)
 	d.last = spec
 	var w *waiter
 	if sync {
-		w = d.waitStopLocked()
+		w = d.waitStopLocked(s)
+	} else if d.stopWaiter != nil && d.waitScope == nil {
+		// debug.restart（再生中）が始め直すのを待っている。始め直したセッションの停止を待たせる。
+		d.waitScope = s
 	}
 	go s.run()
 	if w != nil {
@@ -812,12 +1031,13 @@ func (d *debugger) startLocked(spec *runSpec, sync bool) (ext.ProviderInvokeResu
 }
 
 // stop は、デバッグを終える（基本設計 6.4。本体の操作 debug.terminate）。disconnect は別の goroutine で送る。
+// 最上位のセッションを終え、その前に子のセッションをすべて終える（FR-285）。
 // 再生中（sync）なら、終え終わる（session.stop が戻る）まで応答を遅らせる。
 //
 // req: FR-31, FR-94
 func (d *debugger) stop(_ context.Context, _ *server.Buffer, p *ext.ProviderInvokeParams) (ext.ProviderInvokeResult, *waiter) {
 	d.mu.Lock()
-	s := d.sess
+	s := d.rootLocked()
 	d.restartPending = false
 	job := d.preparing
 	d.preparing = nil
@@ -848,26 +1068,27 @@ func (d *debugger) stop(_ context.Context, _ *server.Buffer, p *ext.ProviderInvo
 // 送る前に実行位置の印を消す。DAP の仕様では、続行を意味する request の後に continued の event は届かないためである。
 // request が失敗したら、印を戻して利用者に知らせる。
 //
-// 再生中（sync）なら、デバッグ対象が次に止まるか、デバッグが終わるまで応答を遅らせ、止まった位置を応答の open で返す
+// 送る先は、今のセッション（最後に止まったセッション）の選んでいるスレッドである（FR-285）。
+// 再生中（sync）なら、そのセッションのデバッグ対象が次に止まるか、そのセッションが終わるまで応答を遅らせ、止まった位置を応答の open で返す
 // （showStopped）。DAP の request の応答は、デバッグ対象が動き始めたことしか表さない（next の応答の後に stopped の event が届く）ので、
 // request の応答で答えると、再生の次のステップ実行が、まだ動いているデバッグ対象へ届いて失敗する（#210）。
 //
-// req: FR-31, FR-94, FR-19
+// req: FR-31, FR-94, FR-19, FR-285
 func (d *debugger) resume(_ context.Context, _ *server.Buffer, p *ext.ProviderInvokeParams) (ext.ProviderInvokeResult, *waiter) {
 	command := resumeCommands[p.Operation]
 	d.mu.Lock()
-	s := d.sess
-	ready := d.configured
+	s := d.cur
+	ready := s != nil && s.configured
 	var w *waiter
-	if s != nil && ready && p.Sync {
+	if ready && p.Sync {
 		// request を送る前に置き、request の応答より先に届く stopped の event も取りこぼさない。
-		w = d.waitStopLocked()
+		w = d.waitStopLocked(s)
 	}
 	d.mu.Unlock()
-	if s == nil || !ready {
+	if !ready {
 		return d.fail("デバッグを始めていない")
 	}
-	prev := d.clearExecution()
+	prev := d.clearExecution(s)
 	go func() { //nolint:gosec // G118: ハンドラーの ctx は応答すると取り消されるので引き継がない
 		ctx, cancel := context.WithTimeout(context.Background(), d.timeouts.request)
 		defer cancel()
@@ -879,7 +1100,7 @@ func (d *debugger) resume(_ context.Context, _ *server.Buffer, p *ext.ProviderIn
 			}
 			d.dropStopWaiter(w)
 			w.resolve(ext.ProviderInvokeResult{OK: false})
-			d.restoreExecution(prev)
+			d.restoreExecution(s, prev)
 			d.showError(fmt.Sprintf("%s に失敗した: %v", command, err))
 		}
 	}()
@@ -893,10 +1114,10 @@ func (d *debugger) resume(_ context.Context, _ *server.Buffer, p *ext.ProviderIn
 func (d *debugger) configure(s *session) []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.sess != s {
+	if !slices.Contains(d.sessions, s) {
 		return nil
 	}
-	d.configured = true
+	s.configured = true
 	return slices.Sorted(maps.Keys(d.bps))
 }
 
@@ -907,32 +1128,77 @@ func (d *debugger) snapshotBreakpoints(path string) ([]bp, uint64) {
 	return slices.Clone(d.bps[path]), d.gens[path]
 }
 
-// applyBreakpoints は、setBreakpoints の応答を path のブレークポイントへ反映し、印を付け直す（基本設計 6.4）。
+// applyBreakpoints は、セッション s の setBreakpoints の応答を path のブレークポイントへ反映し、印を付け直す（基本設計 6.4）。
 // 送った後に列が変わっていれば（gen が違えば）、応答を捨てる。
-// 応答の行が送った行と違えば、デバッグアダプターが実際に置いた行へ移す。
 //
-// req: FR-31
-func (d *debugger) applyBreakpoints(path string, gen uint64, res []breakpoint) {
+// ブレークポイントはすべてのセッションに送る（FR-285）ので、応答もセッションごとに覚え、mergeBreakpointsLocked で合わせる。
+//
+// req: FR-31, FR-285
+func (d *debugger) applyBreakpoints(s *session, path string, gen uint64, res []breakpoint) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.gens[path] != gen {
+	if d.gens[path] != gen || !slices.Contains(d.sessions, s) {
+		return
+	}
+	if d.bpRes[path] == nil {
+		d.bpRes[path] = map[*session]bpResult{}
+	}
+	d.bpRes[path][s] = bpResult{gen: gen, res: res}
+	d.mergeBreakpointsLocked(path)
+}
+
+// mergeBreakpointsLocked は、path のブレークポイントの印を、セッションごとの応答（今の列の世代のもの）から決め直す。mu を持って呼ぶ。
+// どれかのセッションが検証できたものは breakpoint、応答があってどのセッションも検証できなかったものは breakpointUnverified にする
+// （vscode-js-debug の親のセッションのように、デバッグ対象を持たないセッションの応答で、子のセッションの検証を消さないため）。
+// 応答の行が送った行と違えば、デバッグアダプターが実際に置いた行へ移す。行は、セッションを始めた順に、検証できた応答の行を先に採る。
+// 移した結果、ブレークポイントが重なって数が変わったら、列の世代を進める（ほかのセッションの応答の並びと合わなくなるため）。
+// 今の世代の応答が 1 つも無ければ、何もしない。
+func (d *debugger) mergeBreakpointsLocked(path string) {
+	gen := d.gens[path]
+	var results [][]breakpoint
+	for _, s := range d.sessions {
+		if r, ok := d.bpRes[path][s]; ok && r.gen == gen {
+			results = append(results, r.res)
+		}
+	}
+	if len(results) == 0 {
 		return
 	}
 	bps := slices.Clone(d.bps[path])
 	for i := range bps {
-		if i >= len(res) {
-			break
+		answered, verified, line, anyLine := false, false, 0, 0
+		for _, res := range results {
+			if i >= len(res) {
+				continue
+			}
+			answered = true
+			if res[i].Verified && !verified {
+				verified = true
+				line = res[i].Line
+			}
+			if anyLine == 0 {
+				anyLine = res[i].Line
+			}
 		}
-		if res[i].Verified {
+		if !answered {
+			continue
+		}
+		bps[i].state = bpUnverified
+		if verified {
 			bps[i].state = bpVerified
-		} else {
-			bps[i].state = bpUnverified
 		}
-		if res[i].Line > 0 {
-			bps[i].line = fromDAPLine(res[i].Line, linesStartAt1)
+		if line == 0 {
+			line = anyLine
+		}
+		if line > 0 {
+			bps[i].line = fromDAPLine(line, linesStartAt1)
 		}
 	}
-	d.bps[path] = normalize(bps)
+	merged := normalize(bps)
+	if len(merged) != len(d.bps[path]) {
+		d.gens[path]++
+	}
+	d.bps[path] = merged
 	d.publishLocked(path)
 }
 
@@ -944,15 +1210,32 @@ func (d *debugger) applyBreakpoints(path string, gen uint64, res []breakpoint) {
 // 本体は応答を待つ間も editor/open を処理するが、送ると待つ間にカーソルが移り、本体が再生の続きで操作を実行し直すときに
 // カーソルが変わったとみなして再生を止める（基本設計 5.4、6 章の冒頭、6.4）。
 //
-// req: FR-31, FR-19
-func (d *debugger) showStopped(ctx context.Context, path string, line, column int, reason string) {
+// 実行位置の印はセッションごとに持ち（FR-285）、選んでいるフレームを先頭のフレーム frame にする。
+// gen は、止まったときの s の世代で、ここまでに世代が進んでいれば（続けた、選び直した）、何も表示しない（FR-287）。
+// 再生中の操作は、待っているセッション（とその子孫）の停止でだけ応答する（waitStopLocked）。
+//
+// req: FR-31, FR-19, FR-285, FR-287
+func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, frame int, path string, line, column int, reason string) {
 	d.mu.Lock()
-	d.exec = &execPoint{path: path, line: line}
+	if s.gen.Load() != gen || !slices.Contains(d.sessions, s) {
+		d.mu.Unlock()
+		d.logf("session %d: stop at %s:%d is no longer current; dropped", s.id, path, line+1)
+		return
+	}
+	s.exec = &execPoint{path: path, line: line}
+	s.frame = frame
 	d.publishLocked(path)
-	w := d.takeStopWaiterLocked()
+	w := d.takeStopWaiterForLocked(s)
 	buf, opened := d.buffers[path]
+	multi := len(d.sessions) > 1
+	sel := d.selectionLocked()
 	d.mu.Unlock()
-	d.showInfo(fmt.Sprintf("停止した（%s）: %s:%d", reason, path, line+1))
+	d.notifySelect(sel)
+	if multi {
+		d.showInfo(fmt.Sprintf("停止した（%s、%s）: %s:%d", reason, s.label(), path, line+1))
+	} else {
+		d.showInfo(fmt.Sprintf("停止した（%s）: %s:%d", reason, path, line+1))
+	}
 	if w != nil {
 		if !replayStopReason(reason) {
 			// 記録したときと違う止まり方なので、再生を止める（仮。基本設計 6 章の冒頭）。止まった位置へは下で editor/open で移る。
@@ -977,8 +1260,8 @@ func (d *debugger) showStopped(ctx context.Context, path string, line, column in
 	}
 	// 複製ができたので、印を送り直す（onBufferOpen で送っているが、開いていなかったファイルでは exec を置く前のことがある）。
 	d.mu.Lock()
-	if d.exec != nil && d.exec.path == path {
-		line = d.exec.line
+	if s.exec != nil && s.exec.path == path {
+		line = s.exec.line
 		d.publishLocked(path)
 	}
 	d.mu.Unlock()
@@ -1030,9 +1313,17 @@ func replayStopReason(reason string) bool { return slices.Contains(replayStopRea
 // 再生中の操作がこの停止を待っていれば、カーソルを動かさずに成功を返す。
 // ただし、記録したときと違う止まり方（replayStopReason が false。例外など）なら、showStopped と同じく失敗を返して再生を止める（#224）。
 //
+// gen は止まったときの s の世代で、ここまでに世代が進んでいれば何もしない（FR-287）。
+//
 // req: FR-19
-func (d *debugger) stoppedWithoutSource(reason string) {
-	w := d.takeStopWaiter()
+func (d *debugger) stoppedWithoutSource(s *session, gen uint64, reason string) {
+	d.mu.Lock()
+	if s.gen.Load() != gen {
+		d.mu.Unlock()
+		return
+	}
+	w := d.takeStopWaiterForLocked(s)
+	d.mu.Unlock()
 	d.showInfo("停止した（" + reason + "）")
 	if w == nil {
 		return
@@ -1045,66 +1336,109 @@ func (d *debugger) stoppedWithoutSource(reason string) {
 	w.resolve(ext.ProviderInvokeResult{OK: true})
 }
 
-// clearExecution は、実行位置の印を消し、消す前の位置を返す（基本設計 6.4 の continued と terminated）。
-func (d *debugger) clearExecution() *execPoint {
+// clearExecution は、s の実行位置の印を消し、消す前の位置を返す（基本設計 6.4 の continued と terminated）。
+// ほかのセッションの印は消さない（FR-285）。
+func (d *debugger) clearExecution(s *session) *execPoint {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	prev := d.exec
+	prev := s.exec
 	if prev != nil {
-		d.exec = nil
+		s.exec = nil
 		d.publishLocked(prev.path)
 	}
 	return prev
 }
 
-// restoreExecution は、clearExecution で消した位置を戻す。その後に別の位置で止まっていれば何もしない。
-func (d *debugger) restoreExecution(prev *execPoint) {
+// restoreExecution は、clearExecution で消した s の位置を戻す。その後に別の位置で止まっていれば何もしない。
+func (d *debugger) restoreExecution(s *session, prev *execPoint) {
 	if prev == nil {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.exec == nil && d.sess != nil {
-		d.exec = prev
+	if s.exec == nil && slices.Contains(d.sessions, s) {
+		s.exec = prev
 		d.publishLocked(prev.path)
 	}
 }
 
-// sessionEnded は、s の後始末の最後に呼ぶ。ブレークポイントを未検証に戻し、実行位置の印を消し、利用者に知らせる。
+// sessionEnded は、s の後始末の最後に呼ぶ。s を動いているセッションから外し、s の実行位置の印を消す。
+// ほかのセッションが残れば、ほかのセッションの実行位置の印とブレークポイントの印は消さず、ブレークポイントの検証の印を、
+// 残ったセッションの応答で決め直す（FR-285）。今のセッションが s なら、止まっているセッション、親、最初のセッションの順に選び直す。
+// すべてのセッションが終わったら、ブレークポイントを未検証に戻し、利用者に知らせる。
 // abnormal は、利用者の debug.terminate でも terminated の event でもなく、デバッグアダプターが終わったことを表す。
 // quiet は、開始に失敗して既に知らせたので、終わりを知らせないことを表す。
 //
-// req: FR-31
+// req: FR-31, FR-285
 func (d *debugger) sessionEnded(s *session, abnormal, quiet bool) {
 	d.mu.Lock()
-	if d.sess != s {
+	i := slices.Index(d.sessions, s)
+	if i < 0 {
 		d.mu.Unlock()
 		return
 	}
-	d.sess = nil
-	d.configured = false
-	d.exec = nil
-	for path, bps := range d.bps {
-		for i := range bps {
-			bps[i].state = bpPending
+	d.sessions = slices.Delete(d.sessions, i, i+1)
+	if p := s.parent; p != nil {
+		if j := slices.Index(p.children, s); j >= 0 {
+			p.children = slices.Delete(p.children, j, j+1)
 		}
-		d.gens[path]++
 	}
-	for path := range d.buffers {
-		d.publishLocked(path)
+	s.configured = false
+	prevExec := s.exec
+	s.exec = nil
+	for _, res := range d.bpRes {
+		delete(res, s)
 	}
-	restart := d.restartPending && d.last != nil
-	d.restartPending = false
+	last := len(d.sessions) == 0
+	if last {
+		clear(d.bpRes)
+		for path, bps := range d.bps {
+			for i := range bps {
+				bps[i].state = bpPending
+			}
+			d.gens[path]++
+		}
+		for path := range d.buffers {
+			d.publishLocked(path)
+		}
+	} else {
+		for path := range d.bps {
+			d.mergeBreakpointsLocked(path)
+		}
+		if prevExec != nil {
+			d.publishLocked(prevExec.path)
+		}
+	}
+	selChanged := false
+	if d.cur == s {
+		d.cur = d.pickCurrentLocked(s)
+		selChanged = true
+	}
+	sel := d.selectionLocked()
+	restart := last && s.parent == nil && d.restartPending && d.last != nil
+	if last {
+		d.restartPending = false
+	}
 	// 再生中の操作が停止を待っていれば、止まらずに終わったので、カーソルを動かさずに応答させる。
 	// 開始に失敗したか、デバッグアダプターが異常終了したなら失敗にして、再生を止める（FR-19）。
+	// 待っているのが s でなければ（親のセッションの操作で、子のセッションが終わった）、待たせ続ける。
 	// debug.restart で始め直すときは、始め直した後の停止まで待たせる。
 	var w *waiter
-	if !restart {
+	switch {
+	case restart:
+	case d.waitScope == s || last:
 		w = d.takeStopWaiterLocked()
 	}
 	d.mu.Unlock()
+	if selChanged {
+		d.notifySelect(sel)
+	}
 	w.resolve(ext.ProviderInvokeResult{OK: !quiet && !abnormal})
 	switch {
+	case s.parent != nil && abnormal:
+		d.showError(fmt.Sprintf("子のセッション %s のデバッグアダプターが異常終了した", s.label()))
+	case s.parent != nil:
+		d.logf("session %d: child session %q ended", s.id, s.label())
 	case quiet:
 	case abnormal:
 		d.showError("デバッグアダプターが異常終了した")
@@ -1138,10 +1472,34 @@ func (d *debugger) publishLocked(path string) {
 		}
 		signs = append(signs, ext.Sign{Line: x.line, Kind: kind})
 	}
-	if d.exec != nil && d.exec.path == path {
-		signs = append(signs, ext.Sign{Line: d.exec.line, Kind: ext.SignExecutionPoint})
+	// 実行位置の印は、止まっているセッションごとに付ける（FR-285）。同じ行に重なれば 1 つにする。
+	var execLines []int
+	for _, s := range d.sessions {
+		if s.exec != nil && s.exec.path == path && !slices.Contains(execLines, s.exec.line) {
+			execLines = append(execLines, s.exec.line)
+		}
+	}
+	for _, line := range execLines {
+		signs = append(signs, ext.Sign{Line: line, Kind: ext.SignExecutionPoint})
 	}
 	if err := d.srv.SetSigns(ext.SignSetParams{Buffer: buf.id, Version: buf.version, Signs: signs}); err != nil {
 		d.logf("sign/set: %v", err)
 	}
+}
+
+// pickCurrentLocked は、今のセッション ended が終わったときに、次の今のセッションを選ぶ。
+// 止まっているセッション（始めた順）、ended の親、最初のセッションの順で、無ければ nil。mu を持って呼ぶ。
+func (d *debugger) pickCurrentLocked(ended *session) *session {
+	for _, s := range d.sessions {
+		if s.halted {
+			return s
+		}
+	}
+	if p := ended.parent; p != nil && slices.Contains(d.sessions, p) {
+		return p
+	}
+	if len(d.sessions) > 0 {
+		return d.sessions[0]
+	}
+	return nil
 }

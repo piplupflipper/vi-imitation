@@ -427,20 +427,28 @@ func (h *host) waitOpen() ext.EditorOpenParams {
 	}
 }
 
-// waitEnded は、デバッグの状態が消えるまで待つ。
+// waitEnded は、デバッグの状態が消える（すべてのセッションが終わる）まで待つ。
 func (h *host) waitEnded() {
 	h.t.Helper()
+	h.waitSessions(0)
+}
+
+// waitSessions は、動いているセッションの数が n になるまで待ち、セッションを始めた順に返す。
+func (h *host) waitSessions(n int) []*session {
+	h.t.Helper()
 	deadline := time.Now().Add(testTimeout)
+	var got int
 	for time.Now().Before(deadline) {
 		h.d.mu.Lock()
-		s := h.d.sess
+		ss := slices.Clone(h.d.sessions)
 		h.d.mu.Unlock()
-		if s == nil {
-			return
+		if got = len(ss); got == n {
+			return ss
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	h.t.Fatal("session did not end")
+	h.t.Fatalf("sessions = %d, want %d", got, n)
+	return nil
 }
 
 // fakeSettings は、テスト用のデバッグアダプターを使う設定を返す。fake は launch の引数の fake の項目である。
@@ -763,7 +771,7 @@ func TestReplayWaitsForStop(t *testing.T) {
 		t.Errorf("terminate (sync) = %+v, want ok", res)
 	}
 	h.d.mu.Lock()
-	ended := h.d.sess == nil
+	ended := h.d.rootLocked() == nil
 	h.d.mu.Unlock()
 	if !ended {
 		t.Error("terminate (sync) replied before the session ended")
@@ -922,7 +930,7 @@ func TestAdapterNotFound(t *testing.T) {
 	}
 	h.d.mu.Lock()
 	defer h.d.mu.Unlock()
-	if h.d.sess != nil || h.d.preparing != nil {
+	if h.d.rootLocked() != nil || h.d.preparing != nil {
 		t.Error("a session remains after the adapter failed to start")
 	}
 }
@@ -953,7 +961,7 @@ func TestStop(t *testing.T) {
 	h.mustExec(cmdStart, 0)
 	h.waitSigns(bp2, exec2)
 	h.d.mu.Lock()
-	s := h.d.sess
+	s := h.d.rootLocked()
 	h.d.mu.Unlock()
 	h.mustExec(cmdStop, 0)
 	h.waitSigns(bp2)
@@ -980,7 +988,7 @@ func TestStopWithTerminate(t *testing.T) {
 	h.mustExec(cmdStart, 0)
 	h.waitSigns(bp2, exec2)
 	h.d.mu.Lock()
-	s := h.d.sess
+	s := h.d.rootLocked()
 	h.d.mu.Unlock()
 	h.mustExec(cmdStop, 0)
 	h.waitOutput("terminate requested")
@@ -1003,7 +1011,7 @@ func TestSocketTransport(t *testing.T) {
 	h.waitSigns(bp2, exec2)
 	h.waitOutput("fakeadapter stdout")
 	h.d.mu.Lock()
-	dir := h.d.sess.sockDir
+	dir := h.d.rootLocked().sockDir
 	h.d.mu.Unlock()
 	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("socket dir %s remains after accept: %v", dir, err)
@@ -1150,7 +1158,7 @@ func TestLineConversion(t *testing.T) {
 func TestDAPConnErrorResponse(t *testing.T) {
 	adR, clW := io.Pipe()
 	clR, adW := io.Pipe()
-	c := newDAPConn(clR, clW, multiCloser{clR, clW}, nil)
+	c := newDAPConn(clR, clW, multiCloser{clR, clW}, nil, nil)
 	defer c.close()
 	go func() {
 		r := bufio.NewReader(adR)

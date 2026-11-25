@@ -375,7 +375,7 @@ func TestCandidatePick(t *testing.T) {
 	h.waitMessage("デバッグの開始を取り消した")
 	h.d.mu.Lock()
 	defer h.d.mu.Unlock()
-	if h.d.sess != nil || h.d.preparing != nil {
+	if h.d.rootLocked() != nil || h.d.preparing != nil {
 		t.Error("a session started after cancelling")
 	}
 }
@@ -517,32 +517,6 @@ func TestLaunchJSON(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "ran")); err == nil {
 		t.Error("the resolveCommand in launch.json ran")
 	}
-}
-
-// TestRefuseChildSession は、アダプターが子のセッション（startDebugging）を求めたら、まだ対応していないことを知らせて
-// デバッグを終え、アダプターとデバッグ対象を残さないことを確かめる（#408 のレビューの必須 2）。
-//
-// req: FR-284
-func TestRefuseChildSession(t *testing.T) {
-	h := newHost(t, mustJSON(t, map[string]any{
-		"adapters": map[string]any{"fake": fakeDef(transportStdio)},
-		"configurations": map[string]any{"go": []any{
-			map[string]any{"name": "js", "type": "fake", "request": "launch", "fake": map[string]any{"startDebugging": true, "child": true}},
-		}},
-	}))
-	h.openFT(srcPath, "go")
-	h.mustExec(cmdToggleBreakpoint, 2)
-	h.mustExec(cmdStart, 0)
-	adapter := h.waitPID("adapter")
-	child := h.waitPID("child")
-	m := h.waitMessage("子のセッション（startDebugging）")
-	if m.Level != ext.MessageError || !strings.Contains(m.Text, "アダプター fake") {
-		t.Errorf("message = %+v", m)
-	}
-	h.waitEnded()
-	h.waitOutput("disconnect terminateDebuggee=true")
-	waitGone(t, "adapter", adapter)
-	waitGone(t, "debuggee", child)
 }
 
 // TestVariables は、構成の変数（ファイル、カーソル、ワークスペースの根、環境変数）を展開し、
