@@ -3497,7 +3497,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 | スコープ（`scopes`、`S`） | 木 | 選んでいるフレームのスコープを最上位にし、`expensive` でないスコープを開いて出す。変数は `名前: 型 = 値`（型は `supportsVariableType` で届けば） | `<CR>` 開閉、`[[` 親の項目へ、`s` 値を書き換える | `scopes`、`variables`、`setVariable`、`setExpression` |
 | 例外（`exceptions`、`E`） | 一覧 | `exceptionBreakpointFilters` の `label` に、有効なら `[x]`、無効なら `[ ]` を付けた項目 | `<CR>` 有効と無効の切り替え | `setExceptionBreakpoints`（`filters`） |
 | ブレークポイント（`breakpoints`、`B`） | 一覧 | `パス:行` と、条件があれば条件、確かめられていなければその印。項目にプレビュー（FR-149）とファイルのアイコン（FR-152）を付ける | `<CR>` その位置を元の client のタブに開く、`d` 消す | `setBreakpoints`（消したとき） |
-| スレッド（`threads`、`T`） | 木 | セッション（2 つ以上あるとき）、スレッド（止まっているかを添える）、フレーム（`名前  パス:行`）。今のセッションの止まったスレッドを開いて出し、選んでいるフレームに印を付ける。フレームの項目にプレビューを付ける | `<CR>` フレームを選んで開く（セッションとスレッドの項目では開閉）、`t` `subtle` のフレームを出すかの切り替え、`f` フレームの絞り込みの文字列を聞く（`input/ask`）、`o` 絞り込みの反転 | `threads`、`stackTrace` |
+| スレッド（`threads`、`T`） | 木 | セッション（2 つ以上あるとき）、スレッド（止まっているかを添える）、フレーム（`名前  パス:行`）。今のセッションの止まったスレッドを開いて出し、選んでいるフレームに印を付ける。フレームの項目にプレビューを付ける | `<CR>` フレームを選んで開く（セッションとスレッドの項目では開閉）、`s` セッションかスレッドを選ぶ（#421 で足した。下の「#421 のペイン」）、`t` `subtle` のフレームを出すかの切り替え、`f` フレームの絞り込みの文字列を聞く（`input/ask`）、`o` 絞り込みの反転 | `threads`、`stackTrace` |
 | REPL（`repl`、`R`） | 書き足すテキストと入力の行の組（`console`） | 打った式（`> 式`）と結果の文字列。結果は `evaluate` の `result` で、子の展開はしない | 本体の部品のキー（`<CR>` 送信、インサートモードの `<Up>` と `<Down>` で履歴、`<C-w>w`） | `evaluate`（`context` は `repl`） |
 | 出力（`console`、`C`） | テキスト（`view/append` で書き足す） | 今のセッションのデバッグ対象の出力。`stderr` は `diagnostic.error` の色、`console` と `important` は `comment` の色で書き足す（仮）。`telemetry` は書かない | `]s` 次のセッション、`[s` 前のセッション（nvim-dap-view の `console` の区画のキー） | 無し（`output` イベント） |
 

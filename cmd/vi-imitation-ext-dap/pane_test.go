@@ -599,7 +599,8 @@ func TestPaneStopOrder(t *testing.T) {
 	h.waitLabel(secScopes, "x: int = 1")
 	h.mustExec(cmdNext, 0)
 	all := h.outputsUntil("next thread=1", "stopped 2", "variables 1")
-	all = all[strings.Index(all, "next thread=1"):]
+	_, after, _ := strings.Cut(all, "next thread=1")
+	all = "next thread=1" + after
 	lines := strings.Split(all, "\n")
 	stop := slices.Index(lines, "stopped 2")
 	if stop < 0 {
