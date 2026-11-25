@@ -62,7 +62,7 @@ type launchFile struct {
 // req: FR-281
 func readLaunchJSON(folder string) (*launchFile, error) {
 	path := filepath.Join(folder, launchJSONPath)
-	data, err := os.ReadFile(path) //nolint:gosec // 利用者のワークスペースの launch.json を読む
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -82,8 +82,8 @@ func readLaunchJSON(folder string) (*launchFile, error) {
 		return nil, fmt.Errorf("%s: not an object", path)
 	}
 	lf := &launchFile{}
-	if c, ok := top["compounds"]; ok {
-		if arr, ok := c.([]any); !ok || len(arr) > 0 {
+	if c, has := top["compounds"]; has {
+		if arr, isArr := c.([]any); !isArr || len(arr) > 0 {
 			lf.hasCompounds = true
 		}
 	}

@@ -80,7 +80,8 @@ func (d *debugger) pick(ctx context.Context, title string, items []ext.ViewItem)
 				return e.Item, nil
 			case server.ViewClosed:
 				return "", errPickCancelled
-			default:
+			case server.ViewInputChanged, server.ViewKey, server.ViewExpanded, server.ViewTabChanged:
+				// 一覧では使わない知らせである。
 			}
 		case <-ctx.Done():
 			_ = d.srv.CloseView(res.View)
@@ -122,7 +123,7 @@ func listProcesses() ([]process, error) {
 		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != uid {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, "cmdline")) //nolint:gosec // /proc の決まったファイルを読む
+		data, err := os.ReadFile(filepath.Join(dir, "cmdline"))
 		if err != nil || len(data) == 0 {
 			continue
 		}

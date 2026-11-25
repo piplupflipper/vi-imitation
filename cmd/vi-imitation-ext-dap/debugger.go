@@ -135,6 +135,9 @@ type debugger struct {
 	preparing *prepJob
 	// pickers は、開いている一覧（picker.go）の知らせの受け口である。
 	pickers pickers
+	// apiVersion は、本体の拡張機能 API の版（initialize の apiVersion）である。apiWarned は、古いことを知らせたことを表す。
+	apiVersion string
+	apiWarned  bool
 	// compoundsShown は、compounds を扱えないことを知らせた launch.json のパスである（拡張機能のプロセスが動いている間に 2 回出さない）。
 	compoundsShown map[string]bool
 	// restartPending は、debug.restart で止めたセッションが終わったら、last で始め直すことを表す。
@@ -201,6 +204,10 @@ func (w *waiter) abandon() (ext.ProviderInvokeResult, bool) {
 // 期限とほぼ同時に止まり、結果が既に届いていたときも、本体はその応答を捨てるので、結果の open を editor/open で送り直す（#217 のレビュー）。
 func (d *debugger) asyncProvider(h opHandler) server.AsyncProviderHandler {
 	return func(ctx context.Context, b *server.Buffer, p *ext.ProviderInvokeParams, reply func(ext.ProviderInvokeResult, error)) {
+		if !d.apiSupported(p.Operation) {
+			reply(ext.ProviderInvokeResult{OK: false}, nil)
+			return
+		}
 		res, w := h(ctx, b, p)
 		if w == nil {
 			reply(res, nil)
@@ -402,7 +409,37 @@ func (d *debugger) appendOutput(text string) {
 	}
 }
 
+// minAPIVersion は、この拡張機能が要る本体の拡張機能 API の版である（基本設計 1.4 の「古い本体での標準の拡張機能」。FR-271）。
+// 値は、使うメッセージのうち最後に足したものの版で、今は progress/report（resolveCommand の進み具合。API 0.14.0）である。
+// pane/open の center と closeOnSelect（構成の候補と ${pickProcess} の一覧）は 0.10.0、editor/state の workDir は 0.9.0 で足した。
+// #399 の切り替えの部品と書き足しのメッセージを使い始める PR が、その版に上げる。
+const minAPIVersion = "0.14.0"
+
+// apiSupported は、本体の拡張機能 API の版が minAPIVersion 以上かを返す。
+// 足りなければ、最初の 1 回だけ要る版をメッセージの行に出す。操作は、段階 2 の取り決めだけを使うものも含めてすべて断る（基本設計 1.4）。
+// FR-271 の振る舞いの一部（切り替えの部品はまだ使わない）なので、要件の注釈は付けない。
+func (d *debugger) apiSupported(op ext.Operation) bool {
+	d.mu.Lock()
+	old := ext.VersionLess(d.apiVersion, minAPIVersion)
+	first := old && !d.apiWarned
+	if first {
+		d.apiWarned = true
+	}
+	version := d.apiVersion
+	d.mu.Unlock()
+	if first {
+		d.showError(fmt.Sprintf("DAP の拡張機能には本体の拡張機能 API %s 以上が要ります（この本体は %s）", minAPIVersion, version))
+	}
+	if old {
+		d.logf("%s: refused (host API %s < %s)", op, version, minAPIVersion)
+	}
+	return !old
+}
+
 func (d *debugger) onInitialize(_ context.Context, e *server.InitializeEvent) error {
+	d.mu.Lock()
+	d.apiVersion = e.APIVersion
+	d.mu.Unlock()
 	s, err := parseSettings(e.Settings)
 	if err != nil {
 		return fmt.Errorf("invalid settings: %w", err)

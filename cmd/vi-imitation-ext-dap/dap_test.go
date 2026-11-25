@@ -706,7 +706,7 @@ func TestProviderOperations(t *testing.T) {
 func TestReplayWaitsForStop(t *testing.T) {
 	h := newHost(t, fakeSettings(t, nil, map[string]any{"stopDelayMs": 200}))
 	h.open(1, srcPath, srcText)
-	h.prime(srcPath)
+	h.prime()
 	if res := h.replay(cmdToggleBreakpoint, 2); !res.OK || res.Open != nil {
 		t.Fatalf("toggle (sync) = %+v, want ok without open", res)
 	}
@@ -776,7 +776,7 @@ func TestReplayStepFailure(t *testing.T) {
 	h := newHost(t, fakeSettings(t, nil, map[string]any{"ignore": []string{"stepOut"}}))
 	h.d.timeouts.request = 300 * time.Millisecond
 	h.open(1, srcPath, srcText)
-	h.prime(srcPath)
+	h.prime()
 	h.mustExec(cmdToggleBreakpoint, 2)
 	if res := h.replay(cmdStart, 0); !res.OK {
 		t.Fatalf("start (sync) = %+v", res)
@@ -799,7 +799,7 @@ func TestReplayStepFailure(t *testing.T) {
 func TestReplayStopsOnException(t *testing.T) {
 	h := newHost(t, fakeSettings(t, nil, map[string]any{"exceptionOnContinue": true}))
 	h.open(1, srcPath, srcText)
-	h.prime(srcPath)
+	h.prime()
 	h.mustExec(cmdToggleBreakpoint, 2)
 	if res := h.replay(cmdStart, 0); !res.OK {
 		t.Fatalf("start (sync) = %+v", res)
@@ -820,7 +820,7 @@ func TestReplayStopsOnException(t *testing.T) {
 func TestReplayStopsOnExceptionWithoutSource(t *testing.T) {
 	h := newHost(t, fakeSettings(t, nil, map[string]any{"exceptionOnContinue": true, "noSource": true}))
 	h.open(1, srcPath, srcText)
-	h.prime(srcPath)
+	h.prime()
 	h.mustExec(cmdToggleBreakpoint, 2)
 	if res := h.replay(cmdStart, 0); !res.OK || res.Open != nil {
 		t.Fatalf("start (sync) = %+v, want ok without open", res)
@@ -850,7 +850,7 @@ func TestReplayStopInUnopenedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.open(1, srcPath, srcText)
-	h.prime(srcPath)
+	h.prime()
 	res := h.replay(cmdStart, 0)
 	if !res.OK || res.Open == nil || res.Open.Path != path || res.Open.Buffer != nil || res.Open.Position == nil || *res.Open.Position != (ext.Position{Line: 1, Byte: 5}) {
 		t.Errorf("start (sync) = %+v, want open %s at 1:5", res, path)
@@ -925,11 +925,11 @@ func TestAdapterNotFound(t *testing.T) {
 	}
 }
 
-// prime は、前回の構成（debug.runLast と再生の開始が使う）を、path のバッファで始めたときの構成にする。
+// prime は、前回の構成（debug.runLast と再生の開始が使う）を、srcPath のバッファで始めたときの構成にする。
 // 再生中（sync）の開始は一覧も問いも出さずに前回の構成で始める（FR-280）ので、再生のテストの前に呼ぶ。
-func (h *host) prime(path string) {
+func (h *host) prime() {
 	h.t.Helper()
-	spec, err := h.d.prepare(context.Background(), invocation{file: path, line: 1, column: 1})
+	spec, err := h.d.prepare(context.Background(), invocation{file: srcPath, line: 1, column: 1})
 	if err != nil {
 		h.t.Fatalf("prepare: %v", err)
 	}

@@ -109,10 +109,7 @@ var ignorableKeys = []string{"preLaunchTask", "postDebugTask", "serverReadyActio
 // req: FR-280, FR-281, FR-283, FR-288
 func (d *debugger) prepare(ctx context.Context, inv invocation) (*runSpec, error) {
 	workDir := d.workDir(ctx)
-	cands, err := d.candidates(inv, workDir)
-	if err != nil {
-		return nil, err
-	}
+	cands := d.candidates(inv, workDir)
 	var cand candidate
 	switch len(cands) {
 	case 0:
@@ -167,7 +164,7 @@ func (d *debugger) workDir(ctx context.Context) string {
 // launch.json は始めるたびに読み直す。読めなければ、その誤りを知らせて、設定の構成だけを候補にする。
 //
 // req: FR-280, FR-281, FR-283
-func (d *debugger) candidates(inv invocation, workDir string) ([]candidate, error) {
+func (d *debugger) candidates(inv invocation, workDir string) []candidate {
 	var out []candidate
 	start := inv.file
 	if start == "" {
@@ -206,7 +203,7 @@ func (d *debugger) candidates(inv invocation, workDir string) ([]candidate, erro
 	if s.legacy != nil {
 		out = append(out, s.legacy.candidate())
 	}
-	return out, nil
+	return out
 }
 
 // workspaceFolder は、設定の構成と 1 組の設定の構成の ${workspaceFolder} を決める。
@@ -250,7 +247,7 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 	// 3. 変数の展開。構成とアダプターの起動の方法の全体を 1 回の展開にする。
 	unit := map[string]any{"configuration": cfg, "adapter": deepCopy(a.launch)}
 	r := d.resolver(ctx, inv, folder)
-	if err := expand.Check(unit, r); err != nil {
+	if err = expand.Check(unit, r); err != nil {
 		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
 	}
 	var ignored []string
@@ -263,7 +260,7 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 		ignored = append(ignored, "linux.type")
 	}
 	if len(ignored) > 0 {
-		if err := d.askIgnore(ctx, cand.name, ignored); err != nil {
+		if err = d.askIgnore(ctx, cand.name, ignored); err != nil {
 			return nil, err
 		}
 	}
@@ -284,7 +281,7 @@ func (d *debugger) resolveCandidate(ctx context.Context, inv invocation, workDir
 	launch := unit["adapter"].(map[string]any)
 
 	// 4. envFile。
-	if err := applyEnvFile(cfg, folder); err != nil {
+	if err = applyEnvFile(cfg, folder); err != nil {
 		return nil, failStart("構成 %s を始めない: %v", cand.name, err)
 	}
 	if cand.legacy {
@@ -445,7 +442,7 @@ func applyEnvFile(cfg map[string]any, folder string) error {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(folder, path)
 	}
-	f, err := os.Open(path) //nolint:gosec // 利用者が構成に書いた env のファイルを読む
+	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("envFile を読めない: %w", err)
 	}

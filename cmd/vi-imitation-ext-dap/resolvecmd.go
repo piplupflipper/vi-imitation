@@ -101,7 +101,7 @@ func runResolveCommand(ctx context.Context, rc *resolveCommand, cwd string, in r
 	stderr.limit = resolveStderrTail
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := startAdapter(cmd); err != nil {
+	if err = startAdapter(cmd); err != nil {
 		return nil, nil, fmt.Errorf("resolveCommand %s を起動できない: %w", rc.argv[0], err)
 	}
 	waited := make(chan error, 1)
@@ -113,11 +113,11 @@ func runResolveCommand(ctx context.Context, rc *resolveCommand, cwd string, in r
 	case werr = <-waited:
 	case <-timer.C:
 		killGroup(cmd)
-		<-waited
+		<-waited //nolint:errcheck // 止めたプロセスの終わりを待つだけで、終了の状態は使わない
 		return nil, nil, withStderr(fmt.Errorf("resolveCommand %s が期限（%s）までに終わらなかった", rc.argv[0], rc.timeout), &stderr)
 	case <-ctx.Done():
 		killGroup(cmd)
-		<-waited
+		<-waited //nolint:errcheck // 止めたプロセスの終わりを待つだけで、終了の状態は使わない
 		return nil, nil, errResolveCancelled
 	}
 	if s := stderr.full.buf.String(); s != "" {

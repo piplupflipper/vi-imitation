@@ -43,9 +43,11 @@ func fakeDef(transport string, args ...string) map[string]any {
 	return a
 }
 
-// openFT は、ファイルの種類 fileType のバッファを開く。
-func (h *host) openFT(id ext.BufferID, path, fileType, text string) {
+// openFT は、中身が srcText でファイルの種類が fileType のバッファを、番号 1（mustExec が使うバッファ）で開く。
+func (h *host) openFT(path, fileType string) {
+	const text = srcText
 	h.t.Helper()
+	const id ext.BufferID = 1
 	h.mu.Lock()
 	h.versions[id] = 1
 	h.ids[path] = id
@@ -139,7 +141,7 @@ func startFakeServer(t *testing.T) (int, *exec.Cmd) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err = cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -231,7 +233,7 @@ func TestTransports(t *testing.T) {
 					map[string]any{"name": "n", "type": "fake", "request": "launch", "program": "${fileDirname}", "fake": map[string]any{"child": true}},
 				}},
 			}))
-			h.openFT(1, srcPath, "go", srcText)
+			h.openFT(srcPath, "go")
 			h.mustExec(cmdToggleBreakpoint, 2)
 			h.mustExec(cmdStart, 0)
 			args := h.waitArgs("launch")
@@ -263,7 +265,7 @@ func TestServerAttach(t *testing.T) {
 			map[string]any{"name": "attach", "type": "remote", "request": "attach", "fake": map[string]any{"child": true}},
 		}},
 	}))
-	h.openFT(1, srcPath, "go", srcText)
+	h.openFT(srcPath, "go")
 	h.mustExec(cmdToggleBreakpoint, 2)
 	h.mustExec(cmdStart, 0)
 	if args := h.waitArgs("attach"); args["request"] != "attach" {
@@ -300,7 +302,7 @@ func TestConnectFrom(t *testing.T) {
 			map[string]any{"name": "spawn", "type": "py", "request": "launch"},
 		}},
 	}))
-	h.openFT(1, srcPath, "python", srcText)
+	h.openFT(srcPath, "python")
 	h.mustExec(cmdToggleBreakpoint, 2)
 	h.mustExec(cmdStart, 0)
 	p := h.waitPane()
@@ -331,7 +333,7 @@ func TestCandidatePick(t *testing.T) {
 		}},
 		"adapter": map[string]any{"command": fakeAdapter},
 	}))
-	h.openFT(1, srcPath, "go", srcText)
+	h.openFT(srcPath, "go")
 	h.mustExec(cmdToggleBreakpoint, 2)
 	h.mustExec(cmdStart, 0)
 	p := h.waitPane()
@@ -398,7 +400,7 @@ func TestReplayStartWithoutLast(t *testing.T) {
 // writeFile は、path に text を書く（ディレクトリも作る）。
 func writeFile(t *testing.T, path, text string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
@@ -415,7 +417,7 @@ func TestLaunchJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(root, ".vscode", "launch.json"), `{
@@ -441,7 +443,7 @@ func TestLaunchJSON(t *testing.T) {
 		"adapters":       map[string]any{"fake": fakeDef(transportStdio)},
 		"configurations": map[string]any{"go": []any{map[string]any{"name": "S", "type": "fake", "request": "launch"}}},
 	}))
-	h.openFT(1, file, "go", srcText)
+	h.openFT(file, "go")
 	h.mustExec(cmdToggleBreakpoint, 2)
 
 	h.mustExec(cmdStart, 0)
@@ -516,7 +518,7 @@ func TestVariables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	file := filepath.Join(root, "sub", "main.go")
@@ -528,14 +530,16 @@ func TestVariables(t *testing.T) {
 			"badport": fakeDef(transportStdio, "-x=${port}"),
 		},
 		"configurations": map[string]any{"go": []any{
-			map[string]any{"name": "vars", "type": "fake", "request": "launch",
-				"program": "${fileBasenameNoExtension}:${lineNumber}:${columnNumber}:${relativeFile}:${workspaceFolderBasename}:${env:FAKE_TEST_VAR}"},
+			map[string]any{
+				"name": "vars", "type": "fake", "request": "launch",
+				"program": "${fileBasenameNoExtension}:${lineNumber}:${columnNumber}:${relativeFile}:${workspaceFolderBasename}:${env:FAKE_TEST_VAR}",
+			},
 			map[string]any{"name": "input", "type": "fake", "request": "launch", "program": "${input:x}"},
 			map[string]any{"name": "port", "type": "fake", "request": "launch", "program": "${port}"},
 			map[string]any{"name": "adapterport", "type": "badport", "request": "launch"},
 		}},
 	}))
-	h.openFT(1, file, "go", srcText)
+	h.openFT(file, "go")
 	h.mustExec(cmdToggleBreakpoint, 2)
 	pick := func(name string) {
 		t.Helper()
@@ -590,7 +594,7 @@ func TestResolveCommand(t *testing.T) {
 		"adapters":       map[string]any{"fake": fakeDef(transportClientSocket, "-client-addr="+clientAddrPlaceholder)},
 		"configurations": map[string]any{"go": configs},
 	}))
-	h.openFT(1, srcPath, "go", srcText)
+	h.openFT(srcPath, "go")
 	h.mustExec(cmdToggleBreakpoint, 2)
 	pick := func(name string) {
 		t.Helper()
@@ -670,7 +674,7 @@ func TestPickProcess(t *testing.T) {
 			map[string]any{"name": "pick", "type": "fake", "request": "attach", "processId": "${pickProcess}"},
 		}},
 	}))
-	h.openFT(1, srcPath, "go", srcText)
+	h.openFT(srcPath, "go")
 	h.mustExec(cmdToggleBreakpoint, 2)
 	h.mustExec(cmdStart, 0)
 	p := h.waitPane()
@@ -728,6 +732,26 @@ func TestConfigExample(t *testing.T) {
 				t.Errorf("%s %s: %v", ft, c.name, err)
 			}
 		}
+	}
+}
+
+// TestOldHost は、本体の拡張機能 API の版が minAPIVersion より古ければ、どの操作も断り、要る版を 1 回だけ知らせることを確かめる。
+func TestOldHost(t *testing.T) {
+	h := newHost(t, "")
+	h.d.mu.Lock()
+	h.d.apiVersion = "0.13.0"
+	h.d.mu.Unlock()
+	h.open(1, srcPath, srcText)
+	for range 2 {
+		if res := h.exec(1, cmdToggleBreakpoint, 2); res.OK {
+			t.Error("toggle on an old host: ok = true")
+		}
+	}
+	h.waitMessage("本体の拡張機能 API " + minAPIVersion + " 以上が要ります（この本体は 0.13.0）")
+	select {
+	case m := <-h.msgs:
+		t.Errorf("second message %q", m.Text)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
