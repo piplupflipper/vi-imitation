@@ -94,6 +94,13 @@ type fakeOptions struct {
 	// StaleAfterSet は、setVariable と setExpression の応答では新しい値を返し、その後の variables では前の値を返す
 	// （vscode-js-debug 1.117.0 の setExpression の代役）。
 	StaleAfterSet bool `json:"staleAfterSet"`
+	// TwoThreads は、threads に止まっていない 2 つ目のスレッド（ID 2、worker）を足す。そのスタックは、ソースのファイルが無いフレーム 1 つである。
+	// 続行とステップ実行は、止まったスレッド（ID 1）へ送られたものだけを受ける。
+	TwoThreads bool `json:"twoThreads"`
+	// CallerPath は、stackTrace の 3 つ目のフレーム（main.caller）のソースのパスである。空なら止まった位置のファイル。
+	CallerPath string `json:"callerPath"`
+	// ANSI は、configurationDone の後に、端末の色の並びを含む行を、並びの途中で塊を分けて出す。
+	ANSI bool `json:"ansi"`
 }
 
 type message struct {
@@ -470,6 +477,10 @@ func (a *adapter) handle(m *message) {
 			a.output("stdout", "\nprogress 1\rprogress 2\n")
 			a.output("important", "important note\n")
 		}
+		if a.opts.ANSI {
+			a.output("stdout", "\x1b[31mred\x1b[0m \x1b]0;title\x07plain \x1b[1")
+			a.output("stdout", ";32mgreen\x1b[0m end\n")
+		}
 		if a.opts.VerifyLater {
 			for _, id := range a.bpIDs {
 				a.event("breakpoint", map[string]any{"reason": "changed", "breakpoint": map[string]any{"id": id, "verified": true}})
@@ -497,8 +508,27 @@ func (a *adapter) handle(m *message) {
 			a.respond(m, map[string]any{"threads": []map[string]any{}})
 			return
 		}
-		a.respond(m, map[string]any{"threads": []map[string]any{{"id": a.threadID(), "name": "main"}}})
+		a.output("console", "threads\n")
+		threads := []map[string]any{{"id": a.threadID(), "name": "main"}}
+		if a.opts.TwoThreads {
+			threads = append(threads, map[string]any{"id": 2, "name": "worker"})
+		}
+		a.respond(m, map[string]any{"threads": threads})
 	case "stackTrace":
+		var targs struct {
+			ThreadID int `json:"threadId"`
+			Levels   int `json:"levels"`
+		}
+		_ = json.Unmarshal(m.Arguments, &targs)
+		// 受けた順を出す（止まった位置の stackTrace が、ペインの読み込みより先に届くことのテスト）。
+		a.output("console", fmt.Sprintf("stackTrace thread=%d levels=%d\n", targs.ThreadID, targs.Levels))
+		if a.opts.TwoThreads && targs.ThreadID == 2 {
+			// 止まっていないスレッドの代役。ソースの無いフレーム（<node_internals> の代役）を 1 つ持つ。
+			a.respond(m, map[string]any{"stackFrames": []map[string]any{
+				{"id": 2000, "name": "worker.run", "line": 1, "column": 1, "source": map[string]any{"name": "loader", "path": "<node_internals>/loader"}},
+			}})
+			return
+		}
 		a.stateMu.Lock()
 		if a.cur < 0 || a.cur >= len(a.stops) {
 			// ブレークポイントでなく一時停止で止まった（位置を持たない）。
@@ -534,11 +564,16 @@ func (a *adapter) handle(m *message) {
 			delete(frame, "source")
 		}
 		// 先頭のフレームの後に、subtle のフレームと、呼んだ側のフレームを並べる（スレッドの区画のテスト）。levels が 1 なら先頭だけ。
+		// 呼んだ側のフレームのパスは、CallerPath があればそれ（手元にあるファイルのフレームのテスト）、なければ止まった位置のファイルである。
+		callerPath := loc.path
+		if a.opts.CallerPath != "" {
+			callerPath = a.opts.CallerPath
+		}
 		frames := []map[string]any{frame,
 			{"id": 1001, "name": "runtime.main", "line": 1, "column": 1, "presentationHint": "subtle",
 				"source": map[string]any{"name": filepath.Base(loc.path), "path": loc.path}},
 			{"id": 1002, "name": "main.caller", "line": 3, "column": 1,
-				"source": map[string]any{"name": filepath.Base(loc.path), "path": loc.path}},
+				"source": map[string]any{"name": filepath.Base(callerPath), "path": callerPath}},
 		}
 		var sargs struct {
 			Levels int `json:"levels"`
@@ -564,11 +599,24 @@ func (a *adapter) handle(m *message) {
 		}})
 	case "variables":
 		var vargs struct {
-			VariablesReference int `json:"variablesReference"`
+			VariablesReference int    `json:"variablesReference"`
+			Filter             string `json:"filter"`
+			Start              int    `json:"start"`
+			Count              int    `json:"count"`
 		}
 		_ = json.Unmarshal(m.Arguments, &vargs)
+		a.output("console", fmt.Sprintf("variables %d %s %d %d\n", vargs.VariablesReference, vargs.Filter, vargs.Start, vargs.Count))
 		a.stateMu.Lock()
 		vars, ok := a.variables(vargs.VariablesReference)
+		// big（参照 3）の子は添字の子だけで、filter と start と count で範囲を返す（DAP の仕様の VariablesArguments）。
+		if vargs.VariablesReference == 3 {
+			switch {
+			case vargs.Filter == "named":
+				vars = nil
+			case vargs.Count > 0:
+				vars = vars[min(vargs.Start, len(vars)):min(vargs.Start+vargs.Count, len(vars))]
+			}
+		}
 		delay := vargs.VariablesReference == 1 && a.opts.VariablesDelayMs > 0 && !a.varDelayed
 		a.varDelayed = a.varDelayed || delay
 		a.stateMu.Unlock()
@@ -616,6 +664,7 @@ func (a *adapter) handle(m *message) {
 			a.respondError(m, fmt.Sprintf("unknown thread %d", targs.ThreadID))
 			return
 		}
+		a.output("console", fmt.Sprintf("%s thread=%d\n", m.Command, targs.ThreadID))
 		a.stateMu.Lock()
 		running := a.running
 		a.running = a.opts.StopDelayMs > 0
@@ -806,7 +855,7 @@ func (a *adapter) variables(ref int) ([]map[string]any, bool) {
 	case ref == 1:
 		return []map[string]any{
 			{"name": "x", "value": val("x", strconv.Itoa(a.nstop)), "type": "int", "evaluateName": "x", "variablesReference": 0},
-			{"name": "big", "value": "[]int len: 3000", "type": "[]int", "evaluateName": "big", "variablesReference": 3},
+			{"name": "big", "value": "[]int len: 3000", "type": "[]int", "evaluateName": "big", "variablesReference": 3, "indexedVariables": 3000},
 			{"name": "s", "value": strings.Repeat("long ", 400), "type": "string", "variablesReference": 0},
 			{"name": "nested", "value": "{...}", "type": "T", "variablesReference": 20},
 		}, true
@@ -829,8 +878,10 @@ func (a *adapter) variables(ref int) ([]map[string]any, bool) {
 func (a *adapter) stopped(reason string) {
 	a.stateMu.Lock()
 	a.nstop++
+	n := a.nstop
 	a.overrides = map[string]string{}
 	a.stateMu.Unlock()
+	a.output("console", fmt.Sprintf("stopped %d\n", n))
 	body := map[string]any{"reason": reason, "allThreadsStopped": true}
 	if !a.opts.NoThreadID {
 		body["threadId"] = a.threadID()

@@ -927,7 +927,7 @@ func TestManifest(t *testing.T) {
 	// 区画の中のキーは、pane.go が view/key で受ける ID と、効かせる区画が合う（子を切り替える 2 つは区画を限らない）。
 	want := map[string][]string{
 		keyScopesParent: {secScopes}, keyScopesSetValue: {secScopes},
-		keyThreadsSubtle: {secThreads}, keyThreadsFilter: {secThreads}, keyThreadsInvert: {secThreads},
+		keyThreadsSubtle: {secThreads}, keyThreadsFilter: {secThreads}, keyThreadsInvert: {secThreads}, keyThreadsSelect: {secThreads},
 		keyBreakpointsDel: {secBreakpoints}, keyConsoleNext: {secConsole}, keyConsolePrev: {secConsole},
 		"dap.view.next": nil, "dap.view.prev": nil,
 	}

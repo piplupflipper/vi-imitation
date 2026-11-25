@@ -362,7 +362,9 @@ func newDebugger() *debugger {
 	}
 	d.srv = d.newServer()
 	d.pane = newPane(d)
-	d.onSelect = func(selection) { d.pane.markDirty(secThreads, secScopes, secConsole) }
+	// 今のセッションが替わったら、出力の区画に出すセッションを合わせる。スレッドとスコープの区画の印は、選び直し（choose）と、
+	// 止まった位置を出した後（showStopped）で付ける（止まったときにここで付けると、止まった位置の stackTrace より先に読む）。
+	d.onSelect = func(selection) { d.pane.markDirty(secConsole) }
 	go d.pane.run()
 	return d
 }
@@ -542,8 +544,8 @@ func (d *debugger) selectSession(s *session) bool {
 	return d.choose(s, func() {})
 }
 
-// selectThread は、s を今のセッションにし、そのスレッド thread を選び、フレームの選択を外す
-// （後の issue のスレッドの区画でスレッドを選んだとき）。s の世代を進めるので、それより前に送った stackTrace などの応答は捨てる（FR-287）。
+// selectThread は、s を今のセッションにし、そのスレッド thread を選び（続行、ステップ実行、一時停止の送り先にする）、
+// フレームの選択を外す（スレッドの区画の s で選んだとき。FR-303）。s の世代を進めるので、それより前に送った stackTrace などの応答は捨てる（FR-287）。
 // s が動いていなければ false を返す。
 //
 // req: FR-287
@@ -551,12 +553,23 @@ func (d *debugger) selectThread(s *session, thread int) bool {
 	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, 0, false })
 }
 
-// selectFrame は、s を今のセッションにし、そのスレッド thread とフレーム frame を選ぶ（後の issue のスレッドの区画でフレームを選んだとき）。
+// selectThreadFrame は、selectThread と同じく s のスレッド thread を選び、フレーム frame も選ぶ（スレッドの区画の s で、
+// スレッドかフレームを選んだとき。スコープの区画がそのフレームを出す）。
+//
+// req: FR-287
+func (d *debugger) selectThreadFrame(s *session, thread, frame int) bool {
+	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, frame, true })
+}
+
+// selectFrame は、s を今のセッションにし、フレーム frame を選ぶ（スレッドの区画でフレームを <CR> で選んだとき）。
+// 選んでいるスレッド（続行とステップ実行の送り先）は替えない。別のスレッドのフレームを見るために選んでも、ステップ実行が黙って
+// そのスレッドへ送られないためである（nvim-dap（コミット cfa2d58f4537aca6ca83e2de1a0d9f1491121264）の lua/dap/session.lua の
+// _frame_set は current_frame だけを替え、ステップ実行は stopped_thread_id へ送る。PR #423 のレビューの裁定要 1）。
 // s の世代を進める（FR-287）。s が動いていなければ false を返す。
 //
 // req: FR-287
-func (d *debugger) selectFrame(s *session, thread, frame int) bool {
-	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, frame, true })
+func (d *debugger) selectFrame(s *session, frame int) bool {
+	return d.choose(s, func() { s.frame, s.hasFrame = frame, true })
 }
 
 // choose は、s を今のセッションにし、mu を持って set を呼び、s の世代を進めて、選択が変わったことを知らせる。
@@ -569,6 +582,7 @@ func (d *debugger) choose(s *session, set func()) bool {
 	d.cur = s
 	set()
 	s.gen.Add(1)
+	d.pane.markDirty(secThreads, secScopes)
 	sel := d.selectionLocked()
 	d.mu.Unlock()
 	d.notifySelect(sel)
@@ -593,8 +607,11 @@ func (d *debugger) markStopped(s *session, tid *int) (gen uint64, focus bool) {
 	if tid != nil {
 		s.thread = *tid
 	}
+	s.stoppedThread, s.hasStoppedThread = s.thread, s.hasThread
+	// ペインの区画の作り直しの印は、ここでは付けない。付けると、ペインの読み込み（threads、stackTrace、scopes、variables）が、
+	// 止まった位置を出すための stackTrace より先にアダプターへ届き、カーソルの移動が遅れる（PR #423 のレビューの必須 1）。
+	// 印は、止まった位置を出し終えた後（showStopped と stoppedWithoutSource）で付ける。
 	gen = s.gen.Add(1)
-	d.pane.markDirty(secThreads, secScopes)
 	cur := d.cur
 	focus = cur == nil || cur == s || !slices.Contains(d.sessions, cur) || !cur.halted
 	if focus && d.stopWaiter != nil && !d.inScopeLocked(s) {
@@ -1418,7 +1435,8 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focu
 	}
 	s.exec = &execPoint{path: path, line: line}
 	s.frame, s.hasFrame = frame, true
-	d.pane.markDirty(secThreads, secScopes)
+	// ペインの区画は、止まった位置への移動（editor/open か再生の応答）を済ませた後に作り直す（markStopped の doc）。
+	defer d.pane.markDirty(secThreads, secScopes)
 	d.publishLocked(path)
 	w := d.takeStopWaiterForLocked(s)
 	buf, opened := d.buffers[path]
@@ -1536,6 +1554,7 @@ func (d *debugger) stoppedWithoutSource(s *session, gen uint64, reason string) {
 		d.mu.Unlock()
 		return
 	}
+	defer d.pane.markDirty(secThreads, secScopes)
 	w := d.takeStopWaiterForLocked(s)
 	multi := len(d.sessions) > 1
 	redirected := s.redirected

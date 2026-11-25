@@ -48,9 +48,13 @@ type scopesResponse struct {
 	Scopes []scope `json:"scopes"`
 }
 
-// variablesArguments は、variables の引数（仕様の VariablesArguments）である。start と count を省き、すべての子を読む。
+// variablesArguments は、variables の引数（仕様の VariablesArguments）である。
+// Filter は indexed か named で、省くと両方を読む。Start と Count は、indexed の子の範囲である（Count が 0 ならすべて）。
 type variablesArguments struct {
-	VariablesReference int `json:"variablesReference"`
+	VariablesReference int    `json:"variablesReference"`
+	Filter             string `json:"filter,omitempty"`
+	Start              int    `json:"start,omitempty"`
+	Count              int    `json:"count,omitempty"`
 }
 
 // variable は、仕様の Variable のうち、使う項目である。VariablesReference が 0 より大きければ子を持つ（同仕様）。
@@ -60,6 +64,10 @@ type variable struct {
 	Type               string `json:"type,omitempty"`
 	EvaluateName       string `json:"evaluateName,omitempty"`
 	VariablesReference int    `json:"variablesReference"`
+	// IndexedVariables と NamedVariables は、添字の子と名前の子の数である（省かれうる。仕様の Variable）。
+	// 添字の子が多ければ、分けて読む（paneviews.go の pageSize）。
+	IndexedVariables int `json:"indexedVariables,omitempty"`
+	NamedVariables   int `json:"namedVariables,omitempty"`
 }
 
 // variablesResponse は、variables の response の body である。

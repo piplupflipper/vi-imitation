@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -11,9 +14,23 @@ import (
 )
 
 // この節は、スレッドとスタックの区画（FR-290、FR-303）と、スコープと変数の区画（FR-289、FR-302、FR-305）の中身である（pane.go）。
+//
+// どちらの区画も、動いている間は前の中身を残し、先頭に動いていることを示す 1 行を足す（request を送らない）。
+// 止まったら、同じ項目の ID で作り直すので、本体はカーソルの項目と木の開閉を保つ（PR #423 のレビューの必須 2。
+// nvim-dap-view の listeners.lua は、続けたときにスコープの区画を描き直さない）。
 
 // maxFrames は、スレッドの区画で 1 つのスレッドについて読むフレームの数の上限である（仮）。深い再帰で、区画の行が増えすぎないため。
 const maxFrames = 200
+
+// pageSize は、添字の子の多い変数の子を、1 回の variables で読む数である（VS Code の 100 ずつの範囲と同じ数。仮）。
+// 残りは、debugpy の more の項目と同じく、開いたときに続きを読む項目にする（PR #423 のレビューの推奨 5）。
+const pageSize = 100
+
+// runningLabel は、動いている間に区画の先頭に足す 1 行である。runningID はその項目の ID である。
+const (
+	runningLabel = "動いている（止まったら読み直す）"
+	runningID    = "\x1frunning"
+)
 
 // sessionSnap は、区画を作るときに debugger.mu の中で写した、1 つのセッションの状態である。
 type sessionSnap struct {
@@ -21,6 +38,8 @@ type sessionSnap struct {
 	halted, configured    bool
 	thread, frame         int
 	hasThread, hasFrame   bool
+	stoppedThread         int
+	hasStoppedThread      bool
 	gen                   uint64
 	supportsSetVariable   bool
 	supportsSetExpression bool
@@ -33,7 +52,8 @@ func (d *debugger) snapshot() (ss []sessionSnap, cur *session, started bool) {
 	for _, s := range d.sessions {
 		ss = append(ss, sessionSnap{
 			s: s, halted: s.halted, configured: s.configured, thread: s.thread, hasThread: s.hasThread,
-			frame: s.frame, hasFrame: s.hasFrame, gen: s.gen.Load(),
+			frame: s.frame, hasFrame: s.hasFrame, stoppedThread: s.stoppedThread, hasStoppedThread: s.hasStoppedThread,
+			gen:                   s.gen.Load(),
 			supportsSetVariable:   s.supports(func(c *capabilities) bool { return c.SupportsSetVariable }),
 			supportsSetExpression: s.supports(func(c *capabilities) bool { return c.SupportsSetExpression }),
 		})
@@ -55,13 +75,14 @@ func (d *debugger) sessionByID(id int) *session {
 
 // threadsView は、スレッドの区画の状態である。run だけが触る。
 type threadsView struct {
-	// expanded は、利用者が開閉した項目の ID から、開いたかへの対応である。無い項目は既定（セッションは開く、止まったスレッドは開く）。
+	// expanded は、利用者が開閉した項目の ID から、開いたかへの対応である。無い項目は既定（セッションは開く。止まったスレッド、
+	// 選んでいるスレッド、選んでいるフレームのスレッドは開く）。
 	expanded map[string]bool
 	// subtle は、presentationHint が subtle のフレームを出すかである（t）。filter と invert は、フレームの絞り込みの文字列と反転である（f と o）。
 	subtle bool
 	filter string
 	invert bool
-	// cache は、セッションごとの、世代 gen のときに読んだスレッドとフレームである。
+	// cache は、セッションごとの、最後に読んだスレッドとフレームである。動いている間は、前に読んだものを出す。
 	cache map[*session]*threadCache
 	// frames は、フレームの項目の ID から、そのフレームへの対応である（項目を選んだとき）。
 	frames map[string]frameRef
@@ -87,22 +108,35 @@ type frameRef struct {
 func sessionItemID(s *session) string         { return "s" + strconv.Itoa(s.id) }
 func threadItemID(s *session, tid int) string { return fmt.Sprintf("t%d/%d", s.id, tid) }
 
-// parseThreadItemID は、threadItemID の逆である。
+// frameItemID は、フレームの項目の ID である。フレームの ID でなくスタックの中の位置で作り、止まり直しても同じ深さのフレームは
+// 同じ ID にする（アダプターはフレームの ID を止まるたびに振り直すので、ID で作るとカーソルの項目を保てない）。
+func frameItemID(s *session, tid, index int) string {
+	return fmt.Sprintf("t%d/%d/#%d", s.id, tid, index)
+}
+
+// parseThreadItemID は、threadItemID の逆である。フレームの項目の ID なら、そのスレッドを返す。
 func parseThreadItemID(id string) (sid, tid int, ok bool) {
 	n, err := fmt.Sscanf(id, "t%d/%d", &sid, &tid)
 	return sid, tid, err == nil && n == 2
 }
 
-// threadsOf は、x のスレッドを返す。止まっていれば、止まったスレッドと、利用者が開いたスレッドのフレームも読む。
-// 同じ世代で読んだものがあれば読み直さない。読んでいる間に世代が進んだら errStale を返す（FR-287）。
+// threadsOf は、x のスレッドを返す。止まっていれば、止まったスレッド、選んでいるスレッド、利用者が開いたスレッドのフレームも読む。
+// 同じ世代で読んだものがあれば読み直さない。動いている間は、前に読んだものを読み直さずに返す（動いている間に request を送って、
+// 次に止まったときの stackTrace を待たせないため。PR #423 のレビューの必須 1）。前に読んだものが無ければ threads だけを読む。
+// 読む前と読んでいる間に世代が進んだら errStale を返す（FR-287）。
 func (p *pane) threadsOf(x sessionSnap) (*threadCache, error) {
 	if p.threads.cache == nil {
 		p.threads.cache = map[*session]*threadCache{}
 	}
 	tc := p.threads.cache[x.s]
+	if tc != nil && !x.halted {
+		return tc, nil
+	}
 	if tc == nil || tc.gen != x.gen {
+		if x.s.gen.Load() != x.gen {
+			return nil, errStale
+		}
 		tc = &threadCache{gen: x.gen, frames: map[int][]stackFrame{}, total: map[int]int{}, ferr: map[int]error{}}
-		p.threads.cache[x.s] = tc
 		c := x.s.getConn()
 		if c == nil {
 			tc.err = errDAPClosed
@@ -114,24 +148,27 @@ func (p *pane) threadsOf(x sessionSnap) (*threadCache, error) {
 			tc.threads = res.Threads
 		}
 		if x.s.gen.Load() != x.gen {
-			delete(p.threads.cache, x.s)
 			return nil, errStale
 		}
+		p.threads.cache[x.s] = tc
 	}
 	if !x.halted {
 		return tc, nil
 	}
 	for _, t := range tc.threads {
-		want := (x.hasThread && t.ID == x.thread) || p.threads.expanded[threadItemID(x.s, t.ID)]
+		want := (x.hasStoppedThread && t.ID == x.stoppedThread) || (x.hasThread && t.ID == x.thread) ||
+			p.threads.expanded[threadItemID(x.s, t.ID)]
 		if _, done := tc.frames[t.ID]; !want || done || tc.ferr[t.ID] != nil {
 			continue
+		}
+		if x.s.gen.Load() != x.gen {
+			return nil, errStale
 		}
 		ctx, cancel := p.ctx()
 		var st stackTraceResponse
 		err := x.s.callGen(ctx, x.gen, "stackTrace", stackTraceArguments{ThreadID: t.ID, Levels: maxFrames}, &st)
 		cancel()
 		if errors.Is(err, errStale) {
-			delete(p.threads.cache, x.s)
 			return nil, errStale
 		}
 		if err != nil {
@@ -145,12 +182,19 @@ func (p *pane) threadsOf(x sessionSnap) (*threadCache, error) {
 }
 
 // buildThreads は、スレッドの区画の木を作る（FR-290）。セッション（2 つ以上あるとき）、スレッド、フレームの木で、
-// 止まったスレッドを開いてフレームを出し、選んでいるフレームに色を付ける。presentationHint が subtle のフレームは、t で出すまで隠す。
-// 絞り込み（f）があれば、フレームの表示の文字列がそれを含むもの（o で反転したら含まないもの）だけを出す。
+// 止まったスレッド（stopped の threadId）に「止まっている」を、選んでいるスレッド（続行とステップ実行の送り先）が別なら「送り先」を添え、
+// それらと選んでいるフレームのスレッドを開いてフレームを出し、選んでいるフレームに色を付ける。
+// presentationHint が subtle のフレームは、t で出すまで隠す。絞り込み（f）があれば、フレームの表示の文字列がそれを含むもの
+// （o で反転したら含まないもの）だけを出す。終わったセッションの読んだものは捨てる（PR #423 のレビューの推奨 1）。
 //
 // req: FR-290
 func (p *pane) buildThreads() (ext.ViewComponent, error) {
 	ss, cur, started := p.d.snapshot()
+	for s := range p.threads.cache {
+		if !slices.ContainsFunc(ss, func(x sessionSnap) bool { return x.s == s }) {
+			delete(p.threads.cache, s)
+		}
+	}
 	if len(ss) == 0 {
 		if started {
 			return leafTree("デバッグは終わった"), nil
@@ -159,6 +203,10 @@ func (p *pane) buildThreads() (ext.ViewComponent, error) {
 	}
 	p.threads.frames = map[string]frameRef{}
 	var items []ext.ViewItem
+	multi := len(ss) > 1
+	if x, ok := current(ss, cur); ok && !multi && !x.halted && x.configured {
+		items = append(items, runningItem())
+	}
 	if p.threads.filter != "" {
 		label := "絞り込み: " + oneLine(p.threads.filter)
 		if p.threads.invert {
@@ -166,7 +214,6 @@ func (p *pane) buildThreads() (ext.ViewComponent, error) {
 		}
 		items = append(items, ext.ViewItem{ID: "filter", Label: label, Highlights: []ext.ViewSpan{{Start: 0, End: len(label), Style: "comment"}}})
 	}
-	multi := len(ss) > 1
 	for _, x := range ss {
 		var children []ext.ViewItem
 		if !x.configured {
@@ -197,6 +244,11 @@ func (p *pane) buildThreads() (ext.ViewComponent, error) {
 	return ext.ViewComponent{Kind: ext.ViewTree, Items: items}, nil
 }
 
+// runningItem は、動いている間に区画の先頭に足す項目である。
+func runningItem() ext.ViewItem {
+	return ext.ViewItem{ID: runningID, Label: runningLabel, Highlights: []ext.ViewSpan{{Start: 0, End: len(runningLabel), Style: "comment"}}}
+}
+
 // open は、項目 id を開いて出すかを返す。利用者が開閉していなければ def である。
 func (t *threadsView) open(id string, def bool) *bool {
 	v, ok := t.expanded[id]
@@ -209,9 +261,10 @@ func (t *threadsView) open(id string, def bool) *bool {
 // threadItems は、セッション x のスレッドの項目を作る。
 func (p *pane) threadItems(x sessionSnap, cur *session, tc *threadCache) []ext.ViewItem {
 	if tc.err != nil {
+		prefix := "threads に失敗した: "
 		return []ext.ViewItem{{
-			ID: sessionItemID(x.s) + "/err", Label: "threads に失敗した: " + oneLine(tc.err.Error()),
-			Highlights: []ext.ViewSpan{{Start: 0, End: len("threads に失敗した: "), Style: "diagnostic.error"}},
+			ID: sessionItemID(x.s) + "/err", Label: prefix + oneLine(tc.err.Error()),
+			Highlights: []ext.ViewSpan{{Start: 0, End: len(prefix), Style: "diagnostic.error"}},
 		}}
 	}
 	if len(tc.threads) == 0 {
@@ -220,15 +273,25 @@ func (p *pane) threadItems(x sessionSnap, cur *session, tc *threadCache) []ext.V
 	items := make([]ext.ViewItem, 0, len(tc.threads))
 	for _, t := range tc.threads {
 		id := threadItemID(x.s, t.ID)
-		stopped := x.halted && x.hasThread && t.ID == x.thread
+		stopped := x.halted && x.hasStoppedThread && t.ID == x.stoppedThread
+		target := x.halted && x.hasThread && t.ID == x.thread && !stopped
 		label := oneLine(t.Name)
 		var hs []ext.ViewSpan
-		if stopped {
+		switch {
+		case stopped:
 			label += "（止まっている）"
 			hs = []ext.ViewSpan{{Start: 0, End: len(label), Style: "diagnostic.warning"}}
+		case target:
+			label += "（送り先）"
+			hs = []ext.ViewSpan{{Start: 0, End: len(label), Style: "keyword"}}
 		}
-		item := ext.ViewItem{ID: id, Label: label, Highlights: hs, HasChildren: x.halted, Expanded: p.threads.open(id, stopped)}
-		if x.halted && *item.Expanded {
+		frames := tc.frames[t.ID]
+		holdsFrame := x.hasFrame && slices.ContainsFunc(frames, func(f stackFrame) bool { return f.ID == x.frame })
+		item := ext.ViewItem{
+			ID: id, Label: label, Highlights: hs, HasChildren: x.halted || len(frames) > 0,
+			Expanded: p.threads.open(id, stopped || target || holdsFrame),
+		}
+		if item.HasChildren && *item.Expanded {
 			item.Children = p.frameItems(x, cur, t.ID, tc)
 		}
 		items = append(items, item)
@@ -236,7 +299,8 @@ func (p *pane) threadItems(x sessionSnap, cur *session, tc *threadCache) []ext.V
 	return items
 }
 
-// frameItems は、セッション x のスレッド tid のフレームの項目を作る。
+// frameItems は、セッション x のスレッド tid のフレームの項目を作る。項目は「関数の名前  ファイルの名前:行  ディレクトリ」で、
+// 狭いペインでも行番号が見えるよう、ディレクトリを最後に置く（PR #423 のレビューの推奨 4）。
 func (p *pane) frameItems(x sessionSnap, cur *session, tid int, tc *threadCache) []ext.ViewItem {
 	if err := tc.ferr[tid]; err != nil {
 		label := "stackTrace に失敗した: " + oneLine(err.Error())
@@ -244,31 +308,36 @@ func (p *pane) frameItems(x sessionSnap, cur *session, tid int, tc *threadCache)
 	}
 	frames, ok := tc.frames[tid]
 	if !ok {
-		return []ext.ViewItem{{ID: threadItemID(x.s, tid) + "/loading", Label: "読んでいます"}}
+		return []ext.ViewItem{{ID: threadItemID(x.s, tid) + "/loading", Label: "止まったら読む"}}
 	}
 	var items []ext.ViewItem
-	for _, f := range frames {
+	for i, f := range frames {
 		if f.PresentationHint == "subtle" && !p.threads.subtle {
 			continue
 		}
 		label := oneLine(f.Name)
-		nameEnd := len(label)
+		hs := []ext.ViewSpan{{Start: 0, End: len(label), Style: "function"}}
 		if f.Source != nil && f.Source.Path != "" {
-			label += "  " + p.relPath(f.Source.Path) + ":" + strconv.Itoa(f.Line)
+			loc, dir := p.location(f.Source.Path, f.Line)
+			label += "  " + loc
+			if dir != "" {
+				start := len(label) + 2
+				label += "  " + dir
+				hs = append(hs, ext.ViewSpan{Start: start, End: len(label), Style: "comment"})
+			}
 		}
 		if p.threads.filter != "" && strings.Contains(label, p.threads.filter) == p.threads.invert {
 			continue
 		}
-		id := fmt.Sprintf("%s/%d", threadItemID(x.s, tid), f.ID)
+		id := frameItemID(x.s, tid, i)
 		p.threads.frames[id] = frameRef{s: x.s, tid: tid, frame: f}
-		hs := []ext.ViewSpan{{Start: nameEnd, End: len(label), Style: "comment"}}
 		if x.s == cur && x.hasFrame && x.frame == f.ID {
 			hs = []ext.ViewSpan{{Start: 0, End: len(label), Style: "search"}}
 		}
 		item := ext.ViewItem{ID: id, Label: label, Highlights: hs}
-		if f.Source != nil && f.Source.Path != "" && f.Line > 0 {
+		if path, ok := frameFile(f); ok {
 			line := fromDAPLine(f.Line, linesStartAt1)
-			item.Preview = &ext.ViewPreview{Path: f.Source.Path, Line: &line}
+			item.Preview = &ext.ViewPreview{Path: path, Line: &line}
 		}
 		items = append(items, item)
 	}
@@ -281,35 +350,87 @@ func (p *pane) frameItems(x sessionSnap, cur *session, tid int, tc *threadCache)
 	return items
 }
 
-// selectFrameItem は、スレッドの区画でフレームの項目を選んだときに、そのフレームを選び（今のセッションも替える。FR-303）、
-// そのソースの位置をペインを開いた元の client のタブに開く（FR-290）。スコープの区画は、選び直しの知らせで作り直す。
+// frameFile は、フレーム f のソースが、開けるファイル（絶対パスで、ある）かを返す。vscode-js-debug の <node_internals>/… のような
+// 絶対パスでないパスと、無いファイルは、ソースの無いフレームとして扱う（PR #423 のレビューの推奨 3。nvim-dap-view の threads/view.lua も、
+// vim.uv.fs_stat で無いファイルのフレームを出さない）。
+func frameFile(f stackFrame) (string, bool) {
+	if f.Source == nil || f.Source.Path == "" || f.Line <= 0 || !filepath.IsAbs(f.Source.Path) {
+		return "", false
+	}
+	if fi, err := os.Stat(f.Source.Path); err != nil || fi.IsDir() {
+		return "", false
+	}
+	return f.Source.Path, true
+}
+
+// location は、path の line 行（DAP の行）を「ファイルの名前:行」と、ディレクトリ（作業ディレクトリからの相対、ホームの下は ~/。
+// 作業ディレクトリそのものなら空）に分ける。絶対パスでないパス（<node_internals>/…）は、全体を 1 つ目に入れる。
+func (p *pane) location(path string, line int) (loc, dir string) {
+	if !filepath.IsAbs(path) {
+		return oneLine(path) + ":" + strconv.Itoa(line), ""
+	}
+	return oneLine(filepath.Base(path)) + ":" + strconv.Itoa(line), p.dirLabel(filepath.Dir(path))
+}
+
+// dirLabel は、ディレクトリ dir を、作業ディレクトリからの相対（そのものなら空）、ホームの下なら ~/ で始まるパスにする。
+func (p *pane) dirLabel(dir string) string {
+	if p.workDir != "" {
+		if dir == p.workDir {
+			return ""
+		}
+		if rest, ok := strings.CutPrefix(dir, p.workDir+string(os.PathSeparator)); ok {
+			return oneLine(rest)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rest, ok := strings.CutPrefix(dir, home+string(os.PathSeparator)); ok {
+			return "~/" + oneLine(rest)
+		}
+	}
+	return oneLine(dir)
+}
+
+// selectFrameItem は、スレッドの区画でフレームの項目を <CR> で選んだときに、そのフレームを選び（スコープの区画がそのフレームを出す）、
+// そのソースの位置をペインを開いた元の client のタブに開く（FR-290）。選んでいるスレッド（続行とステップ実行の送り先）は替えない
+// （selectFrame。PR #423 のレビューの裁定要 1）。別のセッションのフレームなら、今のセッションをそのセッションにし、そのことを知らせる。
+// ソースのファイルが無いフレームは、選ぶだけにし、移れないことを知らせる。
 //
-// req: FR-290, FR-303
+// req: FR-290
 func (p *pane) selectFrameItem(item string) {
 	ref, ok := p.threads.frames[item]
 	if !ok {
 		return
 	}
-	if !p.d.selectFrame(ref.s, ref.tid, ref.frame.ID) {
+	prev := p.d.currentSelection().session
+	if !p.d.selectFrame(ref.s, ref.frame.ID) {
 		return
 	}
-	f := ref.frame
-	if f.Source == nil || f.Source.Path == "" || f.Line <= 0 {
-		p.d.showInfo("このフレームにはソースの位置が無い")
+	if prev != ref.s {
+		p.d.showInfo("今のセッションを " + ref.s.label() + " にした")
+	}
+	path, ok := frameFile(ref.frame)
+	if !ok {
+		where := "ソースの位置が無い"
+		if ref.frame.Source != nil && ref.frame.Source.Path != "" {
+			where = "ソースのファイルが無い（" + oneLine(ref.frame.Source.Path) + "）"
+		}
+		p.d.showInfo("このフレームには" + where + "ので、移らない")
 		return
 	}
-	p.openAt(f.Source.Path, fromDAPLine(f.Line, linesStartAt1), f.Column)
+	p.openAt(path, fromDAPLine(ref.frame.Line, linesStartAt1), ref.frame.Column)
 }
 
-// expandThreadItem は、スレッドの区画のセッションかスレッドの項目を開閉した（view/expand）ことを写す。
-// 開いたら、そのセッションかスレッドを選ぶ（今のセッションにし、続行、ステップ実行、一時停止の送り先にする。FR-303）。
-// スレッドを開いたときは、そのスレッドの先頭のフレームを選ぶ（スコープの区画がそのフレームを出すため）。
+// selectItem は、スレッドの区画の s で、カーソルの項目のセッションかスレッドを選ぶ（FR-303）。そのセッションを今のセッションにし、
+// スレッド（フレームの項目ならそのスレッド）を続行、ステップ実行、一時停止の送り先にする。スレッドを選んだら、その先頭のフレームを
+// （フレームの項目ならそのフレームを）選ぶ。開閉（<CR>）では選ばない（PR #423 のレビューの裁定要 1）。nvim-dap-view のスレッドの区画には
+// 送り先を選ぶキーが無く、セッションの区画の switch_session は <CR> なので、ここでは s（select）にした。
 //
 // req: FR-303
-func (p *pane) expandThreadItem(item string, open bool) {
-	p.threads.expanded[item] = open
-	defer p.markDirty(secThreads)
-	if !open {
+func (p *pane) selectItem(item string) {
+	if ref, ok := p.threads.frames[item]; ok {
+		if p.d.selectThreadFrame(ref.s, ref.tid, ref.frame.ID) {
+			p.d.showInfo(fmt.Sprintf("送り先を %s のスレッド %s にした", ref.s.label(), p.threadName(ref.s, ref.tid)))
+		}
 		return
 	}
 	if sid, tid, ok := parseThreadItemID(item); ok {
@@ -321,19 +442,35 @@ func (p *pane) expandThreadItem(item string, open bool) {
 		defer cancel()
 		var st stackTraceResponse
 		c := s.getConn()
+		done := false
 		if c != nil && c.call(ctx, "stackTrace", stackTraceArguments{ThreadID: tid, Levels: 1}, &st) == nil && len(st.StackFrames) > 0 {
-			p.d.selectFrame(s, tid, st.StackFrames[0].ID)
-			return
+			done = p.d.selectThreadFrame(s, tid, st.StackFrames[0].ID)
+		} else {
+			done = p.d.selectThread(s, tid)
 		}
-		p.d.selectThread(s, tid)
+		if done {
+			p.d.showInfo(fmt.Sprintf("送り先を %s のスレッド %s にした", s.label(), p.threadName(s, tid)))
+		}
 		return
 	}
 	var sid int
 	if _, err := fmt.Sscanf(item, "s%d", &sid); err == nil {
-		if s := p.d.sessionByID(sid); s != nil {
-			p.d.selectSession(s)
+		if s := p.d.sessionByID(sid); s != nil && p.d.selectSession(s) {
+			p.d.showInfo("今のセッションを " + s.label() + " にした")
 		}
 	}
+}
+
+// threadName は、読んだスレッドの名前を返す。無ければ ID である。
+func (p *pane) threadName(s *session, tid int) string {
+	if tc := p.threads.cache[s]; tc != nil {
+		for _, t := range tc.threads {
+			if t.ID == tid {
+				return oneLine(t.Name)
+			}
+		}
+	}
+	return strconv.Itoa(tid)
 }
 
 // askThreadFilter は、フレームの絞り込みの文字列を input/ask で聞く（f。今の絞り込みを初めの中身にする。FR-290）。
@@ -365,18 +502,28 @@ type scopesView struct {
 	cacheFor *session
 	cacheGen uint64
 	scopes   []scope
-	vars     map[int][]variable
-	verr     map[int]error
+	vars     map[varsKey][]variable
+	verr     map[varsKey]error
 	// info は、最後に作った木の項目の ID から、その項目の変数への対応である（s と [[）。last は、最後に作った木である。
 	info map[string]varInfo
+	last ext.ViewComponent
+	// lastReal と lastFor は、最後に止まっている間に作った木と、そのセッションである。動いている間は、これに印を足して出す。
+	lastReal ext.ViewComponent
+	lastFor  *session
 	// setValues は、セッション setFor の世代 setGen の間に書き換えた変数の項目の ID から、setVariable か setExpression の応答の値への対応である
 	// （setValue）。世代が替われば使わない。
 	setFor    *session
 	setGen    uint64
 	setValues map[string]string
-	last      ext.ViewComponent
-	// frame は、last を作ったときのセッションとフレームと世代である（s で書き換えるとき、止まった状態が変わっていないかを確かめる）。
+	// snap は、last を作ったときのセッションの写しである（s で書き換えるとき、止まった状態が変わっていないかを確かめる）。
 	snap sessionSnap
+}
+
+// varsKey は、読んだ子の変数の鍵（参照と、添字の範囲）である。
+type varsKey struct {
+	ref          int
+	filter       string
+	start, count int
 }
 
 // varInfo は、スコープの区画の 1 つの項目である。
@@ -388,27 +535,30 @@ type varInfo struct {
 	v     variable
 }
 
-// varsOf は、参照 ref の子の変数を返す（同じ世代で読んだものは読み直さない）。読んでいる間に世代が進んだら errStale を返す。
-func (p *pane) varsOf(x sessionSnap, ref int) ([]variable, error) {
+// varsOf は、鍵 k の子の変数を返す（同じ世代で読んだものは読み直さない）。読む前と読んでいる間に世代が進んだら errStale を返す。
+func (p *pane) varsOf(x sessionSnap, k varsKey) ([]variable, error) {
 	sv := &p.scopes
-	if vs, ok := sv.vars[ref]; ok {
+	if vs, ok := sv.vars[k]; ok {
 		return vs, nil
 	}
-	if err, ok := sv.verr[ref]; ok {
+	if err, ok := sv.verr[k]; ok {
 		return nil, err
+	}
+	if x.s.gen.Load() != x.gen {
+		return nil, errStale
 	}
 	ctx, cancel := p.ctx()
 	defer cancel()
 	var res variablesResponse
-	err := x.s.callGen(ctx, x.gen, "variables", variablesArguments{VariablesReference: ref}, &res)
+	err := x.s.callGen(ctx, x.gen, "variables", variablesArguments{VariablesReference: k.ref, Filter: k.filter, Start: k.start, Count: k.count}, &res)
 	if errors.Is(err, errStale) {
 		return nil, err
 	}
 	if err != nil {
-		sv.verr[ref] = err
+		sv.verr[k] = err
 		return nil, err
 	}
-	sv.vars[ref] = res.Variables
+	sv.vars[k] = res.Variables
 	return res.Variables, nil
 }
 
@@ -424,15 +574,16 @@ func current(ss []sessionSnap, cur *session) (sessionSnap, bool) {
 
 // buildScopes は、スコープの区画の木を作る（FR-289）。今のセッションの選んでいるフレームのスコープ（scopes）を最上位にし、
 // expensive でないスコープを開いて変数（variables）を出す。子を持つ変数は、開いたとき（view/expand）に読む。
-// 変数の参照と読んだ変数は、セッションと世代ごとに持ち、替わったら捨てる。読んでいる間に止まった状態が変わったら（続けた、
-// 選び直した）、応答を使わずに errStale を返す（FR-302、FR-305）。続けた後は「実行中」にし、変数を読まない。
+// 添字の子が pageSize より多い変数は、pageSize ずつ読み、残りを開いたときに読む more の項目にする。
+// 変数の参照と読んだ変数は、セッションと世代ごとに持ち、替わったら捨てる。読む前と読んでいる間に止まった状態が変わったら（続けた、
+// 選び直した）、応答を使わずに errStale を返す（FR-302、FR-305）。動いている間は、変数を読まず、最後に止まっている間に作った木に
+// 動いていることを示す 1 行を足して出す（カーソルの項目と開閉を保つため）。
 //
 // req: FR-289, FR-302, FR-305
 func (p *pane) buildScopes() (ext.ViewComponent, error) {
 	ss, cur, started := p.d.snapshot()
 	x, ok := current(ss, cur)
 	sv := &p.scopes
-	sv.info = map[string]varInfo{}
 	sv.snap = x
 	var c ext.ViewComponent
 	switch {
@@ -440,18 +591,29 @@ func (p *pane) buildScopes() (ext.ViewComponent, error) {
 		c = leafTree("デバッグは終わった")
 	case !ok:
 		c = leafTree("デバッグしていない")
+	case !x.halted && sv.lastFor == x.s:
+		c = sv.lastReal
+		c.Items = append([]ext.ViewItem{runningItem()}, c.Items...)
 	case !x.halted:
 		c = leafTree("実行中")
 	case !x.hasFrame:
 		c = leafTree("フレームを選んでいない")
 	}
+	if !ok {
+		sv.cacheFor, sv.vars, sv.lastFor, sv.setFor = nil, nil, nil, nil
+	}
 	if c.Kind != "" {
 		sv.last = c
 		return c, nil
 	}
+	sv.info = map[string]varInfo{}
 	if sv.cacheFor != x.s || sv.cacheGen != x.gen || sv.vars == nil {
 		sv.cacheFor, sv.cacheGen, sv.scopes = x.s, x.gen, nil
-		sv.vars, sv.verr = map[int][]variable{}, map[int]error{}
+		sv.vars, sv.verr = map[varsKey][]variable{}, map[varsKey]error{}
+		if x.s.gen.Load() != x.gen {
+			sv.vars = nil
+			return ext.ViewComponent{}, errStale
+		}
 		ctx, cancel := p.ctx()
 		var res scopesResponse
 		err := x.s.callGen(ctx, x.gen, "scopes", scopesArguments{FrameID: x.frame}, &res)
@@ -484,7 +646,7 @@ func (p *pane) buildScopes() (ext.ViewComponent, error) {
 			Highlights: []ext.ViewSpan{{Start: 0, End: len(oneLine(sc.Name)), Style: "keyword"}},
 		}
 		if open && sc.VariablesReference > 0 {
-			children, err := p.variableItems(x, id, sc.VariablesReference)
+			children, err := p.childItems(x, id, variable{VariablesReference: sc.VariablesReference})
 			if err != nil {
 				sv.vars = nil
 				return ext.ViewComponent{}, err
@@ -494,7 +656,7 @@ func (p *pane) buildScopes() (ext.ViewComponent, error) {
 		items = append(items, item)
 	}
 	c = ext.ViewComponent{Kind: ext.ViewTree, Items: items}
-	sv.last = c
+	sv.last, sv.lastReal, sv.lastFor = c, c, x.s
 	return c, nil
 }
 
@@ -515,36 +677,82 @@ func uniqueID(seen map[string]int, id string) string {
 	return id
 }
 
-// variableItems は、参照 ref の子の変数の項目を作る。開いた子を持つ変数は、その子も読む。
-// 項目の ID は、親の ID に区切りの文字（U+001F）と変数の名前を足したもので、止まり直しても同じ変数は同じ ID になる（開閉を保つ）。
-func (p *pane) variableItems(x sessionSnap, parent string, ref int) ([]ext.ViewItem, error) {
+// childItems は、変数 v（スコープなら参照だけを入れたもの）の子の項目を作る。添字の子が pageSize より多ければ、名前の子と、
+// 最初の pageSize の添字の子と、残りを読む more の項目にする（indexedPage）。
+func (p *pane) childItems(x sessionSnap, parent string, v variable) ([]ext.ViewItem, error) {
+	seen := map[string]int{}
+	if v.IndexedVariables <= pageSize {
+		return p.variableItems(x, parent, v.VariablesReference, varsKey{ref: v.VariablesReference}, seen)
+	}
+	var items []ext.ViewItem
+	if v.NamedVariables > 0 {
+		named, err := p.variableItems(x, parent, v.VariablesReference, varsKey{ref: v.VariablesReference, filter: "named"}, seen)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, named...)
+	}
+	page, err := p.indexedPage(x, parent, v.VariablesReference, 0, v.IndexedVariables, seen)
+	if err != nil {
+		return nil, err
+	}
+	return append(items, page...), nil
+}
+
+// indexedPage は、参照 ref の添字の子のうち start から pageSize 個の項目と、残りがあれば、開いたときに続きを読む more の項目を作る
+// （debugpy が 100 ずつ返して more の項目を付けるのと同じ見た目。PR #423 のレビューの推奨 5）。
+func (p *pane) indexedPage(x sessionSnap, parent string, ref, start, total int, seen map[string]int) ([]ext.ViewItem, error) {
+	n := min(pageSize, total-start)
+	items, err := p.variableItems(x, parent, ref, varsKey{ref: ref, filter: "indexed", start: start, count: n}, seen)
+	if err != nil {
+		return nil, err
+	}
+	if start+n >= total {
+		return items, nil
+	}
+	id := parent + "\x1f!more" + strconv.Itoa(start+n)
+	label := fmt.Sprintf("more: 残り %d 個", total-start-n)
+	open := p.scopes.open(id, false)
+	more := ext.ViewItem{ID: id, Label: label, HasChildren: true, Expanded: &open, Highlights: []ext.ViewSpan{{Start: 0, End: len(label), Style: "comment"}}}
+	if open {
+		children, err := p.indexedPage(x, id, ref, start+n, total, map[string]int{})
+		if err != nil {
+			return nil, err
+		}
+		more.Children = children
+	}
+	return append(items, more), nil
+}
+
+// variableItems は、鍵 k の子の変数の項目を作る。開いた子を持つ変数は、その子も読む。
+// 項目の ID は、親の ID に区切りの文字（U+001F）と変数の名前を足したもので、止まり直しても同じ変数は同じ ID になる（開閉とカーソルを保つ）。
+func (p *pane) variableItems(x sessionSnap, parent string, ref int, k varsKey, seen map[string]int) ([]ext.ViewItem, error) {
 	sv := &p.scopes
-	vs, err := p.varsOf(x, ref)
+	vs, err := p.varsOf(x, k)
 	if errors.Is(err, errStale) {
 		return nil, err
 	}
 	if err != nil {
 		label := "variables に失敗した: " + oneLine(err.Error())
-		return []ext.ViewItem{{ID: parent + "\x1f!err", Label: label, Highlights: []ext.ViewSpan{{Start: 0, End: len(label), Style: "diagnostic.error"}}}}, nil
+		return []ext.ViewItem{{ID: parent + "\x1f!err" + k.filter + strconv.Itoa(k.start), Label: label, Highlights: []ext.ViewSpan{{Start: 0, End: len(label), Style: "diagnostic.error"}}}}, nil
 	}
-	if len(vs) == 0 {
+	if len(vs) == 0 && k.filter == "" {
 		return []ext.ViewItem{{ID: parent + "\x1f!none", Label: "（変数が無い）"}}, nil
 	}
 	items := make([]ext.ViewItem, 0, len(vs))
-	seen := map[string]int{}
 	for _, v := range vs {
 		id := uniqueID(seen, parent+"\x1f"+oneLine(v.Name))
-		sv.info[id] = varInfo{parent: parent, ref: ref, v: v}
 		if val, ok := sv.setValues[id]; ok && sv.setFor == x.s && sv.setGen == x.gen {
 			v.Value = val
 		}
+		sv.info[id] = varInfo{parent: parent, ref: ref, v: v}
 		label, hs := variableLabel(v)
 		item := ext.ViewItem{ID: id, Label: label, Highlights: hs, HasChildren: v.VariablesReference > 0}
 		if v.VariablesReference > 0 {
 			open := sv.open(id, false)
 			item.Expanded = &open
 			if open {
-				children, err := p.variableItems(x, id, v.VariablesReference)
+				children, err := p.childItems(x, id, v)
 				if err != nil {
 					return nil, err
 				}
@@ -574,24 +782,38 @@ func variableLabel(v variable) (string, []ext.ViewSpan) {
 
 // scopesParent は、スコープの区画のカーソルを、項目 item の親の項目へ移す（[[。nvim-dap-view の jump_to_parent）。
 // 本体の木の部品にこの操作が無いので、最後に作った木を cursor 付きの view/update で送り直す（基本設計 6.4）。
+// more の項目の下の項目は、more の項目の親（その変数）へ移す。
 func (p *pane) scopesParent(item string) {
 	info, ok := p.scopes.info[item]
 	view := ext.ViewID(p.view.Load())
 	if !ok || info.parent == "" || view == 0 {
 		return
 	}
+	parent := info.parent
+	for {
+		i := strings.LastIndex(parent, "\x1f!more")
+		if i < 0 || strings.Contains(parent[i+1:], "\x1f") {
+			break
+		}
+		parent = parent[:i]
+	}
 	c := p.scopes.last
-	c.Cursor = info.parent
+	c.Cursor = parent
 	if err := p.d.srv.UpdateView(ext.ViewUpdateParams{View: view, Child: secScopes, Component: c}); err != nil {
 		p.d.logf("view/update scopes: %v", err)
 	}
+}
+
+// flatten は、値の改行を空白にする（input/ask の初めの中身は改行を含めない）。oneLine と違い、長くても切らない（PR #423 のレビューの推奨 6）。
+func flatten(s string) string {
+	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
 }
 
 // scopesSetValue は、スコープの区画のカーソルの変数の値を書き換える（s。FR-289）。値は input/ask で、今の値を初めの中身にして聞く。
 // アダプターが setExpression に対応し、変数に evaluateName があれば setExpression を、なければ setVariable を使う
 // （DAP の仕様の SetExpression Request の「a client uses setExpression if the variable has an evaluateName property」）。
 // どちらにも対応していなければ、request を送らずに対応していないことを知らせる（FR-304）。
-// 問いの答えを待つ間に止まった状態が変わったら（続けた、選び直した）、書き換えない。
+// 動いている間（前の木を出している間）は書き換えない。問いの答えを待つ間に止まった状態が変わったら（続けた、選び直した）、書き換えない。
 //
 // req: FR-289, FR-304
 func (p *pane) scopesSetValue(item string) {
@@ -600,6 +822,10 @@ func (p *pane) scopesSetValue(item string) {
 		return
 	}
 	x := p.scopes.snap
+	if !x.halted {
+		p.d.showError("動いている間は、変数の値を書き換えられない")
+		return
+	}
 	useExpr := x.supportsSetExpression && info.v.EvaluateName != ""
 	if !useExpr && !x.supportsSetVariable {
 		p.d.showError(fmt.Sprintf("アダプター %s は変数の値の書き換えに対応していない", x.s.spec.adapter.name))
@@ -608,7 +834,7 @@ func (p *pane) scopesSetValue(item string) {
 	go func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		res, err := p.d.srv.AskInput(ctx, ext.InputAskParams{Title: oneLine(info.v.Name) + " = ", Default: oneLine(info.v.Value)})
+		res, err := p.d.srv.AskInput(ctx, ext.InputAskParams{Title: oneLine(info.v.Name) + " = ", Default: flatten(info.v.Value)})
 		if err != nil || res.Cancelled {
 			return
 		}

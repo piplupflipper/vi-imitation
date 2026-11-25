@@ -15,6 +15,7 @@
       { "id": "dap.threads.toggleSubtle", "keys": "t", "children": ["threads"], "description": "subtle のフレームを出すかを切り替える" },
       { "id": "dap.threads.filter", "keys": "f", "children": ["threads"], "description": "フレームを絞り込む文字列を聞く" },
       { "id": "dap.threads.invertFilter", "keys": "o", "children": ["threads"], "description": "フレームの絞り込みを反転する" },
+      { "id": "dap.threads.select", "keys": "s", "children": ["threads"], "description": "セッションかスレッドを、続行とステップ実行の送り先に選ぶ" },
       { "id": "dap.breakpoints.delete", "keys": "d", "children": ["breakpoints"], "description": "ブレークポイントを消す" },
       { "id": "dap.console.nextSession", "keys": "]s", "children": ["console"], "description": "出力を出すセッションを次へ" },
       { "id": "dap.console.prevSession", "keys": "[s", "children": ["console"], "description": "出力を出すセッションを前へ" }

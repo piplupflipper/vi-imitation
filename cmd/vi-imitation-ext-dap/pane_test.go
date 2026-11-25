@@ -3,6 +3,7 @@
 package main
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -205,7 +206,8 @@ func TestParseUISettings(t *testing.T) {
 }
 
 // TestPaneScopes は、スコープの区画が、止まったフレームのスコープを最上位にし、expensive でないスコープを開いて変数を
-// 「名前: 型 = 値」で出し、子を持つ変数は開いたときに読み（3000 の要素の列）、続けている間は「実行中」にし、止まり直すと新しい値を出すことを確かめる。
+// 「名前: 型 = 値」で出し、子を持つ変数は開いたときに読み（3000 の要素の列は 100 ずつ読み、残りを more の項目にする）、
+// 続けている間は前の木を残して先頭に動いていることを示し（同じ項目の ID を保つ）、止まり直すと新しい値を出すことを確かめる。
 //
 // req: FR-289, FR-302, FR-305
 func TestPaneScopes(t *testing.T) {
@@ -227,19 +229,33 @@ func TestPaneScopes(t *testing.T) {
 	h.notifyView(ext.MethodViewExpand, ext.ViewExpandParams{View: p.id, Item: "Locals\x1fbig", Expanded: true, Child: secScopes})
 	c = h.waitUpdate(secScopes, func(c ext.ViewComponent) bool {
 		b := find(c.Items, "Locals\x1fbig")
-		return b != nil && len(b.Children) == 3000
+		return b != nil && len(b.Children) == 101
 	}, nil)
-	if b := find(c.Items, "Locals\x1fbig"); b.Children[2999].Label != "[2999]: int = 2999" {
-		t.Errorf("big[2999] = %q", b.Children[2999].Label)
+	h.waitOutput("variables 3 indexed 0 100")
+	more := find(c.Items, "Locals\x1fbig\x1f!more100")
+	if b := find(c.Items, "Locals\x1fbig"); b.Children[99].Label != "[99]: int = 99" || more == nil || more.Label != "more: 残り 2900 個" || !more.HasChildren {
+		t.Errorf("big = %q", labels(b.Children[98:]))
 	}
-	// [[ で、カーソルを親の項目へ移す（最後に作った木を cursor 付きで送り直す）。
-	h.key(p.id, secScopes, keyScopesParent, "Locals\x1fbig\x1f[5]")
+	h.notifyView(ext.MethodViewExpand, ext.ViewExpandParams{View: p.id, Item: "Locals\x1fbig\x1f!more100", Expanded: true, Child: secScopes})
+	c = h.waitUpdate(secScopes, func(c ext.ViewComponent) bool {
+		m := find(c.Items, "Locals\x1fbig\x1f!more100")
+		return m != nil && len(m.Children) == 101
+	}, nil)
+	if m := find(c.Items, "Locals\x1fbig\x1f!more100"); m.Children[0].Label != "[100]: int = 100" {
+		t.Errorf("more = %q", m.Children[0].Label)
+	}
+	// [[ で、カーソルを親の項目へ移す（最後に作った木を cursor 付きで送り直す）。more の下の項目は、more を飛ばしてその変数へ移す。
+	h.key(p.id, secScopes, keyScopesParent, "Locals\x1fbig\x1f!more100\x1f[150]")
 	h.waitUpdate(secScopes, func(c ext.ViewComponent) bool { return c.Cursor == "Locals\x1fbig" }, nil)
-	// ステップ実行で動いている間は実行中にし、止まり直すと新しい値を出す。開いた変数は開いたまま読み直す。
+	// ステップ実行で動いている間は前の木を残して先頭に印を足し（同じ項目の ID なので、本体はカーソルを保つ）、止まり直すと新しい値を出す。
+	// 開いた変数は開いたまま読み直す。
 	h.mustExec(cmdNext, 0)
-	h.waitLabel(secScopes, "実行中")
+	c = h.waitLabel(secScopes, runningLabel)
+	if c.Items[0].ID != runningID || find(c.Items, "Locals\x1fx") == nil || find(c.Items, "Locals\x1fbig\x1f!more100") == nil {
+		t.Errorf("scopes while running = %q", labels(c.Items))
+	}
 	c = h.waitLabel(secScopes, "x: int = 2")
-	if b := find(c.Items, "Locals\x1fbig"); b == nil || len(b.Children) != 3000 {
+	if b := find(c.Items, "Locals\x1fbig"); b == nil || len(b.Children) != 101 || find(c.Items, runningID) != nil {
 		t.Error("the expanded variable was not read again after the stop")
 	}
 	h.stopAndWait()
@@ -320,16 +336,20 @@ func TestPaneSetVariable(t *testing.T) {
 //
 // req: FR-290
 func TestPaneThreads(t *testing.T) {
-	h := paneHost(t, nil, nil, map[string]any{"defaultSection": "threads"})
+	callerPath := filepath.Join(t.TempDir(), "caller.go")
+	writeFile(t, callerPath, "a\nb\nc\n")
+	h := paneHost(t, nil, map[string]any{"callerPath": callerPath}, map[string]any{"defaultSection": "threads"})
 	h.toggleUI()
 	p := h.waitPane()
 	h.mustExec(cmdStart, 0)
 	c := h.waitLabel(secThreads, "main.caller")
 	l := labels(c.Items)
-	if !strings.Contains(l, "main（止まっている）\n  main.main  /src/app/main.go:3\n  main.caller  /src/app/main.go:3\n") || strings.Contains(l, "runtime.main") {
+	// 関数の名前、ファイルの名前と行、ディレクトリの順に出す（狭いペインでも行番号が見える）。
+	if !strings.Contains(l, "main（止まっている）\n  main.main  main.go:3  /src/app\n  main.caller  caller.go:3  ") || strings.Contains(l, "runtime.main") {
 		t.Errorf("threads = %q", l)
 	}
-	if f := find(c.Items, "t1/1/1000"); f == nil || f.Highlights[0].Style != "search" || f.Preview == nil || *f.Preview.Line != 2 {
+	// srcPath は手元に無いファイルなので、プレビューを付けない。
+	if f := find(c.Items, "t1/1/#0"); f == nil || f.Highlights[0].Style != "search" || f.Preview != nil {
 		t.Errorf("the selected frame = %+v", f)
 	}
 	h.key(p.id, secThreads, keyThreadsSubtle, "")
@@ -348,22 +368,41 @@ func TestPaneThreads(t *testing.T) {
 	if l := labels(c.Items); !strings.Contains(l, "main.main") || strings.Contains(l, "main.caller") {
 		t.Errorf("inverted = %q", l)
 	}
-	h.drainOpens()
-	h.notifyView(ext.MethodViewSelect, ext.ViewSelectParams{View: p.id, Item: "t1/1/1001", Child: secThreads})
-	if o := h.waitOpen(); o.Position == nil || o.Position.Line != 0 {
-		t.Errorf("editor/open = %+v", o)
-	}
+	// srcPath は手元に無いファイルなので、フレームを選ぶと、移らずに知らせ、スコープの区画の対象だけを替える。
+	h.notifyView(ext.MethodViewSelect, ext.ViewSelectParams{View: p.id, Item: "t1/1/#1", Child: secThreads})
+	h.waitMessage("ソースのファイルが無い（/src/app/main.go）ので、移らない")
 	if sel := h.d.currentSelection(); !sel.hasFrame || sel.frame != 1001 {
 		t.Errorf("selection = %+v", sel)
 	}
+	// 絞り込みを外す（空の答え）。
+	h.key(p.id, secThreads, keyThreadsFilter, "")
+	if ask := <-h.inputAsks; ask.Default != "caller" {
+		t.Errorf("filter ask = %+v", ask)
+	}
+	h.inputAnswers <- ext.InputAskResult{Value: ""}
+	h.waitUpdate(secThreads, func(c ext.ViewComponent) bool { return !strings.Contains(labels(c.Items), "絞り込み") }, nil)
+	// 手元にあるファイルのフレーム（呼んだ側のフレームを callerPath にした）なら、その位置を開く。
+	h.drainOpens()
+	h.notifyView(ext.MethodViewSelect, ext.ViewSelectParams{View: p.id, Item: "t1/1/#2", Child: secThreads})
+	if o := h.waitOpen(); o.Path != callerPath || o.Position.Line != 2 {
+		t.Errorf("editor/open = %+v", o)
+	}
+	if sel := h.d.currentSelection(); sel.frame != 1002 {
+		t.Errorf("selection = %+v", sel)
+	}
+	h.notifyView(ext.MethodViewSelect, ext.ViewSelectParams{View: p.id, Item: "t1/1/#1", Child: secThreads})
+	h.waitUpdate(secThreads, func(c ext.ViewComponent) bool {
+		f := find(c.Items, "t1/1/#1")
+		return f != nil && f.Highlights[0].Style == "search"
+	}, nil)
 	// スコープの区画は、見えていない間は作らず、選んだときに選んだフレームで作る。
 	h.notifyView(ext.MethodViewChildSelect, ext.ViewChildSelectParams{View: p.id, Child: secScopes})
 	h.waitOutput("scopes 1001")
 	h.stopAndWait()
 }
 
-// TestPaneSessions は、セッションが 2 つあるとき、スレッドの区画がセッションの項目を出し、セッションかスレッドを開くと
-// そのセッションを今のセッションにし（FR-303）、出力の区画の ]s で出すセッションを替えられることを確かめる。
+// TestPaneSessions は、セッションが 2 つあるとき、スレッドの区画がセッションの項目を出し、開閉では今のセッションを替えず、
+// s でセッションかスレッドを選ぶとそのセッションを今のセッションにし（FR-303）、出力の区画の ]s で出すセッションを替えられることを確かめる。
 //
 // req: FR-290, FR-291, FR-303
 func TestPaneSessions(t *testing.T) {
@@ -383,16 +422,26 @@ func TestPaneSessions(t *testing.T) {
 	if h.current() == ss[0] {
 		other = ss[1]
 	}
+	// 開閉は覗くだけで、今のセッションを替えない。
+	first := h.current()
+	h.notifyView(ext.MethodViewExpand, ext.ViewExpandParams{View: p.id, Item: sessionItemID(other), Expanded: false, Child: secThreads})
 	h.notifyView(ext.MethodViewExpand, ext.ViewExpandParams{View: p.id, Item: sessionItemID(other), Expanded: true, Child: secThreads})
+	h.waitUpdate(secThreads, func(ext.ViewComponent) bool { return true }, nil)
+	if h.current() != first {
+		t.Error("opening a session item changed the current session")
+	}
+	// s で選ぶと、そのセッションを今のセッションにする。スレッドの項目なら、そのスレッドとその先頭のフレームを選ぶ。
+	h.key(p.id, secThreads, keyThreadsSelect, sessionItemID(other))
 	h.waitCurrent(other)
 	back := ss[0]
 	if other == ss[0] {
 		back = ss[1]
 	}
-	h.notifyView(ext.MethodViewExpand, ext.ViewExpandParams{View: p.id, Item: threadItemID(back, 1), Expanded: true, Child: secThreads})
+	h.key(p.id, secThreads, keyThreadsSelect, threadItemID(back, 1))
 	h.waitCurrent(back)
+	h.waitMessage("送り先を " + back.label())
 	if sel := h.d.currentSelection(); !sel.hasThread || sel.thread != 1 || !sel.hasFrame || sel.frame != 1000 {
-		t.Errorf("selection after opening the thread = %+v", sel)
+		t.Errorf("selection after selecting the thread = %+v", sel)
 	}
 	h.key(p.id, secConsole, keyConsoleNext, "")
 	h.waitMessage("出力の区画: ")
@@ -409,7 +458,7 @@ func TestPaneBreakpoints(t *testing.T) {
 	h.toggleUI()
 	p := h.waitPane()
 	c := childOf(t, p.params.Component, secBreakpoints)
-	if l := labels(c.Items); l != "/src/app/main.go:3\n/src/app/main.go:6\n/src/app/main.go:8  if i > 3\n" {
+	if l := labels(c.Items); l != "main.go:3  /src/app\nmain.go:6  /src/app\nmain.go:8  if i > 3  /src/app\n" {
 		t.Errorf("breakpoints = %q", l)
 	}
 	if it := c.Items[0]; it.File == nil || it.File.Path != srcPath || it.Preview == nil || *it.Preview.Line != 2 {
@@ -435,7 +484,7 @@ func TestPaneBreakpoints(t *testing.T) {
 //
 // req: FR-108, FR-291
 func TestPaneOutput(t *testing.T) {
-	h := paneHost(t, nil, map[string]any{"extraOutput": true}, map[string]any{"defaultSection": "scopes"})
+	h := paneHost(t, nil, map[string]any{"extraOutput": true, "ansi": true}, map[string]any{"defaultSection": "scopes"})
 	h.toggleUI()
 	p := h.waitPane()
 	// 利用者がペインを閉じた。
@@ -450,6 +499,10 @@ func TestPaneOutput(t *testing.T) {
 	const want = "hello from debuggee\nerr line\nsplit\nprogress 1\nprogress 2\nimportant note\n"
 	if !strings.Contains(console.Text, want) || strings.Contains(console.Text, "telemetry") || strings.Contains(console.Text, "\r") {
 		t.Errorf("console = %q, want %q", console.Text, want)
+	}
+	// 端末の制御の並び（色、題名）は、塊の境目で途切れても取り除く。
+	if !strings.Contains(console.Text, "red plain green end\n") || strings.Contains(console.Text, "\x1b") {
+		t.Errorf("console = %q, want the escapes stripped", console.Text)
 	}
 	hasErr := false
 	for _, d := range console.Highlights {
@@ -490,5 +543,102 @@ func TestPaneAutoOpenClose(t *testing.T) {
 		}
 	case <-time.After(testTimeout):
 		t.Fatal("view/close did not arrive")
+	}
+}
+
+// TestPaneThreadSelect は、「止まっている」の印が止まったスレッド（stopped の threadId）に付き、ほかのスレッドを開いても、
+// そのスレッドのフレームを <CR> で選んでも、ステップ実行の送り先は止まったスレッドのままで（nvim-dap と同じ）、s で選んだときだけ
+// 送り先が替わり、そのスレッドに「送り先」の印が付くことを確かめる（PR #423 のレビューの必須 3 と裁定要 1）。
+// ソースのファイルが無いフレーム（<node_internals> の代役）を選ぶと、移らずに知らせることも確かめる。
+//
+// req: FR-290, FR-303
+func TestPaneThreadSelect(t *testing.T) {
+	h := paneHost(t, nil, map[string]any{"twoThreads": true}, map[string]any{"defaultSection": "threads"})
+	h.toggleUI()
+	p := h.waitPane()
+	h.mustExec(cmdStart, 0)
+	c := h.waitLabel(secThreads, "main.caller")
+	if l := labels(c.Items); !strings.HasPrefix(l, "main（止まっている）\n") || !strings.Contains(l, "\nworker\n") {
+		t.Errorf("threads = %q", l)
+	}
+	// worker を開いて覗く。印も送り先も替わらない。
+	h.notifyView(ext.MethodViewExpand, ext.ViewExpandParams{View: p.id, Item: "t1/2", Expanded: true, Child: secThreads})
+	c = h.waitLabel(secThreads, "worker.run  <node_internals>/loader:1")
+	if l := labels(c.Items); !strings.HasPrefix(l, "main（止まっている）\n") || !strings.Contains(l, "\nworker\n") {
+		t.Errorf("threads after opening worker = %q", l)
+	}
+	// worker のフレームを選ぶ。スコープの対象は替わるが、送り先は替わらない。ソースのファイルが無いので移らない。
+	h.notifyView(ext.MethodViewSelect, ext.ViewSelectParams{View: p.id, Item: "t1/2/#0", Child: secThreads})
+	h.waitMessage("ソースのファイルが無い（<node_internals>/loader）")
+	if sel := h.d.currentSelection(); sel.thread != 1 || sel.frame != 2000 {
+		t.Errorf("selection after selecting the frame = %+v", sel)
+	}
+	h.mustExec(cmdNext, 0)
+	h.waitOutput("next thread=1")
+	h.waitLabel(secThreads, "main（止まっている）")
+	// s で worker を選ぶと、送り先が替わり、印が付く。
+	h.key(p.id, secThreads, keyThreadsSelect, "t1/2")
+	h.waitMessage("送り先を parent のスレッド worker にした")
+	h.waitLabel(secThreads, "worker（送り先）")
+	if sel := h.d.currentSelection(); sel.thread != 2 || sel.frame != 2000 {
+		t.Errorf("selection after s = %+v", sel)
+	}
+	h.stopAndWait()
+}
+
+// TestPaneStopOrder は、ペインを開いていても、止まったときに、止まった位置を出すための stackTrace（levels 1）が、
+// ペインの読み込み（threads、区画の stackTrace、scopes、variables）より先にアダプターへ届き、止まった位置へのカーソルの移動を
+// 待たせないことを確かめる（PR #423 のレビューの必須 1）。続けている間（ステップ実行の応答から止まるまで）には、ペインは request を送らない。
+//
+// req: FR-108
+func TestPaneStopOrder(t *testing.T) {
+	h := paneHost(t, nil, map[string]any{"stopDelayMs": 300}, map[string]any{"defaultSection": "scopes"})
+	h.toggleUI()
+	h.waitPane()
+	h.mustExec(cmdStart, 0)
+	h.waitLabel(secScopes, "x: int = 1")
+	h.mustExec(cmdNext, 0)
+	all := h.outputsUntil("next thread=1", "stopped 2", "variables 1")
+	all = all[strings.Index(all, "next thread=1"):]
+	lines := strings.Split(all, "\n")
+	stop := slices.Index(lines, "stopped 2")
+	if stop < 0 {
+		t.Fatalf("outputs = %q", all)
+	}
+	// ステップ実行の送信から止まるまでに、ペインは何も送らない。
+	for _, l := range lines[1:stop] {
+		if strings.HasPrefix(l, "threads") || strings.HasPrefix(l, "stackTrace") || strings.HasPrefix(l, "scopes") || strings.HasPrefix(l, "variables") {
+			t.Errorf("the pane sent %q while running: %q", l, all)
+		}
+	}
+	// 止まった後の最初の request は、止まった位置の stackTrace（levels 1）である。
+	for _, l := range lines[stop+1:] {
+		if strings.HasPrefix(l, "threads") || strings.HasPrefix(l, "stackTrace") || strings.HasPrefix(l, "scopes") || strings.HasPrefix(l, "variables") {
+			if l != "stackTrace thread=1 levels=1" {
+				t.Errorf("first request after the stop = %q, want the stackTrace for the stop: %q", l, all)
+			}
+			break
+		}
+	}
+	h.stopAndWait()
+}
+
+// TestStripEscapeSeqs は、出力から端末の制御の並びを取り除き、末尾で途切れた並びを残りとして返すことを確かめる。
+//
+// req: FR-291
+func TestStripEscapeSeqs(t *testing.T) {
+	for _, tc := range []struct{ in, out, rest string }{
+		{"a\x1b[31mred\x1b[0m b", "ared b", ""},
+		{"\x1b]0;title\x07x", "x", ""},
+		{"\x1b]8;;http://x\x1b\\link", "link", ""},
+		{"x\x1b[1;3", "x", "\x1b[1;3"},
+		{"x\x1b", "x", "\x1b"},
+		{"\x1b=y", "y", ""},
+		{"日本語\x1b[2K", "日本語", ""},
+	} {
+		out, rest := stripEscapeSeqs(tc.in)
+		if out != tc.out || rest != tc.rest {
+			t.Errorf("stripEscapeSeqs(%q) = %q, %q; want %q, %q", tc.in, out, rest, tc.out, tc.rest)
+		}
 	}
 }

@@ -62,6 +62,7 @@ const (
 	keyThreadsSubtle  = "dap.threads.toggleSubtle"
 	keyThreadsFilter  = "dap.threads.filter"
 	keyThreadsInvert  = "dap.threads.invertFilter"
+	keyThreadsSelect  = "dap.threads.select"
 	keyBreakpointsDel = "dap.breakpoints.delete"
 	keyConsoleNext    = "dap.console.nextSession"
 	keyConsolePrev    = "dap.console.prevSession"
@@ -493,7 +494,9 @@ func (p *pane) onEvent(e server.ViewEvent) {
 	case server.ViewExpanded:
 		switch e.Child {
 		case secThreads:
-			p.expandThreadItem(e.Item, e.Expanded)
+			// 開閉は覗くだけで、セッションとスレッドを選ばない（選ぶのは s。PR #423 のレビューの裁定要 1）。
+			p.threads.expanded[e.Item] = e.Expanded
+			p.markDirty(secThreads)
 		case secScopes:
 			p.scopes.expanded[e.Item] = e.Expanded
 			p.markDirty(secScopes)
@@ -519,6 +522,8 @@ func (p *pane) onKey(e server.ViewEvent) {
 	case keyThreadsInvert:
 		p.threads.invert = !p.threads.invert
 		p.markDirty(secThreads)
+	case keyThreadsSelect:
+		p.selectItem(e.Item)
 	case keyBreakpointsDel:
 		p.deleteBreakpoint(e.Item)
 	case keyConsoleNext:
@@ -586,16 +591,6 @@ func (p *pane) cycleConsole(step int) {
 	d.showInfo("出力の区画: " + next.label())
 }
 
-// relPath は、path を作業ディレクトリからの相対のパスにする。作業ディレクトリの外なら path のまま返す。
-func (p *pane) relPath(path string) string {
-	if p.workDir != "" {
-		if rest, ok := strings.CutPrefix(path, p.workDir+string(os.PathSeparator)); ok {
-			return rest
-		}
-	}
-	return path
-}
-
 // oneLine は、項目の表示の文字列に使えるよう、改行を空白にし、長すぎるものを切る。
 func oneLine(s string) string {
 	s = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
@@ -638,18 +633,23 @@ func (p *pane) buildBreakpoints() ext.ViewComponent {
 	}
 	items := make([]ext.ViewItem, 0, len(rows))
 	for _, r := range rows {
-		label := fmt.Sprintf("%s:%d", p.relPath(r.path), r.b.line+1)
-		pathEnd := len(label)
+		// 狭いペインでも行番号が見えるよう、ファイルの名前と行を先に、ディレクトリを最後に置く（PR #423 のレビューの推奨 4）。
+		loc, dir := p.location(r.path, r.b.line+1)
+		label := loc
+		var hs []ext.ViewSpan
 		if r.b.cond != "" {
 			label += "  if " + oneLine(r.b.cond)
 		}
-		var hs []ext.ViewSpan
 		if r.b.state == bpUnverified {
 			start := len(label)
 			label += "  （確かめられていない）"
 			hs = append(hs, ext.ViewSpan{Start: start, End: len(label), Style: "diagnostic.warning"})
 		}
-		hs = append([]ext.ViewSpan{{Start: 0, End: pathEnd, Style: "comment"}}, hs...)
+		if dir != "" {
+			start := len(label) + 2
+			label += "  " + dir
+			hs = append(hs, ext.ViewSpan{Start: start, End: len(label), Style: "comment"})
+		}
 		line := r.b.line
 		items = append(items, ext.ViewItem{
 			ID: bpItemID(r.path, r.b.line), Label: label, Highlights: hs,

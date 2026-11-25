@@ -103,8 +103,10 @@ type session struct {
 	// output は、このセッションのデバッグ対象の出力の写しである（基本設計 6.4。ペインの出力の区画に結びつける。FR-291）。
 	output *server.TextLog
 	// crMu は crPending を守る。crPending は、出力の種類ごとの、前の塊が \r で終わったこと（次の塊の先頭の \n を捨てる）である（normalizeCR）。
-	crMu      sync.Mutex
-	crPending map[string]bool
+	// escPending は、出力の種類ごとの、前の塊の末尾で途切れた端末の制御の並び（stripEscapes）である。どちらも crMu で守る。
+	crMu       sync.Mutex
+	crPending  map[string]bool
+	escPending map[string]string
 	// reply は、子のセッションで、親が受けた startDebugging へ応答する関数である。最上位のセッションでは nil。
 	// replyOnce で 1 回だけ呼ぶ（replyStart）。
 	reply     func(error)
@@ -124,11 +126,18 @@ type session struct {
 	halted bool
 	// exec は、止まった位置である。止まっていないか、位置が分からなければ nil。
 	exec *execPoint
-	// thread は、選んでいるスレッドの ID である（最後に止まったスレッド）。hasThread が false なら未知。
+	// thread は、選んでいるスレッド（続行、ステップ実行、一時停止の送り先）の ID である。止まったときは止まったスレッドにし、
+	// スレッドの区画の s で選び直す（FR-303）。hasThread が false なら未知。
 	// vscode-js-debug はスレッドの ID に 0 を使うので、0 を未知の印にしない（2026-11-25 に確かめた）。
 	thread    int
 	hasThread bool
-	// frame は、選んでいるフレームの ID である（止まったスレッドの先頭のフレーム）。hasFrame が false なら未知。
+	// stoppedThread は、止まった理由のあるスレッド（stopped の event の threadId。省かれたら threads の最初のスレッド）である。
+	// 選び直しでは変えない（スレッドの区画の「止まっている」の印。nvim-dap の stopped_thread_id）。hasStoppedThread が false なら未知。
+	stoppedThread    int
+	hasStoppedThread bool
+	// frame は、選んでいるフレーム（スコープの区画が出すフレーム）の ID である。止まったときは止まったスレッドの先頭のフレームにし、
+	// スレッドの区画のフレームの <CR> で選び直す。フレームを選び直しても、thread（操作の送り先）は変えない（nvim-dap の _frame_set と同じ）。
+	// hasFrame が false なら未知。
 	frame    int
 	hasFrame bool
 	// redirected は、今のセッションが動いていたので、続行かステップ実行をこのセッションへ替えて送ったことを表す（targetLocked）。
@@ -919,7 +928,7 @@ func (s *session) handleEvent(e dapEvent) {
 //
 // req: FR-291
 func (s *session) appendOutput(text, category string) {
-	text = s.normalizeCR(category, text)
+	text = s.normalizeCR(category, s.stripEscapes(category, text))
 	style := ""
 	switch category {
 	case "stderr":
@@ -937,6 +946,82 @@ func (s *session) appendOutput(text, category string) {
 
 // appendStream は、アダプターの標準出力と標準エラー出力（clientSocket の dlv dap がデバッグ対象の出力を書く所）を書き足す。
 func (s *session) appendStream(text string) { s.appendOutput(text, "") }
+
+// stripEscapes は、出力から端末の制御の並び（ESC で始まるもの。pytest や開発用のサーバーが書く SGR の色 \x1b[31m など）を取り除く
+// （PR #423 のレビューの推奨 2）。色に直さないのは、view/append の highlights は本体の色の表の名前（7.1）しか持てず、
+// 表に端末の 16 色に当たる名前が無いためである。並びが塊の境目で途切れたら、残りを覚えて、同じ category の次の塊と一緒に取り除く。
+// 取り除くのは CSI（ESC [ … 0x40〜0x7e の 1 文字）、OSC（ESC ] … BEL か ESC \）、そのほかの ESC と次の 1 文字である。
+func (s *session) stripEscapes(category, text string) string {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	if p := s.escPending[category]; p != "" {
+		text = p + text
+		delete(s.escPending, category)
+	}
+	if !strings.Contains(text, "\x1b") {
+		return text
+	}
+	out, rest := stripEscapeSeqs(text)
+	if rest != "" {
+		if s.escPending == nil {
+			s.escPending = map[string]string{}
+		}
+		s.escPending[category] = rest
+	}
+	return out
+}
+
+// maxEscapeLen は、途切れた制御の並びとして覚える長さの上限である（仮）。超えたら並びではないとみなし、ESC だけを捨てる。
+const maxEscapeLen = 256
+
+// stripEscapeSeqs は、text から制御の並びを取り除いたものと、末尾で途切れた並び（無ければ空）を返す。
+func stripEscapeSeqs(text string) (out, rest string) {
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		if text[i] != 0x1b {
+			b.WriteByte(text[i])
+			i++
+			continue
+		}
+		end := escapeEnd(text, i)
+		if end < 0 {
+			if len(text)-i <= maxEscapeLen {
+				return b.String(), text[i:]
+			}
+			i++ // 長すぎる。ESC だけを捨てる
+			continue
+		}
+		i = end
+	}
+	return b.String(), ""
+}
+
+// escapeEnd は、text[i] の ESC で始まる並びの次の位置を返す。並びが text の中で終わっていなければ -1 を返す。
+func escapeEnd(text string, i int) int {
+	if i+1 >= len(text) {
+		return -1
+	}
+	switch text[i+1] {
+	case '[':
+		for j := i + 2; j < len(text); j++ {
+			if c := text[j]; c >= 0x40 && c <= 0x7e {
+				return j + 1
+			}
+		}
+		return -1
+	case ']':
+		for j := i + 2; j < len(text); j++ {
+			if text[j] == 0x07 {
+				return j + 1
+			}
+			if text[j] == 0x1b && j+1 < len(text) && text[j+1] == '\\' {
+				return j + 2
+			}
+		}
+		return -1
+	}
+	return i + 2
+}
 
 // normalizeCR は、出力の改行の \r を扱う（PR #405 の未確認事項の決め）。\r\n は \n にし、\n の前でない \r（進み具合の表示が行を
 // 書き直すもの）も \n にする。写しと本体の行は \r を ^M で出すうえ、行の書き直しはできないので、書き直した行を次の行に並べる。
@@ -1030,6 +1115,7 @@ func (s *session) stopped(body *stoppedEvent) {
 		s.d.mu.Lock()
 		if s.gen.Load() == gen {
 			s.thread, s.hasThread = tid, true
+			s.stoppedThread, s.hasStoppedThread = tid, true
 		}
 		s.d.mu.Unlock()
 	}
