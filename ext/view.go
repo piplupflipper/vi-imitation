@@ -1,6 +1,12 @@
 package ext
 
-import "fmt"
+import (
+	"bytes"
+	"fmt"
+	"slices"
+	"strings"
+	"unicode/utf8"
+)
 
 // ポップアップと表示の部品（基本設計 1.4、5.3 の段階 3 の表。FR-68〜FR-72）。
 //
@@ -24,8 +30,9 @@ import "fmt"
 //   - view/expand（本体 → 拡張機能、通知）: 木の項目を利用者が開閉したことを知らせる（ViewExpandParams）
 //   - view/tabChange（本体 → 拡張機能、通知）: 分割したペインを開いた元の client のカーソルのあるタブが替わったことを知らせる
 //     （ViewTabChangeParams。API 0.10.0 で足した）
+//   - view/append（拡張機能 → 本体、通知）: 開いたテキストの部品の末尾へテキストを書き足す（ViewAppendParams。API 0.20.0 で足した）
 //
-// 本体は、閉じた後や知らない ID の view/update と view/close を黙って捨てる（閉じた知らせと行き違いうるため）。
+// 本体は、閉じた後や知らない ID の view/update、view/append、view/close を黙って捨てる（閉じた知らせと行き違いうるため）。
 const (
 	// MethodPopupOpen は、拡張機能から本体へのリクエストである。params は PopupOpenParams、result は PopupOpenResult。
 	MethodPopupOpen = "popup/open"
@@ -47,6 +54,8 @@ const (
 	MethodViewExpand = "view/expand"
 	// MethodViewTabChange は、本体から拡張機能への通知である。params は ViewTabChangeParams。
 	MethodViewTabChange = "view/tabChange"
+	// MethodViewAppend は、拡張機能から本体への通知である。params は ViewAppendParams。
+	MethodViewAppend = "view/append"
 )
 
 // ViewID は、本体が開いたポップアップに付けた番号である。本体の中で一意で、使い回さない。0 は使わない。
@@ -112,6 +121,11 @@ type ViewComponent struct {
 	// 項目が後から届く部品（ファインダー）は、開いたときから true にしておくと、最初の項目が届いたときに窓の幅が変わらない。
 	// 欄を持つ部品の窓は、幅が設定の境目を超えるときだけ広げて右にプレビューを出す（基本設計 1.4 の「#288 のプレビュー」）。
 	Preview bool `json:"preview,omitempty"`
+	// Tail は、ViewText で、開いたとき（popup/open、pane/open）と view/update で、カーソルを最後の行に置くことを表す
+	// （API 0.20.0 で足した）。末尾に追従する表示（view/append で書き足す出力。FR-272）を、末尾から見せて追従させて始めるのに使う。
+	// ext/server の TextLog は、開き直す部品と付け替える部品に立てる。省くと、開いたときは先頭の行に置き、
+	// view/update では今までの規則（カーソルが最後の行にあれば最後の行）にする。他の種類では読まない。古い本体は読まずに捨てる。
+	Tail bool `json:"tail,omitempty"`
 }
 
 // ViewPreview は、一覧、木、ファインダーの項目 1 つの、プレビューに出すものである（FR-149。API 0.11.0 で足した）。
@@ -422,6 +436,125 @@ type ViewUpdateParams struct {
 	View      ViewID        `json:"view"`
 	Component ViewComponent `json:"component"`
 	Seq       uint64        `json:"seq,omitempty"`
+}
+
+// ViewAppendParams は、view/append の params である（基本設計 1.4 の「末尾への書き足し」。FR-272。API 0.20.0 で足した）。
+//
+// 本体は、開いたテキストの部品（ViewText）の中身の末尾へ Text を書き足す。部品の全体を送り直さない。
+// 中身の末尾が改行で終わっていなければ、その行に続ける。行の数え方と上限は AppendViewText と ViewTextOverflow のとおりで、
+// 行数が ViewTextMaxLines を超えたら古い行から捨て、1 行が ViewTextMaxLineBytes を超えたら文字の境目で次の行へ送る。
+// 書き足す前に部品のカーソルが最後の行にあれば、書き足した後の最後の行へカーソルを動かして末尾に追従し、
+// 利用者が最後の行より上へカーソルを動かしている間は、見ている行とカーソルを動かさない。
+// 閉じた後、知らない ID、テキストでない部品への書き足しは、view/update と同じく黙って捨てる。
+// Format が Markdown の部品へ書き足したテキストは、コードの囲みの行を除かずにそのまま出す。
+//
+// 閉じた部品を開き直したときに中身を戻すには、拡張機能の側で写しを持つ（ext/server の TextLog。FR-273）。
+type ViewAppendParams struct {
+	View ViewID `json:"view"`
+	// Child は、切り替えの部品（FR-269）の子の ID である。切り替えの部品はまだ無いので、空でなければ本体は知らない子として捨てる。
+	Child string `json:"child,omitempty"`
+	// Text は、書き足すテキストである。改行を含んでよい。不正な UTF-8 を含む通知は、本体がログに残して捨てる。
+	Text string `json:"text"`
+	// Highlights は、Text の中の色を付ける範囲である。位置は Text の中のバイトの位置で、Text の外を指せない。
+	// 色の違う断片を 1 件の中に並べて持てる（DAP の stdout と stderr）。
+	Highlights []ViewSpan `json:"highlights,omitempty"`
+}
+
+// Validate は、Text が正しい UTF-8 であることと、Highlights の範囲が Text の中にあることを検査する。
+func (p *ViewAppendParams) Validate() error {
+	if !utf8.ValidString(p.Text) {
+		return fmt.Errorf("text が不正な UTF-8 を含む")
+	}
+	for i, s := range p.Highlights {
+		if s.Start < 0 || s.End < s.Start || s.End > len(p.Text) {
+			return fmt.Errorf("highlights[%d] が text の外を指す", i)
+		}
+	}
+	return nil
+}
+
+// ViewAppendJoin は、同じ部品（View と Child の組）への続く書き足しを、1 件につなぐ途中の状態である（ゼロ値は空）。
+// 本体が拡張機能の応答を待つ間に取っておく列と、拡張機能ごとの列と、ext/server の TextLog の開いている間の書き足しで使う
+// （基本設計 1.4 の「待ちの間」）。
+//
+// Add は足したテキストの長さに比例する手間で済む（つないだテキストの全体を写し直さない）。
+// つないだテキストの行数が上限の 2 倍を超えたときだけ古い行を捨てるので、捨てる手間も足した量にならして比例する。
+// Params は、つないだ 1 件を返す。つないだテキストが、それだけで ViewTextMaxLines を超える行を持つなら、古い行を捨てる。
+// 捨てた後のテキストは改行で始め、本体の中身に当てたときに、書き足す前の中身の行（と最後の行に続けた行）も捨てられるようにする。
+// このため、つないで捨てた 1 件を当てた結果は、つながずに順に当てた結果と同じになる。
+type ViewAppendJoin struct {
+	text []byte
+	hs   []ViewSpan
+	// newlines は、text の中の改行の数である。
+	newlines int
+}
+
+// Add は、書き足し 1 件（text と、その中の色の範囲 hs）を後ろへつなぐ。hs は text の長さだけずらして写すので、呼び出し側の列は変えない。
+func (j *ViewAppendJoin) Add(text string, hs []ViewSpan) {
+	shift := len(j.text)
+	j.text = append(j.text, text...)
+	for _, s := range hs {
+		j.hs = append(j.hs, ViewSpan{Start: s.Start + shift, End: s.End + shift, Style: s.Style})
+	}
+	j.newlines += strings.Count(text, "\n")
+	if j.newlines > 2*ViewTextMaxLines {
+		j.trim()
+	}
+}
+
+// Len は、つないだテキストのバイト数を返す。
+func (j *ViewAppendJoin) Len() int { return len(j.text) }
+
+// ViewAppendJoinMaxBytes は、つないだ 1 件の大きさ（ViewAppendSize）の上限（仮に 4 MiB）である。
+// 改行の無い出力は行数の上限で捨てられないので、上限を置かないと 1 件が際限なく大きくなる（PR #405 の再レビュー）。
+// 本体が受け取る 1 件のメッセージの上限（64 MiB。internal/rpc の DefaultMaxMessageSize）に対して、JSON の文字列のエスケープで
+// 本文が最大 6 倍（制御文字の \u00XX）になっても収まる値にした。拡張機能の側（TextLog）がつないだ 1 件を送っても、上限に当たらない。
+const ViewAppendJoinMaxBytes = 4194304
+
+// ViewAppendSize は、text と色の範囲 hs の書き足し 1 件の大きさを、ViewAppendJoinMaxBytes と比べる値で返す。
+// 色の範囲 1 つは、JSON で 64 バイトと数える。
+func ViewAppendSize(text string, hs []ViewSpan) int { return len(text) + 64*len(hs) }
+
+// Fits は、text と hs をつないでも、つないだ 1 件の大きさが ViewAppendJoinMaxBytes を超えないかを返す。
+// 空のときは、1 件だけで上限を超えても true を返す（新しい件にしても大きさは同じなので）。
+func (j *ViewAppendJoin) Fits(text string, hs []ViewSpan) bool {
+	if len(j.text) == 0 && len(j.hs) == 0 {
+		return true
+	}
+	return len(j.text)+64*len(j.hs)+ViewAppendSize(text, hs) <= ViewAppendJoinMaxBytes
+}
+
+// trim は、つないだテキストの行数が ViewTextMaxLines を超えていれば、古い行を捨てて ViewTextMaxLines 行を残す。
+func (j *ViewAppendJoin) trim() {
+	n := j.newlines + 1
+	if len(j.text) > 0 && j.text[len(j.text)-1] == '\n' {
+		n--
+	}
+	d := ViewTextOverflow(n)
+	if d == 0 {
+		return
+	}
+	// 捨てる d 行の最後の行の終わりの改行の位置から残す。
+	pos := -1
+	for range d {
+		pos += 1 + bytes.IndexByte(j.text[pos+1:], '\n')
+	}
+	j.text = append([]byte(nil), j.text[pos:]...)
+	j.newlines -= d - 1 // 残した先頭の改行は数えたまま
+	var hs []ViewSpan
+	for _, s := range j.hs {
+		if s.End <= pos {
+			continue
+		}
+		hs = append(hs, ViewSpan{Start: max(s.Start-pos, 0), End: s.End - pos, Style: s.Style})
+	}
+	j.hs = hs
+}
+
+// Params は、つないだ書き足しを、部品 view と子 child への 1 件の params にして返す。
+func (j *ViewAppendJoin) Params(view ViewID, child string) ViewAppendParams {
+	j.trim()
+	return ViewAppendParams{View: view, Child: child, Text: string(j.text), Highlights: slices.Clone(j.hs)}
 }
 
 // ViewCloseParams は、view/close の params である。

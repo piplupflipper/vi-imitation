@@ -414,6 +414,35 @@ func (b *Buffer) ApplyReload(tx Transaction, eol bool) (Change, error) {
 	return b.commit(edits), nil
 }
 
+// ApplyUnrecorded は、tx をアンドゥの履歴に記録せずに適用する。
+// 本体が中身を持つファイルでないバッファ（表示の部品のテキスト）の末尾へ書き足し続ける入り口である（view/append。FR-272）。
+// ApplyReload で書き足すと、書き足したテキストと捨てた行がアンドゥの履歴に残り続け、出力の量に比例してメモリが増えるためである。
+//
+// 適用した後は、履歴の編集の位置がテキストと合わなくなるので、アンドゥとリドゥの履歴と、行の無いバッファの記録（MarkNoLines）を捨てる。
+// 開いているアンドゥのグループは閉じる。Modified は呼ぶ前の値を保つ。
+// Apply と同じくバージョン番号の一致を確かめ、適用に成功するとバージョン番号を 1 増やす。編集を禁止したバッファ（ReadOnly）でも断らない
+// （ApplyReload と同じく、利用者の編集ではないため）。Edits が空なら何もしない。
+func (b *Buffer) ApplyUnrecorded(tx Transaction) (Change, error) {
+	if tx.BaseVersion != b.version {
+		return Change{}, fmt.Errorf("%w: base %d, current %d", ErrVersionMismatch, tx.BaseVersion, b.version)
+	}
+	if len(tx.Edits) == 0 {
+		return Change{Before: b.version, After: b.version}, nil
+	}
+	edits := slices.Clone(tx.Edits)
+	if _, err := b.applyAll(edits); err != nil {
+		return Change{}, err
+	}
+	modified := b.Modified()
+	b.closeUndoGroup()
+	b.undo, b.redo, b.noLinesAt = nil, nil, nil
+	b.savedID = 0 // stateID は 0 になる
+	if modified {
+		b.savedID = unsavedID
+	}
+	return b.commit(edits), nil
+}
+
 // record は、適用した編集をアンドゥの履歴に記録する。
 // グループの中の 2 回目以降なら末尾の単位にまとめ、まとめた単位には新しい id を付ける。
 // id を付け直すのは、まとめる前の状態で MarkSaved した場合に、まとめた後を変更ありと判定するためである。

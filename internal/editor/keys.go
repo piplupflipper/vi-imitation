@@ -177,6 +177,7 @@ func (e *Editor) handleKeys() {
 // afterKey は、キーの処理の後に、中断の後始末と、曖昧なキーの列の時間切れの準備をする。
 func (e *Editor) afterKey() {
 	e.afterFloatKey()
+	e.resumeFollow(e.float) // ビジュアルモードかキーの列を抜けたら、末尾への追従に戻す（viewappend.go。FR-272）
 	if c := e.op; e.keys.interrupted(c) {
 		// このキーで始めた外部のコマンドと再生中の拡張機能の待ちは、知らせ（intrCh）を Run が先に取っていても、ここで中断する。
 		e.interruptShell()

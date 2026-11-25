@@ -55,6 +55,8 @@ func main() {
   Edit が返した誤りに使う。
 - `ErrBufferClosed`: WaitBuffer で待っている間か、待ち始める前に、そのバッファの buffer/close が届いた（その後に buffer/open が届いていない）ことを表す。
   本体は、不正な UTF-8 を含むバッファを拡張機能へ送らず、editor/open で開いたときは buffer/open の代わりに buffer/close を送る（ext.BufferCloseParams）。
+- `ErrChildUnsupported`: 切り替えの部品の子（空でない child）へ Rebind したことを表す。
+  子だけを置き換える view/updateは、切り替えの部品を足すときに足す。
 - `ErrEditInHandler`: Server が呼んだハンドラーかフックの中から、その ctx で、本体の応答を待つ関数を呼んだことを表す。
   対象は Edit、EditorState、OpenEditor、SaveBuffer、ListDiagnostics、AskChoice、WaitBuffer である。
   待つと詰まるので、これらはリクエストを送らずにこの誤りを返す。
@@ -65,6 +67,7 @@ func main() {
 - `ErrNoBufferSync`: 本体がこの拡張機能へバッファの同期を送らない（宣言ファイルの noBufferSync。ext.InitializeParams の NoBufferSync）ので、
   WaitBuffer がバッファの複製を待たなかったことを表す。待っても buffer/open は届かず、ctx の期限まで戻らなくなるためである。
 - `ErrNotRunning`: Serve の前か後に、本体へメッセージを送ろうとしたことを表す。
+- `ErrOpening`: TextLog が開き直している最中（Open の open を呼んでいる間）に、Open か Rebind を呼んだことを表す。
 
 #### `server.AsyncBufferWillSaveHandler`
 
@@ -235,6 +238,9 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
 - `func New() *Server`: ハンドラーを登録していない Server を作る。
 - `func (s *Server) AppendOutput(channel, text string) error`: 本体へ output/append を送り、名前が channel の出力の欄へ text を書き足させる。
   応答は待たない。どこから呼んでもよい。
+- `func (s *Server) AppendView(p ext.ViewAppendParams) error`: 本体へ view/append を送り、開いたテキストの部品の末尾へ書き足させる。応答は待たない。どこから呼んでもよい。
+  p が ext.ViewAppendParams.Validate を通らなければ、送らずにその誤りを返す。
+  閉じた後に開き直したときに中身を戻したいときは、TextLog を使う。
 - `func (s *Server) AskChoice(ctx context.Context, p ext.ChoiceAskParams) (ext.ChoiceAskResult, error)`: 本体へ choice/ask を送り、利用者に選択肢から 1 つ選ばせる。
   本体は利用者の応答を待つので、応答までの時間に上限は無い。打ち切るときは ctx を取り消す。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
@@ -354,6 +360,26 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
 本体から shutdown を受け取ったことを表す。
 中身は無いが、後から項目を足せるように構造体にしている。
 
+
+#### `server.TextLog`
+
+テキストの部品へ書き足す中身の写しである。
+
+- `func NewTextLog(s *Server) *TextLog`: s の上の空の写しを作る。行数の上限は本体と同じ値（ext.ViewTextMaxLines（10000））である。
+- `func (t *TextLog) Append(text, style string) error`: text を写しに足す。style は 7.1 の色の名前で、空でなければ text の全体にその色を付ける。
+  結びついていれば、錠を持ったまま view/append（結びついた部品と子）を送る。開き直している最中（Open）なら、送らずに
+  「開いている間の書き足し」に積み、開き終えたときに送る。送る順は呼んだ順である。
+  text が不正な UTF-8 を含めば、何もせずに誤りを返す。誤りは、送れなかったとき（接続が無いとき）にも返すが、写しには足してある。
+- `func (t *TextLog) Attached() (view ext.ViewID, child string, ok bool)`: 結びついた部品と子を返す。結びついていなければ ok が false である。
+  部品が閉じた（view/closed を受けた）後と、別の写しが同じ部品に付け替えた後は、結びついていない。
+- `func (t *TextLog) Detach()`: 結びつきを外す。その後の Append は写しにだけ足す。
+  開き直している最中（Open が open を呼んでいる間）に呼ぶと、Open は open が戻っても結びつけず、その間の書き足しも送らない
+  （開いた部品は、拡張機能の側で閉じる）。
+- `func (t *TextLog) Open(open func(ext.ViewComponent) (ext.ViewID, error), child string) error`: 写しの中身を部品にして開き直し、開いた部品に結びつける。
+- `func (t *TextLog) Rebind(view ext.ViewID, child string) error`: 開いている部品 view に結びつけ直し、写しの中身で部品の中身を置き換える。
+  錠の中で、前の結びつきと、同じ部品に結びついていた別の写しを外し、写しの中身を部品にした view/update を送り、結びつける。
+  view/update と view/append を同じ錠の中で送るので、付け替えの前の書き足しは view/update の中身に入り、後の書き足しは
+  view/update の後の view/append になる。部品が既に閉じていれば、何も送らずに結びつけない。
 
 #### `server.TextObjectHandler`
 

@@ -1092,6 +1092,10 @@ Placement が PaneCenter（center） のときと、端末多重化ソフトの�
   （API 0.11.0 で足した）。省いても、項目のどれかが Preview を持てば欄を持つ。
   項目が後から届く部品（ファインダー）は、開いたときから true にしておくと、最初の項目が届いたときに窓の幅が変わらない。
   欄を持つ部品の窓は、幅が設定の境目を超えるときだけ広げて右にプレビューを出す。
+- `tail`（`bool`、省ける）: ViewText（text） で、開いたとき（popup/open、pane/open）と view/update で、カーソルを最後の行に置くことを表す
+  （API 0.20.0 で足した）。末尾に追従する表示（view/append で書き足す出力）を、末尾から見せて追従させて始めるのに使う。
+  ext/server の TextLog は、開き直す部品と付け替える部品に立てる。省くと、開いたときは先頭の行に置き、
+  view/update では今までの規則（カーソルが最後の行にあれば最後の行）にする。他の種類では読まない。古い本体は読まずに捨てる。
 
 #### `ViewKind`
 
@@ -1312,6 +1316,26 @@ statusline/set の params である。
   空なら、利用者の設定の statusline.ext の色を使う。本体の知らない名前なら、色を重ねない。
   状態に応じて色を変える部品（lualine の mrreview の drift の警告）は、送るたびに名前を変える。
 
+#### `ViewAppendParams`
+
+view/append の params である（API 0.20.0 で足した）。
+
+本体は、開いたテキストの部品（ViewText（text））の中身の末尾へ Text を書き足す。部品の全体を送り直さない。
+中身の末尾が改行で終わっていなければ、その行に続ける。行の数え方と上限は AppendViewText と ViewTextOverflow のとおりで、
+行数が ViewTextMaxLines（10000） を超えたら古い行から捨て、1 行が ViewTextMaxLineBytes（4096） を超えたら文字の境目で次の行へ送る。
+書き足す前に部品のカーソルが最後の行にあれば、書き足した後の最後の行へカーソルを動かして末尾に追従し、
+利用者が最後の行より上へカーソルを動かしている間は、見ている行とカーソルを動かさない。
+閉じた後、知らない ID、テキストでない部品への書き足しは、view/update と同じく黙って捨てる。
+Format が Markdown の部品へ書き足したテキストは、コードの囲みの行を除かずにそのまま出す。
+
+閉じた部品を開き直したときに中身を戻すには、拡張機能の側で写しを持つ（ext/server の TextLog）。
+
+- `view`（`ViewID`）
+- `child`（`string`、省ける）: 切り替えの部品の子の ID である。切り替えの部品はまだ無いので、空でなければ本体は知らない子として捨てる。
+- `text`（`string`）: 書き足すテキストである。改行を含んでよい。不正な UTF-8 を含む通知は、本体がログに残して捨てる。
+- `highlights`（`[]ViewSpan`、省ける）: Text の中の色を付ける範囲である。位置は Text の中のバイトの位置で、Text の外を指せない。
+  色の違う断片を 1 件の中に並べて持てる（DAP の stdout と stderr）。
+
 #### `ViewCloseParams`
 
 view/close の params である。
@@ -1396,6 +1420,14 @@ JSON の文字列である。
   編集の無い（NoLines と EndOfLine だけの）要求も断る。
   版の不一致（BufferEditResult の Applied が false）と違い、新しい版で作り直しても通らないので、拡張機能は繰り返さない。
   ext/server を使う拡張機能は、server.IsReadOnly で見分けられる。
+- `4194304`（ViewAppendJoinMaxBytes）: つないだ 1 件の大きさ（ViewAppendSize）の上限（仮に 4 MiB）である。
+  改行の無い出力は行数の上限で捨てられないので、上限を置かないと 1 件が際限なく大きくなる。
+  本体が受け取る 1 件のメッセージの上限（64 MiB。
+  本文が最大 6 倍（制御文字の \u00XX）になっても収まる値にした。拡張機能の側（TextLog）がつないだ 1 件を送っても、上限に当たらない。
+- `10000`（ViewTextMaxLines）: 書き足すテキストの部品 1 つが持つ行数の上限（仮に 10000）である。
+  超えたら古い行から捨てる。段階 2 の出力の欄と同じ値である。
+- `4096`（ViewTextMaxLineBytes）: 書き足した 1 行のバイト数の上限（仮に 4096）である。
+  超えたら文字の境目で次の行へ送る。改行の無い出力で 1 行が際限なく伸び、描画のたびの折り返しが重くなるのを避ける。
 - `150`（WindowNotifyIntervalMs）: 本体が window/change を同じ拡張機能へ続けて送るときの、送る間隔の下限のミリ秒である（仮）。
   nvim-treesitter-context（オーナーの nvim に入っているコミット 8decd73460d26ef0a0befb745d022dd1fc2c38b8）の
   lua/treesitter-context.lua の throttle_by_id の 150 ミリ秒に合わせた。

@@ -3390,6 +3390,36 @@ s.Command("vtdemo.show", func(_ context.Context, b *server.Buffer, p *ext.Comman
 })
 ```
 
+### ペインへ書き足す
+
+ペイン（`OpenPane`）や中央のポップアップに開いたテキストの部品の末尾へは、`AppendView` で書き足せる（拡張機能 API の 0.20.0 から）。
+部品の全体を送り直さずに、書き足すテキストだけを送る。
+ペインのカーソルが最後の行にあれば、書き足すたびに最後の行へ追従し、`k` や `gg` で上の行へ動かしている間は、見ている行を動かさない。`G` で最後の行へ戻すと、また追従する。
+1 つの部品が持つ行は 10000 行までで、超えたら古い行から捨てる。
+
+利用者が閉じたペインを開き直したときに中身を戻すには、`server.NewTextLog` で作る写しを使う。
+写しの `Append` で書き足すと、ペインが開いている間はペインへ送り、閉じている間は写しにだけ足す。
+`Open` に、受け取った部品をペインに開いてその ID を返す関数を渡すと、閉じる前の中身と閉じている間に書き足した中身でペインを開き直す。
+閉じた知らせ（`view/closed`）で写しをペインから外すのは `Server` が行うので、スクリプトの側で書かなくてよい。
+`Open` は本体の応答を待つので、コマンドのハンドラーの中からは `go` で別の goroutine を起こして呼ぶ。
+
+```go
+tl := server.NewTextLog(s)
+s.Command("log.show", func(_ context.Context, _ *server.Buffer, _ *ext.CommandExecuteParams) (ext.CommandExecuteResult, error) {
+	go func() {
+		_ = tl.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
+			c.Title = "log"
+			res, err := s.OpenPane(context.Background(), ext.PaneOpenParams{Component: c, Direction: ext.PaneDown})
+			return res.View, err
+		}, "")
+	}()
+	return ext.CommandExecuteResult{OK: true}, nil
+})
+// どの goroutine からでも書き足せる。色の名前を渡すと、書き足したテキストの全体にその色を付ける。
+_ = tl.Append("built\n", "")
+_ = tl.Append("error: x\n", "diagnostic.error")
+```
+
 ### yaegi の制限
 
 同じソースは `go build` でも通るが、yaegi v0.16.3 では次の点が Go と違う（2026-11-16 に確かめた）。

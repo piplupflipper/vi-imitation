@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -150,7 +149,7 @@ func newExtension() *extension {
 func (x *extension) configure(cfg *config, apiVersion string) {
 	x.cfg = cfg
 	x.scan = newScanner(cfg.formats)
-	x.supported = !versionLess(apiVersion, minAPIVersion)
+	x.supported = !ext.VersionLess(apiVersion, minAPIVersion)
 }
 
 // open は、buffer/open で全文を受け取ったバッファの全部の行を、数える行に積む。
@@ -520,33 +519,4 @@ func (x *extension) message(level ext.MessageLevel, text string) {
 	if err := x.notify(level, text); err != nil {
 		x.log.Printf("message/show: %v", err)
 	}
-}
-
-// versionLess は、"major.minor.patch" の版 a が b より古いかを返す。読めない版は古いものとして扱う。
-func versionLess(a, b string) bool {
-	pa, oka := parseVersion(a)
-	pb, okb := parseVersion(b)
-	if !oka {
-		return true
-	}
-	if !okb {
-		return false
-	}
-	return slices.Compare(pa[:], pb[:]) < 0
-}
-
-func parseVersion(v string) ([3]int, bool) {
-	var out [3]int
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
-		return out, false
-	}
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 {
-			return out, false
-		}
-		out[i] = n
-	}
-	return out, true
 }

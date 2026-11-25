@@ -150,6 +150,18 @@ type floatState struct {
 	// screenPending は、端末の列数を問い合わせている間であることを表す。その間はプレビューを出さない（previewShown）。
 	screen        int
 	screenPending bool
+	// textEOL は、テキストの部品（floatText）の中身の末尾が改行で終わっていることを表す（ext.SplitViewText の eol）。
+	// バッファの行は末尾の改行の後の空の行を持たないので、次の view/append を最後の行に続けるか、新しい行から始めるかをここで覚える
+	// （viewappend.go。FR-272）。開いたときと view/update のたびに決め直す。
+	textEOL bool
+	// decsOwned は、部品のバッファの色の範囲の一覧（popupDecorationOwner）が、view/append で写し取った自分の列であることを表す。
+	// 自分の列なら、書き足した範囲をその後ろへ足す（viewappend.go）。開いたときと view/update のたびに false に戻す。
+	decsOwned bool
+	// followHeld は、カーソルが最後の行にあったのに、ビジュアルモードかキーの列の途中だったので、view/append で追従しなかったことを表す。
+	// heldLine は、そのときのカーソルの行（そのときの最後の行）である。ビジュアルモードとキーの列を抜けた時点でカーソルがまだ
+	// heldLine にあれば、最後の行へ戻して追従を続ける（resumeFollow。FR-272）。
+	followHeld bool
+	heldLine   int
 }
 
 // popupDecorationOwner は、ポップアップの部品の色を付ける範囲を、バッファの構文の色に入れるときの持ち主の名前である。
@@ -848,7 +860,10 @@ func floatLines(c ext.ViewComponent, expanded map[string]bool, icons *itemIcons)
 			lines, decs = markdownLines(c.Text, c.Highlights)
 			return lines, nil, decs
 		}
-		return strings.Split(strings.TrimRight(c.Text, "\n"), "\n"), nil, c.Highlights
+		// 行は Vim と同じく数え、末尾の改行は 1 つだけを除く（"a\n\n" は "a" と空の行の 2 行）。view/append で書き足した中身を
+		// 拡張機能の写し（TextLog）から開き直したときに、末尾の空の行まで同じ行にするためである（ext.SplitViewText）。
+		text, _ := ext.SplitViewText(c.Text)
+		return text, nil, c.Highlights
 	case ext.ViewInput:
 		return []string{c.Text}, nil, nil
 	case ext.ViewList, ext.ViewTree, ext.ViewFinder:
@@ -961,6 +976,17 @@ func initExpanded(items []ext.ViewItem, prev, m map[string]bool) {
 	}
 }
 
+// floatBufferText は、部品の行 lines をバッファの中身にするテキスト（buffer.New に渡すもの）を返す。
+// buffer.New は末尾の改行を 1 つ行に数えないので、最後の行が空の行（2 行以上のとき）なら改行を 1 つ足し、空の行を残す
+// （テキストの部品の "a\n\n" を "a" と空の行の 2 行で出す。view/append。FR-272）。
+func floatBufferText(lines []string) string {
+	s := strings.Join(lines, "\n")
+	if n := len(lines); n > 1 && lines[n-1] == "" {
+		s += "\n"
+	}
+	return s
+}
+
 // setFloatContent は、ポップアップ f のバッファの中身を部品 c にする。
 // 一覧と木では、カーソルのあった項目の ID が c にもあればその行へカーソルを置き、無ければ行の番号を行数に収まる範囲で保つ。
 // 木の開閉の状態は、前の木にあった ID の項目はそのまま保ち、新しい ID の項目は c の Expanded にする（PR #242 のレビューの必須 2）。
@@ -988,10 +1014,11 @@ func (e *Editor) drawFloatContent(f *floatState, c ext.ViewComponent) {
 	}
 	// テキストで、カーソルが最後の行にあれば（末尾を見ていれば）、書き足した後も最後の行へ置き、表示が末尾を追うようにする
 	// （デバッグ対象の出力と ACP の返答のペイン。FR-108、FR-111。PR #248 のレビューの推奨 2）。
-	follow := f.kind == floatText && cursor.Line >= f.bs.buf.LineCount()-1
+	// ext.ViewComponent.Tail なら、カーソルの位置に依らず最後の行へ置く（写しの付け替え。FR-272）。
+	follow := f.kind == floatText && (cursor.Line >= f.bs.buf.LineCount()-1 || c.Tail)
 	lines, rows, decs := floatLines(c, f.expanded, e.itemIcons(f.iconColumnFor(c.Items)))
 	f.rows = rows
-	e.reload(f.bs, buffer.New(strings.Join(lines, "\n")))
+	e.reload(f.bs, buffer.New(floatBufferText(lines)))
 	line := min(cursor.Line, f.bs.buf.LineCount()-1)
 	if follow {
 		line = f.bs.buf.LineCount() - 1
@@ -1008,6 +1035,10 @@ func (e *Editor) drawFloatContent(f *floatState, c ext.ViewComponent) {
 	if c.Kind == ext.ViewInput {
 		f.input = c.Text
 	}
+	if c.Kind == ext.ViewText {
+		f.textEOL = strings.HasSuffix(c.Text, "\n")
+	}
+	f.decsOwned, f.followHeld = false, false
 	e.setPopupDecorations(f.bs, decs)
 }
 
@@ -1034,6 +1065,7 @@ func (e *Editor) newComponentFloat(c ext.ViewComponent, extID string) *floatStat
 	case ext.ViewFinder:
 		return e.newFinderFloat(c, extID)
 	case ext.ViewText:
+		f.textEOL = strings.HasSuffix(c.Text, "\n")
 	}
 	lines, rows, decs := floatLines(c, f.expanded, e.itemIcons(f.iconColumnFor(c.Items)))
 	f.rows = rows
@@ -1041,7 +1073,7 @@ func (e *Editor) newComponentFloat(c ext.ViewComponent, extID string) *floatStat
 	if title == "" {
 		title = "[ポップアップ]"
 	}
-	f.bs = e.newPopupBuffer(title, strings.Join(lines, "\n"), "", f.kind != floatInput)
+	f.bs = e.newPopupBuffer(title, floatBufferText(lines), "", f.kind != floatInput)
 	if len(decs) > 0 {
 		e.setPopupDecorations(f.bs, decs)
 	}
@@ -1050,6 +1082,11 @@ func (e *Editor) newComponentFloat(c ext.ViewComponent, extID string) *floatStat
 	}
 	if i := cursorRow(c, rows); i >= 0 {
 		f.bs.state.SetCursor(buffer.Position{Line: i})
+	}
+	if c.Kind == ext.ViewText && c.Tail {
+		// 末尾から見せて追従させて始める（写しから開き直した出力。FR-272、FR-273）。
+		// req: FR-273
+		f.bs.state.SetCursor(buffer.Position{Line: f.bs.buf.LineCount() - 1})
 	}
 	return f
 }

@@ -109,6 +109,8 @@ func (e *Editor) handleEvent(ev exthost.Event) {
 		e.viewUpdate(ev)
 	case *exthost.ViewClose:
 		e.viewClose(ev)
+	case *exthost.ViewAppend:
+		e.viewAppend(ev)
 	case *exthost.EditorStateRequest:
 		_ = ev.Reply(e.editorState())
 	case *exthost.EditorOpenRequest:

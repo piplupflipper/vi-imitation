@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.19.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.20.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -351,6 +351,7 @@ params と result の型の項目は、`vi-imitation --docs extension-types <型
 - `progress/report`: 通知。params は `ProgressReportParams`。時間のかかる処理（言語サーバーの読み込み、パーサのビルド、道具の入れ込み）の進み具合を知らせる。中身は LSP 3.17 の WorkDoneProgress の begin、report、end に対応させた。1 つの処理を、拡張機能が決めた識別子（Token）で表し、begin で始め、report で中身を変え、end で終える。本体は、続いている進み具合と、終わってから設定 progress.doneMs のミリ秒が過ぎていないものを、編集の client の画面の右下に重ねて出す（設定 progress.show が false なら出さない）。本体が入れ子の待ち（保存の前の整形の buffer/willSave の応答など）をしている間も、取っておかずにその場で出す。識別子は拡張機能ごとに分けて扱うので、他の拡張機能の識別子と重なってもよい。続いている識別子の begin は、その進み具合を始め直す（表題と本文と百分率を置き換える）。begin の無い（終えた後を含む）識別子の report と end は捨てる。拡張機能が異常で終わるか止まったら、本体はその拡張機能の進み具合をすべて消す（他の表示のデータと同じ）。拡張機能は、終えずに止まる処理（取り消し、失敗）も、Failed を true にした end で終える。失敗の理由は message/show で知らせる。本体は、その拡張機能が後から届けるもの（editor/open、message/show、choice/ask）を出す client と同じ client の画面にだけ出す（その拡張機能へ最後に問い合わせを始めた client。問い合わせていなければ操作中の client）。分割したペインのどの client にも出すと、同じ進み具合が 2 回出るためである。古い本体（0.13.0 まで）は、知らない通知として捨てる（ログに残すだけ）。
 - `sign/set`: 通知。params は `SignSetParams`。
 - `statusline/set`: 通知。params は `StatusLineSetParams`。宣言ファイルの contributes.statusline で足した部品の中身を送る。本体は、部品の ID ごとに最後に届いた中身を持ち、利用者が設定の statusline か tabline に並べた部品だけを描く。並べていない部品の中身も持つので、拡張機能は設定を知らずに送ってよい。宣言ファイルで足していない部品の ID と、他の拡張機能が足した部品の ID の通知は捨てる。拡張機能が異常で終わるか止まったら、その拡張機能の部品の中身をすべて消す（他の表示のデータと同じ）。中身はバッファに依らず、どの client のどのバッファのステータス行にも同じものを出す（仮。lualine の mrreview の状態と、本体のメモリの使用量のような、エディタ全体の状態を出す部品を想定した）。
+- `view/append`: 通知。params は `ViewAppendParams`。
 - `view/close`: 通知。params は `ViewCloseParams`。
 - `view/update`: 通知。params は `ViewUpdateParams`。
 - `virtualText/set`: 通知。params は `VirtualTextSetParams`。バッファの位置に、本文に無い文字列（仮想テキスト）を色付きで出す。インレイヒント（LSP の textDocument/inlayHint）、行末の注記、行頭の空白の上に重ねるブロックの範囲の罫線などに使う。一覧は、送った拡張機能とバッファの組ごとに持ち、同じ組の前の一覧だけを置き換える。空の一覧を送ると、その組の仮想テキストを消す。位置は、診断（diagnostic/set）と同じく、本体がバッファへ編集を適用するたびにその編集に合わせてずらす。Version は一覧を計算するもとにしたバージョン番号で、扱いも診断と同じである（現在より新しい番号の一覧は捨て、本体が覚えている編集より古い番号の空でない一覧も捨てる）。拡張機能が異常で終わるか止まったら、本体はその拡張機能の仮想テキストをすべて消す。古い本体（0.18.0 まで）は、知らない通知として捨てる（ログに残すだけ）ので、仮想テキストは出ない。

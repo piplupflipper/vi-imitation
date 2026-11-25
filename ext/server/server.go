@@ -113,6 +113,8 @@ type Server struct {
 	onShutdown func(ctx context.Context, e *ShutdownEvent)
 	// onView は、ポップアップの利用者の操作の知らせ（view.go）のフックである。
 	onView func(ctx context.Context, e *ViewEvent)
+	// textLogs は、部品に結びついている書き足すテキストの写し（textlog.go の TextLog）の表である。どの goroutine からも触る。
+	textLogs textLogs
 	// onWindow は、窓の変化の知らせ（window.go）のフックである。
 	onWindow func(ctx context.Context, e *WindowChangeEvent)
 	// windows は、窓ごとに最後に届いた window/change の番号である（window.go の windowArrived）。読み取りの goroutine とループが触る。

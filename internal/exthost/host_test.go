@@ -934,6 +934,39 @@ func TestEventQueueLimit(t *testing.T) {
 	hs.waitLog("too many queued events")
 }
 
+// 同じ部品への view/append は、列の中に同じ部品への件があれば（隣り合っていなくても）1 件につなぐので、2 つの部品へ交互に
+// 書き足しても、出力の行の数で列の上限に当たらない（PR #405 のレビューの必須 1）。
+// つないでも、部品ごとの書き足したテキストは欠けず、順も変わらない。
+func TestViewAppendQueueMerge(t *testing.T) {
+	hs := newHarness(t, []Spec{fakeSpec(t, "x", modeNormal, "")}, func(c *Config) { c.MaxQueuedEvents = 10 }, false)
+	if err := hs.h.Call(ctx, "x", methodAppendFlood, 500, callTimeout, nil); err != nil {
+		t.Fatalf("append flood: %v", err)
+	}
+	var want, got [3]strings.Builder
+	for i := range 500 {
+		fmt.Fprintf(&want[1+i%2], "%d\n", i)
+	}
+	timer := time.After(callTimeout)
+	for got[1].Len()+got[2].Len() < want[1].Len()+want[2].Len() {
+		select {
+		case ev := <-hs.h.Events():
+			if a, ok := ev.(*ViewAppend); ok && a.Extension == "x" && (a.Params.View == 1 || a.Params.View == 2) {
+				_, _ = got[a.Params.View].WriteString(a.Params.Text)
+			}
+		case <-timer:
+			t.Fatalf("appends: got %d+%d bytes, want %d+%d", got[1].Len(), got[2].Len(), want[1].Len(), want[2].Len())
+		}
+	}
+	for v := 1; v <= 2; v++ {
+		if got[v].String() != want[v].String() {
+			t.Errorf("merged appends to view %d differ", v)
+		}
+	}
+	if strings.Contains(hs.log.String(), "too many queued events") {
+		t.Errorf("view/append hit the queue limit")
+	}
+}
+
 // Close はすべての拡張機能のプロセスを終わらせ、イベントのチャネルを閉じる。
 func TestClose(t *testing.T) {
 	hs := newHarness(t, []Spec{fakeSpec(t, "x", modeNormal, "")}, nil, false)

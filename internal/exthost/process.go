@@ -498,6 +498,23 @@ func (h *Host) handler(e *extension, r *run) rpc.Handler {
 					return
 				}
 				ev = &ViewClose{Extension: id, Params: p}
+			case ext.MethodViewAppend:
+				var p ext.ViewAppendParams
+				if !h.decode(id, n, &p) {
+					return
+				}
+				if err := p.Validate(); err != nil {
+					h.log.Warn("invalid view/append from extension", "extension", id, "error", err)
+					return
+				}
+				a := &ViewAppend{Extension: id, Params: p}
+				h.mu.Lock()
+				merged := h.mergeAppendLocked(a, r)
+				h.mu.Unlock()
+				if merged {
+					return
+				}
+				ev = a
 			case ext.MethodBufferResync:
 				var p ext.BufferResyncParams
 				if !h.decode(id, n, &p) {
