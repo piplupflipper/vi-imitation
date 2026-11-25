@@ -116,6 +116,55 @@ func TestSwitcherBarNarrow(t *testing.T) {
 	}
 }
 
+// 全角と半角の混ざった名前でも、切り詰めた名前は最初の 1 文字を必ず残す。最も短くしても収まらないとき（20 桁）と、
+// 切り詰めた名前が別の子と同じになって見分けられないとき（頭文字が同じ子）は、すべてを並べるのをやめ、選んでいる子の周りを
+// キーの添え字を省いた長さで出し、隠れた側に "<" と ">" を置く。
+//
+// req: FR-269
+func TestSwitcherBarWide(t *testing.T) {
+	bar := func(names []string, keys []string, width, sel int) string {
+		sw := &Switcher{Selected: sel}
+		for i, n := range names {
+			sw.Children = append(sw.Children, SwitcherChild{ID: n, Title: n, Key: keys[i]})
+		}
+		r := &Renderer{Width: width, Height: 6, Theme: testTheme()}
+		s := r.Render(&Frame{Float: &Float{ID: 1, View: &Frame{Text: buffer.New("x")}, Fill: true, Switcher: sw}})
+		return screenRows(s)[0]
+	}
+	ja := []string{"ウォッチ式", "スコープ", "例外", "ブレークポイント", "スレッド", "REPL", "出力"}
+	ja2 := []string{"ウォッチ式", "スコープ", "例外", "ブレークポイント", "糸口", "REPL", "出力"}
+	jaKeys := []string{"W", "S", "E", "B", "T", "R", "C"}
+	extra := []string{"Watches", "Scopes", "Exceptions", "Breakpoints", "Threads", "REPL", "Console", "Extra0", "Extra1", "Extra2", "Extra3", "Extra4"}
+	extraKeys := []string{"W", "S", "E", "B", "T", "R", "C", "", "", "", "", ""}
+	for _, tt := range []struct {
+		name       string
+		names      []string
+		keys       []string
+		width, sel int
+		want       string
+	}{
+		{"全角 60 桁", ja, jaKeys, 60, 0, " ウォッチ式 [W]  スコ…  例外  ブレ…  スレ…  REPL  出力"},
+		// 頭文字の違う全角の名前は、最初の 1 文字を残して並べる。
+		{"全角 40 桁の最初の子", ja2, jaKeys, 40, 0, " ウォッチ式 [W]  ス  例  ブ  糸  R…  出"},
+		// 選んでいる子が長く、最初の 1 文字まで縮めても収まらないときは、選んでいる子の周りを出す。
+		{"全角 40 桁", ja2, jaKeys, 40, 3, "< スコープ  例外  ブレークポイント [B] >"},
+		// スコープとスレッドは「ス」で見分けられなくなるので、選んでいる子の周りを出す。
+		{"全角の見分けられない子 40 桁", ja, jaKeys, 40, 3, "< スコープ  例外  ブレークポイント [B] >"},
+		{"全角の見分けられない子の最初の子", ja, jaKeys, 40, 0, " ウォッチ式 [W]  スコープ  例外  ブレー>"},
+		{"全角 20 桁", ja2, jaKeys, 20, 3, "< ブレークポイント >"},
+		{"頭文字が同じ子 40 桁", extra, extraKeys, 40, 0, " Watches [W]  Scopes  Exceptions  Break>"},
+		{"頭文字が同じ子の後ろ", extra, extraKeys, 40, 9, "< REPL  Console  Extra0  Extra1  Extra2>"},
+	} {
+		got := bar(tt.names, tt.keys, tt.width, tt.sel)
+		if got != tt.want {
+			t.Errorf("%s: %q, want %q", tt.name, got, tt.want)
+		}
+		if w := StringWidth(got, 8); w > tt.width {
+			t.Errorf("%s: 表示幅 %d が %d を超えた", tt.name, w, tt.width)
+		}
+	}
+}
+
 // 書き足すテキストと入力の行の組の子では、見出しの行を出力の上に置く。狭い窓では、見出しより先に組の見出しを省き、入力の行を残す。
 //
 // req: FR-269

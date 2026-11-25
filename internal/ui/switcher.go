@@ -1,5 +1,10 @@
 package ui
 
+import (
+	"slices"
+	"unicode/utf8"
+)
+
 // 切り替えの部品（Float.Switcher。FR-269）の見出しの行と、子ごとの窓の中の子の Renderer。
 
 // floatKid は、切り替えの部品の子 1 つの窓の中を描く子の Renderer である（Renderer.floatKids）。
@@ -55,17 +60,19 @@ func switcherLabel(c SwitcherChild) string {
 	return s
 }
 
-// switcherEllipsis は、狭い見出しの行で、切り詰めた子の名前の後に置く印である。
-const switcherEllipsis = "…"
+// switcherEllipsis は、狭い見出しの行で、切り詰めた子の名前の後に置く印である。起動の案内の詰めた行の印（introEllipsis）と同じ文字にする。
+// East Asian Width が曖昧な文字だが、本体は曖昧な幅の文字を 1 列と数える（StringWidth）ので、案内と同じく 1 列で描く。
+const switcherEllipsis = introEllipsis
 
 // switcherLabels は、幅 avail の見出しの行に出す子の見出しを返す（cur は選んでいる子の添字）。
 // どの子があるかを一目で読めるよう、すべての子の見出しが収まるまで、次の順に短くする（nvim-dap-view の見出しを窓の幅で変える label と同じ考え方）。
 //
 //  1. どの子も " 名前 [キー] "
 //  2. 選んでいる子だけ " 名前 [キー] "、ほかの子は " 名前 "（キーの添え字を省く）
-//  3. ほかの子の名前を同じ表示幅まで切り詰め、切った名前の後に "…" を置く（表示幅 2 以上。1 なら名前の最初の文字だけ）
+//  3. ほかの子の名前を同じ表示幅まで切り詰め、切った名前の後に "…" を置く（truncateTitle。名前の最初の 1 文字は、全角でも必ず残す）
 //
-// それでも収まらなければ 3 の最も短い形を返し、drawSwitcher が左右を省いて "<" と ">" を置く。
+// 3 で最も短くしても収まらないか、切り詰めた名前が別の子と同じになって見分けられない（頭文字が同じ子が並ぶ）なら、すべてを並べるのをやめ、
+// 2 の形を返す。drawSwitcher が、選んでいる子の周りを 2 の長さで出し、隠れた側に "<" と ">" を置く。
 func (r *Renderer) switcherLabels(cs []SwitcherChild, cur, avail int) []string {
 	labels := make([]string, len(cs))
 	fits := func() bool {
@@ -89,6 +96,7 @@ func (r *Renderer) switcherLabels(cs []SwitcherChild, cur, avail int) []string {
 	if fits() {
 		return labels
 	}
+	full := slices.Clone(labels)
 	longest := 0
 	for i, c := range cs {
 		if i != cur {
@@ -102,32 +110,53 @@ func (r *Renderer) switcherLabels(cs []SwitcherChild, cur, avail int) []string {
 			}
 		}
 		if fits() {
-			break
+			if distinct(cs, labels, cur) {
+				return labels
+			}
+			break // 見分けられなくなったら、これより短くしても見分けられない
 		}
 	}
-	return labels
+	return full
 }
 
-// truncateTitle は、名前 s を表示幅 n までに切り詰める。切ったら、n が 2 以上なら最後の 1 列を switcherEllipsis にする。
+// distinct は、選んでいる子 cur のほかの子の見出し labels が、名前の違う子の間で同じになっていないかを返す。
+func distinct(cs []SwitcherChild, labels []string, cur int) bool {
+	seen := map[string]string{}
+	for i, l := range labels {
+		if i == cur {
+			continue
+		}
+		if t, ok := seen[l]; ok && t != cs[i].Title {
+			return false
+		}
+		seen[l] = cs[i].Title
+	}
+	return true
+}
+
+// truncateTitle は、名前 s を表示幅 n までに切り詰め、切ったら後に switcherEllipsis を置く。
+// 名前の最初の 1 文字は、n に収まらなくても（全角の文字で n が 1 か 2 のとき）残す。最初の 1 文字と印が n に収まらなければ、印を置かずに
+// 最初の 1 文字だけを返す。このため、返す文字列の表示幅は、n か最初の 1 文字の幅の大きい方を超えない。
 func (r *Renderer) truncateTitle(s string, n int) string {
 	if StringWidth(s, r.tabStop) <= n {
 		return s
 	}
-	keep := n
-	mark := ""
-	if n >= 2 {
-		keep, mark = n-StringWidth(switcherEllipsis, r.tabStop), switcherEllipsis
+	first, size := utf8.DecodeRuneInString(s)
+	fw := StringWidth(string(first), r.tabStop)
+	mw := StringWidth(switcherEllipsis, r.tabStop)
+	if n < fw+mw {
+		return s[:size]
 	}
 	w, end := 0, 0
 	for i, ch := range s {
 		cw := StringWidth(string(ch), r.tabStop)
-		if w+cw > keep {
+		if w+cw > n-mw {
 			break
 		}
 		w += cw
-		end = i + len(string(ch))
+		end = i + utf8.RuneLen(ch)
 	}
-	return s[:end] + mark
+	return s[:end] + switcherEllipsis
 }
 
 // childSpan は、見出しの行に描いた子の見出し 1 つの場所（行 row の列 [from, to)）と、Switcher.Children の添字である。
