@@ -2866,7 +2866,8 @@ Go 以外の言語と、`attach` を使うときは、`extensions.settings.dap` 
 構成の値は、書いた値、`linux` の上書き（`.vscode/launch.json` だけ）、変数の展開、`envFile`、`resolveCommand` の順に当てる。
 
 - 変数は VS Code と同じ書き方で、`${file}`、`${fileDirname}`、`${fileBasenameNoExtension}`、`${relativeFile}`、`${workspaceFolder}`、`${lineNumber}`、`${userHome}`、`${env:名前}`、`${pickProcess}`（自分のプロセスの一覧から選ぶ）などを使える。`${workspaceFolder}` は、`.vscode/launch.json` の構成ではその `.vscode` のあるディレクトリ、設定の構成ではファイルの Git の根（Git の外なら作業ディレクトリ）である
-- 知らない変数と、`${command:…}`、`${config:…}` は、始めずに知らせる。`${input:…}` は、まだ扱えない（始めずに知らせる）
+- 知らない変数と、`${command:…}`、`${config:…}` は、始めずに知らせる
+- `${input:ID}` は、始めるときに利用者に聞く（下の「始めるときに聞く値」）
 - `envFile` は、1 行に 1 つの `名前=値` を読み、`env` に無い名前だけを足す
 - `console` が `integratedTerminal` か `externalTerminal` の構成は、`internalConsole` に替えて送り、そのことを知らせる。デバッグ対象の標準入力へは書けないので、入力の要るプログラムは端末で起動してから attach する
 - `preLaunchTask`、`postDebugTask`、`serverReadyAction` を含む構成は、無視して続けるかを聞く。`compounds` は候補に出さない
@@ -2877,6 +2878,64 @@ Go 以外の言語と、`attach` を使うときは、`extensions.settings.dap` 
 
 `<leader>dl`（`debug.runLast`）と `<leader>dr`（`debug.restart`）は、前回に選んで値を決め終えた構成を、聞き直さず、`resolveCommand` も動かし直さずに使う。
 マクロの再生の中の `<leader>dc` も、一覧を出さずに前回の構成で始める（前回が無ければ失敗する）。
+
+#### 始めるときに聞く値
+
+構成の値に `${input:ID}` を書くと、始めるときに利用者に聞いた値に置き換える（VS Code の `launch.json` の `inputs` と同じ書き方）。
+問いの表 `inputs` は、`.vscode/launch.json` と設定の `dap` に書ける。
+`.vscode/launch.json` の構成は、その `launch.json` の `inputs` を先に引き、無ければ設定の `inputs` を引く。
+設定の構成と、アダプターの起動の方法（`adapters` の `command`、`args` など）は、設定の `inputs` だけを引く。
+1 つの `inputs` の中に同じ `id` が 2 つあれば、後のものを使う（VS Code と同じ）。
+
+```jsonc
+"dap": {
+  "configurations": {
+    "python": [
+      { "name": "引数を聞いて実行", "type": "python", "request": "launch", "program": "${file}", "args": ["${input:args}"], "console": "internalConsole" },
+      { "name": "debugpy へ attach", "type": "python", "request": "attach", "connect": { "host": "127.0.0.1", "port": "${input:debugpyPort}" } },
+    ],
+  },
+  "inputs": [
+    { "id": "args", "type": "promptString", "description": "引数", "split": true },
+    { "id": "debugpyPort", "type": "promptString", "description": "debugpy のポート", "default": "5678" },
+    { "id": "mode", "type": "pickString", "description": "モード", "options": ["debug", { "label": "テスト", "value": "test" }], "default": "debug" },
+  ],
+}
+```
+
+| 項目 | 内容 |
+|---|---|
+| `id` | `${input:ID}` の `ID` |
+| `type` | `promptString`（1 行の入力）か `pickString`（選択肢から選ぶ）。`command` は扱えない |
+| `description` | 問いの文。省くと `id` |
+| `default` | `promptString` では入力の初めの中身、`pickString` では先頭に置く選択肢の値 |
+| `options` | `pickString` の選択肢。文字列か、`label` と `value` の組。9 つまでは番号のキーで選ぶ問いで、10 から上は中央のポップアップの一覧で選ぶ |
+| `password` | 真なら扱えない（入力を隠して聞けないため） |
+| `split` | VS Code に無い項目で、設定の `inputs` にだけ書ける（下の「答えを分けて複数の引数にする」） |
+
+- 1 回の開始で、同じ `ID` は 1 回だけ聞く。聞く順は、構成に書いた順である（`${pickProcess}` も同じ順に並べて聞く。VS Code と同じ）。アダプターの起動の方法にだけ書いた `${input:…}` は、その後に聞く
+- 問いを `<Esc>` か `<C-c>` で取り消すと、残りを聞かずに始めない。聞いている間の `<leader>dt` でも始めない
+- 扱えない `${input:…}`（`inputs` に無い `ID`、`command`、`password`、`.vscode/launch.json` の `split`）は、何も聞かずに知らせて始めない
+- 答えは文字列のまま送る。debugpy の `connect` の `port` と、vscode-js-debug の `attach` の `port` は、文字列の `"5678"` でも繋がる
+- `<leader>dl` と `<leader>dr` とマクロの再生の中の `<leader>dc` は、前回の答えを使い、聞き直さない
+- `resolveCommand` の外部のコマンドが返した値の中の `${input:…}` は、聞かずに文字のまま送る
+- 2 つの問いが続く構成で、2 行を貼り付けるなど、1 つ目の答えの直後に打ったキーが 2 つ目の問いより先に届くと、そのキーはふつうのキーとして処理される。続く問いには、問いが出てから打つ
+
+##### 答えを分けて複数の引数にする
+
+VS Code の `launch.json` には、1 つの答えを複数の引数に分ける書き方が無い（変数の置き換えは、答えを空白で分けない）。
+debugpy は `args` を 1 つの文字列で受けるとシェルで分けるが、`console` が `internalConsole` のときは断る（debugpy 1.8.22 の `adapter/clients.py`）。
+このため、設定の `inputs` の項目に `split` を書けるようにした。
+
+- `split` が真の項目の `${input:ID}` が、配列の要素の全体なら、答えを ASCII の空白（とその連続）で分けた複数の要素にする。`"args": ["${input:args}"]` に `foo  bar` と答えると、`["foo", "bar"]` になる
+- 空の答えと、空白だけの答えは、要素を作らない
+- 全角の空白とタブでは分けない。引用符とバックスラッシュは解かない（`"a b"` は `"a` と `b"` の 2 つになる）。オーナーの nvim の `vim.split(vim.fn.input("Args: "), " ", { trimempty = true })` と同じ分け方である
+- 配列の要素の一部（`"--x=${input:args}"`）と、配列の外（`env` の値など）では、答えを 1 つの文字列のまま入れる
+- `.vscode/launch.json` の `inputs` には書けない。書かれていれば、その項目を使う構成を始める前に知らせ、始めない（VS Code の `inputs` のスキーマは知らない項目を許さないので、他人と共有するファイルに持ち込まないため）
+
+空白を含む引数を渡したいときは、`split` を付けない別の変数にして、配列の要素に分けて書く。
+`pytest -k` の式は空白を含みうるので、`split` を付けずに `"args": ["-s", "${file}", "-k", "${input:pytestK}"]` と書く（空の答えの `-k ""` はどのテストも選ぶ）。
+分ける引数と分けない引数を両方渡すときは、`"args": ["${input:args}", "--name", "${input:name}"]` のように 2 つの変数を並べる。
 
 `<leader>dt` の終え方は、構成の `request` で変わる。
 `launch` で始めたデバッグ対象は終わらせる。

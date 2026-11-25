@@ -3499,7 +3499,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 | Go の `launch` | `dlv dap`（`clientSocket`） | 今の振る舞い（止まる、ステップ実行、出力、ブレークポイント）が変わらない。今までの 1 組の設定のままで動く |
 | Go の `attach` | `dlv dap`（`clientSocket`）の `attach`（`mode` が `local`、`processId` は `${pickProcess}`） | 終えてもデバッグ対象が動き続ける（FR-284）。`dlv dap` が `attach` の `local` に対応することは未確認 |
 | Python の `launch` | `debugpy-adapter`（`stdio`）、`console` は `internalConsole` | 出力が出力の区画に出る。`console` を省いたときに始まらず、`integratedTerminal` を替えて送れば始まる（上の `console` の行の確かめ） |
-| Python の `attach` | `python` のアダプター（`connectFrom` が `connect`）。`python -m debugpy --listen 5678` で起動したプログラムへ、構成の `connect` の `host` と `port`（`${input:port}`）で直に繋ぐ | 終えてもプログラムが動き続ける。DAP で直に繋いで止まり、`disconnect` の後も動き続けることは、2026-11-25 に debugpy 1.8.22 で、拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、`${input:port}` の文字列のポートで繋げるかを確かめる |
+| Python の `attach` | `python` のアダプター（`connectFrom` が `connect`）。`python -m debugpy --listen 5678` で起動したプログラムへ、構成の `connect` の `host` と `port`（`${input:port}`）で直に繋ぐ | 終えてもプログラムが動き続ける。DAP で直に繋いで止まり、`disconnect` の後も動き続けることは、2026-11-25 に debugpy 1.8.22 で、拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、`${input:port}` の文字列のポートで繋げるかを確かめる。#417 で、文字列のポートで繋いで止まることを確かめた（下の「#417 の inputs」） |
 | Python の子のプロセス | 上の `launch` で、`subprocess` で Python の子のプロセスを起こすプログラム | debugpy 1.8.22 が `startDebugging`（`request` は `attach`、`configuration` に `connect`）を送り、その `connect` へ直に繋いで子のセッションの `attach` が成り立つことは、2026-11-25 に拡張機能を通さずに確かめた（上の「つなぎ方」）。拡張機能を通して、子のセッションが `connectFrom` で直に繋がり、子のプロセスのブレークポイントで止まる。手元の 1.8.20 でも同じものを送るかは未確認。`debug.terminate` で、親と一緒に子のプロセスも終わる（子の手順を親の `request` で引くことの確かめ） |
 | Node.js の `launch` | vscode-js-debug の `dapDebugServer.js`（`serverPort`）、`type` は `pwa-node` | 子のセッションが要るか。2026-11-25 に、手元の `dapDebugServer.js` が `startDebuggingRequest`（`configuration` に `type`、`name`、`__pendingTargetId` を入れたもの）を送る処理を持つことを読んだが、`launch` のたびに送るかは未確認。送るなら、子のセッションで止まる。#412 で、`launch` と `attach` のたびに送り、子のセッションで止まることを確かめた（下の「#412 の複数のセッション」） |
 | Node.js の `attach` | 同上。`port` が 9229 の `pwa-node` の `attach`（`NODE_OPTIONS=--inspect` で起動した開発用のサーバー） | 終えてもサーバーが動き続ける |
@@ -3519,6 +3519,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 
 #408 で、上の「設定の形」「アダプターのつなぎ方」「構成の出どころと値の当て方」「`.vscode/launch.json` の読み方」「外部のコマンドの取り決め」「変数」「開始の流れ」の 1〜7 と 10、「終了と切断」を実装した（`cmd/vi-imitation-ext-dap` の `config.go`、`launchjson.go`、`resolve.go`、`resolvecmd.go`、`transport.go`、`picker.go`）。
 `inputs`（FR-298）と `ui`（FR-108、FR-277、FR-278）は、設定に書いても読み捨て、`${input:…}` は扱えない変数として始めずに知らせる（次の issue）。
+`inputs` は #417 で実装した（下の「#417 の inputs」）。
 `startDebugging`（FR-285）は、`initialize` で申し出ず、届いたら失敗で応答してログに書く（#412 で子のセッションを作り、この扱いをやめた）。
 上の表に無い点は、次のとおりに決めた（どれも仮）。
 
@@ -3538,7 +3539,7 @@ PR #410 のレビュー（2026-11-25）を受けて、次のとおりに改め�
 
 - **アダプターの見張り**（必須 1）: Linux では、アダプターを直に起動せず、拡張機能の実行ファイルを見張りとして起動し（引数 `--vi-imitation-ext-dap-guard`）、見張りにアダプターを起動させる（`guard_linux.go`）。見張りは子の回収役（`PR_SET_CHILD_SUBREAPER`）になり、`SIGTERM`（拡張機能が SIGKILL で終わったときの `Pdeathsig` を含む）を受けたときと、アダプターが終わったときに、アダプターへ `SIGTERM` を送って 500 ミリ秒待ち、残った子孫（`/proc` の親のプロセス ID でたどる）へ `SIGKILL` を送る。vscode-js-debug の `dapDebugServer.js` は `SIGTERM` で終わるときにデバッグ対象の node を残すので、拡張機能が SIGKILL で終わるとデバッグ対象が孤児で残っていた。アダプターの子孫から抜け出したプロセス（`attach` の相手、二重の fork の後に別の回収役の下に入ったもの）は止めない。Linux 以外では見張りを使わず、今までどおり直に起動する（子孫は残りうる）
 - **子のセッションを求められたとき**（必須 2）: アダプターから `startDebugging` が届いたら、失敗で応答し、「アダプター <名前> が子のセッション（startDebugging）を求めたが、まだ対応していないので、デバッグを終える」をメッセージの行に出して、終え方の表のとおりに終える（FR-285 の issue まで。#412 で子のセッションを作り、この扱いをやめた）
-- **`${pickProcess}` の型**（必須 3）: 構成の値の全体が `${pickProcess}` だけの文字列なら、展開した値（プロセス ID）を数（JSON の数）にして送る。6.7 の展開の口の「文字列の全体が 1 つの変数でも、展開した結果は文字列で、数にしない」の例外で、展開の口は変えずに DAP の拡張機能が展開の後に直す。dlv 1.27.2 の `attach` は `processId` を数でしか受けない（`service/dap/types.go` の `ProcessID int`。レビューで確かめた）。オーナーの nvim の `dap.utils.pick_process` も数を返す。ほかの文字と混ざった値（`"pid ${pickProcess}"`）は文字列のままにする。VS Code の `${command:pickProcess}` の値がアダプターへどの型で届くかは確かめていない。`${input:…}` を数に直すかは 10 章の未決に残す
+- **`${pickProcess}` の型**（必須 3）: 構成の値の全体が `${pickProcess}` だけの文字列なら、展開した値（プロセス ID）を数（JSON の数）にして送る。6.7 の展開の口の「文字列の全体が 1 つの変数でも、展開した結果は文字列で、数にしない」の例外で、展開の口は変えずに DAP の拡張機能が展開の後に直す。dlv 1.27.2 の `attach` は `processId` を数でしか受けない（`service/dap/types.go` の `ProcessID int`。レビューで確かめた）。オーナーの nvim の `dap.utils.pick_process` も数を返す。ほかの文字と混ざった値（`"pid ${pickProcess}"`）は文字列のままにする。VS Code の `${command:pickProcess}` の値がアダプターへどの型で届くかは確かめていない。`${input:…}` を数に直すかは 10 章の未決に残す（#417 で、数に直さないことにして未決を閉じた。下の「#417 の inputs」の値の型）
 - **外部のコマンドの待ち**（必須 4）: 外部のコマンドが、標準出力の書き込み口を持ったままの子プロセスを、プロセスグループの外（`setsid`）に残しても、コマンドが終わった（か止めた）後 500 ミリ秒で読むのを打ち切る（`exec.Cmd` の `WaitDelay`）。0 で終わっていれば、それまでに読んだ出力を使い、その旨をログに書く
 - **外部のコマンドの値の中の `${…}`**（推奨 1）: 展開し直さずに文字のまま送る（上の「つなぐ段階」と 6.7 の取り決めどおり）。構成に残ったときに誤りにするのは `${port}` と `${clientAddr}` だけにした
 - **外部のコマンドの失敗の知らせ**（推奨 2）: コマンドの名前を実行ファイルの最後の名前にし、標準エラー出力の要旨を文の前に置く（メッセージの行は画面の幅で切れるため）。コマンドの全体と失敗の全文はログに書く
@@ -3605,6 +3606,62 @@ vscode-js-debug の版は、`dapDebugServer.js` の置き場には無いが、`l
 
 拡張機能への SIGKILL（拡張機能のプロセスグループへ）は、vscode-js-debug の `launch` で止まっている間と、debugpy の子のセッションが止まっている間に送り、どちらもアダプターとデバッグ対象（debugpy は親と子のプロセス）が残らなかった。
 本体の `:qa!` は、vscode-js-debug の `launch` で止まっている間に打ち、何も残らなかった。
+
+#### #417 の inputs
+
+#417 で、上の「`.vscode/launch.json` の読み方」の `inputs` の行（FR-298）と、答えを分ける `split`（FR-307）を実装した（`cmd/vi-imitation-ext-dap` の `inputs.go`）。
+VS Code の文書「Variables reference」（https://code.visualstudio.com/docs/reference/variables-reference）の「Input variables」と「Details of variable substitution」を、2026-11-25 に読み直して合わせた。
+拡張機能の `minAPIVersion` は、`input/ask` の版の 0.21.0 に上げた。
+上の表に無い点は、次のとおりに決めた（どれも仮）。
+
+- **置き場**: `.vscode/launch.json` の `inputs` と、設定の `inputs`（上の「設定の形」）。`.vscode/launch.json` の構成は、その `launch.json` の `inputs` を先に引き、無ければ設定の `inputs` を引く。設定の構成と今までの 1 組の設定の構成は、設定の `inputs` だけを引く（ほかのワークスペースの `launch.json` を引かないため）。同じ表の中に同じ `id` が 2 つあれば、後のものを使う（VS Code の `baseConfigurationResolverService.ts` の `showUserInput` が `inputInfos.filter(item => item.id === variable).pop()` で後のものを使うのに合わせた。PR #418 のレビューの推奨 3）
+- **アダプターの起動の方法の `${input:ID}`**: 設定の `inputs` だけを引く（アダプターの起動の方法は利用者の設定だけが決める、という #399 の決めに合わせた。PR #418 のレビューの推奨 7）。構成とアダプターの起動の方法は 1 回の展開で、同じ変数は 1 回だけ評価するので、`.vscode/launch.json` の構成を選んだときに、アダプターの起動の方法の `${input:ID}` の `ID` が `launch.json` の `inputs` にもあれば、どちらの項目で聞くかを決められないので、何も聞かずに知らせて始めない（`inputAsker.checkAdapter`）
+- **形の誤り**: 表を作れない誤り（`inputs` が配列でない、要素がオブジェクトでない、`id` が空でない文字列でない）は、設定なら `initialize` を失敗させ、`.vscode/launch.json` なら読めない `launch.json` として扱う（上の表の「形式」）。ほかの形の誤り（`type` が文字列でない、`options` が配列でない、`default` が文字列でない など）は、その `ID` の `${input:…}` を使ったときに、扱えない変数として何も聞かずに知らせる。`pickString` で `options` が無いもの、`default` が `options` の値に無いもの（文書の「It must be one of the option values.」）、改行を含む `promptString` の `default` も同じにする
+- **聞く順**: 文書の「Details of variable substitution」は、すべての変数を評価してから置き換えると書くが、評価の順を書いていない（「makes substitution robust against evaluation order」）。VS Code の実装は、構成を書いた順（`Object.entries` の順）にたどって変数を集め、出てきた順に 1 つずつ聞く（PR #418 のレビューの推奨 2 が、コミット 0c93ff4ee96b5f522506fb4aa707cef06b3a2c3c の `configurationResolverExpression.ts` と `baseConfigurationResolverService.ts` の `resolveWithInteraction` を読んだもの）。これに合わせ、展開の前に、利用者に聞く変数（`${input:ID}` と `${pickProcess}`）を、構成に書いた順に聞いて覚え、展開ではその答えを使う。展開の口（6.7）の評価の順は値のキーの辞書順で、JSON を `map` に読むと書いた順が失われるので、設定と `.vscode/launch.json` の構成を読む前の文字列から、変数の書かれた順を取っておく（`writtenVars`）。構成に無いもの（アダプターの起動の方法にだけ書いたもの）は、その後に聞く。取り消したら残りを聞かない。最初の実装は `inputs` の表の順に聞いていたが、VS Code と違うので改めた
+- **問いの文**: `description`（無ければ `id`）の末尾に `:` と空白を足したもの。`description` の改行は空白にする。`choice/ask` の題には末尾の空白を付けない
+- **`pickString`**: `default` の選択肢を先頭に置き、9 つまでは `choice/ask` で、10 から上は中央のポップアップの一覧（構成の候補と同じ `pick`）で選ばせる。`choice/ask` は番号のキーで選ぶ問いで、10 個目から上は数だけを出すため（6.7）。選択肢の文は、`label` と `value` が違えば `label: value`（文書の「The dropdown will display label: value.」）、同じか `label` が無ければ `value`
+- **空の答え**: 空の文字列のまま使う。文書の `default` の説明（「default value that will be used if the user doesn't enter something else」）は、`input/ask` では初めの中身にしているので、利用者が消して確定した空は空にする
+- **取り消し**: `input/ask` と `choice/ask` の取り消し、一覧を閉じたこと、聞いている間の `debug.terminate`（準備の `ctx` を取り消す）は、どれも「デバッグの開始を取り消した」にして始めない
+- **前回の答え**: `debug.runLast`、`debug.restart`、再生中（`sync`）の開始は、答えを当て終えた構成（`runSpec`）を使うので聞かない（上の「構成の出どころと値の当て方」の末尾の取り決めのまま）
+- **外部のコマンドの値**: `resolveCommand` が返した値の中の `${input:…}` は、展開し直さない取り決め（6.7）のまま、聞かずに文字のまま送る
+- **値の型**: 答えは文字列のまま送り、数に直さない。オーナーの使い方で数の要る項目は、文字列のままで通った（6.7 の「設定の文字列の変数の展開」の数に直すかの節と、10 章の未決を閉じた。PR #418 のレビューの推奨 6）
+  - debugpy 1.8.22 は、`port` を `int` として読むときに、文字列を `int()` で数に直す（`debugpy/common/json.py` の `_converter` と `of_type`。PR #418 のレビューで読んだ）
+  - `connectFrom` で直に繋ぐ debugpy の `connect.port` は、拡張機能が数として読める文字列を受ける（#417 の実物の確かめで、`"5689"` で繋がった）
+  - vscode-js-debug の `attach` の `"port": "${input:nodePort}"`（文字列の `"9229"`）は、`node --inspect` のプロセスに繋がって止まった（PR #418 のレビューの実物の確かめ。版は 6.4 の「#412 の複数のセッション」の 1.117.0）
+
+**答えを空白で分けて複数の引数にする書き方（FR-307）**
+
+オーナーの nvim は、引数を `vim.split(vim.fn.input("Args: "), " ", { trimempty = true })` で聞き、答えを空白で分けた列を `args` にしている。
+VS Code の文書は「Variable substitution replaces a variable with its string value. It doesn't add quotes or split the result on spaces.」と書き、`launch.json` に 1 つの答えを複数の要素に分ける書き方は無い。
+debugpy 1.8.22 は、`args` が 1 つの文字列ならシェルで分けるが、`console` が `internalConsole` のときは「Shell expansion in "args" is not available for "console":"internalConsole"」で断る（`adapter/clients.py` の `launch_request`。2026-11-25 に手元のソースで読んだ）。拡張機能は `console` を `internalConsole` にして送る（FR-288）ので、この形は使えない。
+このため、利用者の設定の `inputs` の項目に、VS Code に無い真偽の項目 `split` を足した。
+PR #418 のレビューの裁定要 1 は、`split` を `launch.json` にも書ける形（A）、利用者の設定にだけ書ける形（B）、文字列の `args` をシェルの規則で分ける形（C）を挙げた。オーケストレータが B に決めた（オーナーには知らせ、違う形を望めば別の issue で替える）。
+
+- `split` が真の項目を指す `${input:ID}` が、配列の要素の全体なら、展開の後に、その要素を、答えを ASCII の空白（U+0020）とその連続で分けた複数の要素に置き換える。空の答えと空白だけの答えは要素を作らない（nvim の `trimempty` と同じ）。全角の空白（U+3000）とタブでは分けない。引用符とエスケープは解かない（`"a b"` は `"a` と `b"` になる）。オーナーの nvim の `vim.split(…, " ")` も ASCII の空白でしか分けないのに合わせた（PR #418 のレビューの推奨 5。最初の実装は Go の `strings.Fields` で、全角の空白でも分けていた）
+- 配列の要素でない所と、ほかの文字と混ざった所（`"--x=${input:args}"`）は、答えを 1 つの文字列のまま入れる
+- `.vscode/launch.json` の `inputs` の `split` は、扱えない項目にし、その項目の `${input:…}` を使う構成を選んだら、何も聞かずに知らせて始めない（`errSplitInLaunchJSON`）。VS Code の `inputs` の JSON スキーマは、`promptString`、`pickString`、`command` のどれにも `additionalProperties: false` を付けている（コミット 0c93ff4ee96b5f522506fb4aa707cef06b3a2c3c の `src/vs/workbench/services/configurationResolver/common/configurationResolverSchema.ts`。2026-11-25 に読んだ）。このため、`split` を書いた `launch.json` を VS Code で開くと、スキーマの警告が出る見込みである（画面では確かめていない）。実行では、`showUserInput` が `type`、`description`、`default`、`password`、`options` だけを読むので、読み捨てて答えを 1 つの引数にする見込みである（ソースを読んでの推測で、実行はしていない）。他人と共有する `launch.json` に、VS Code のスキーマに合わない項目を持ち込まないため、利用者の設定にだけ書けるようにした
+- `pytest -k` の式のように空白を含みうる答えは、`split` を付けずに `"-k", "${input:pytestK}"` と 2 つの要素に書く。空の答えは `-k ""` になる
+
+2026-11-25 に、`make dist` の本体を tmux の独自のサーバーで起動し、debugpy 1.8.22 と pytest 9.2.0 で、同梱の設定の例と同じ構成を次のとおり確かめた。
+
+| 構成 | 答え | 結果 |
+|---|---|---|
+| 今のファイルを実行（引数を聞く） | `foo  bar baz` | `sys.argv[1:]` が `['foo', 'bar', 'baz']` になり、ブレークポイントで止まった。`debug.runLast` は聞かずに同じ引数で始めた |
+| pytest の `-k` を聞く | `beta and not alpha` | 1 つのテストだけを選んで、そのテストのブレークポイントで止まった |
+| 同上 | 空 | 2 つのテストを選び、最初のテストのブレークポイントで止まった（`-k ""` はどのテストも選ぶ） |
+| モジュールを実行 | `pkg.worker` と `a b` | 相対の import を持つモジュールが `-m` で動き、引数が `['a', 'b']` になった |
+| debugpy へ attach（ポートを聞く） | `5689`（既定の `5678` を消して打った）と `remoteRoot` | `python -m debugpy --listen 127.0.0.1:5689` で動くプロセスへ、文字列のポートで直に繋いで止まった。`debug.terminate` の後もプロセスは動き続けた |
+
+問いを `<Esc>` と `<C-c>` で取り消すと、「デバッグの開始を取り消した」が出て、アダプターは起動しなかった。
+問いを出している間に打った `<leader>dt` は、問いの入力の文字になり、デバッグの操作にはならなかった（問いの入力はキーマップを通さない。1.4）。
+聞いている間の `debug.terminate` で始めないことは、本体の役のテストで確かめた（画面では、問いの間に操作を呼ぶ手段が無い）。
+
+PR #418 のレビュー（推奨 1）で、2 つの問いが続く構成で、1 つ目の答えと 2 つ目の問いの間に本体へ届いたキーが、ふつうのキーとして処理されることが分かった。
+2 行を 1 回で貼り付けると、2 つ目の行の `a` がノーマルモードの追記として効いてバッファを書き換え、2 つ目の問いはその後に出た。
+別のペインで問いを待たせていた `<leader>dt` も、1 つ目に答えた直後に処理された。
+拡張機能は、1 つ目の答えを受けてすぐに 2 つ目の問いを送るが、その往復の間に本体がキーを処理する。
+問いをまとめて先に送って本体の問いの列に並べる形は、送る順を `ext/server` の口で保てず、一覧（`pane/open`）の問いとも混ぜられないので採らなかった。
+本体の側の扱い（拡張機能の問いが続く間のキーを、FR-275 の「問いに向けて打ち続けたキーでバッファを編集しない」の考え方で扱うか）を、別の issue で決める。
 
 ### 6.5 ACP
 
@@ -4598,6 +4655,10 @@ ACP の拡張機能は、エージェントが書いた内容をそのまま書�
 一方、`python -m debugpy --listen` で待つプロセスへ直に繋いだ `attach` は、`connect` の `port` を文字列の `"5681"` にしても止まった（2026-11-25、debugpy 1.8.22。6.4 の「つなぎ方」）。このときの `connect` は、つなぐ先を決めるために拡張機能が読む値（`connectFrom`）で、拡張機能は数として読める文字列を受ける。
 VS Code が展開した文字列を数に直して渡すかは、未確認である。
 DAP の拡張機能の実装の issue で、数に直す扱い（全体が 1 つの変数で、展開した値が数として読める文字列なら、構成の値を数にする、など）を要るかを確かめて決める。
+#417（PR #418 のレビューの推奨 6）で確かめ、数に直さないことにした（6.4 の「#417 の inputs」の値の型）。
+debugpy 1.8.22 は、`int` として読む項目の文字列を `int()` で数に直す（`debugpy/common/json.py` の `_converter` と `of_type`）ので、上の 1.8.20 からの見込み（断る）は 1.8.22 には当たらない。
+vscode-js-debug の `attach` も、文字列の `"9229"` の `port` で繋がった。
+数に直す扱いは、文字列を断るアダプターが見つかったときに改めて決める。`${pickProcess}` だけを数にする扱い（6.4 の「#408 の設定の作り替え」）は変えない。
 
 #403 で、上の表を `ext/expand` に実装した（`ext/expand` の package の doc）。
 表に無い点は、次のとおりに決めた（どれも仮）。
@@ -6199,7 +6260,6 @@ tmux の中の構成（server と編集の client が別のプロセス）の起
 | マクロの再生で、ファインダーの候補を読み終える前に `<CR>` が来たとき、今の入力に答えた最初の空でない一覧（読みかけの一覧のこともある）で選ぶこと。一致が無い入力の `<CR>` は、選ばずに待ったままになる（PR #249 の仮の扱い）。ほかの拡張機能が再生中にポップアップを開くときも、応答の前に開けば同じく残りのキーがポップアップへ渡る | 1.4、3 |
 | ペインの部品（`pane/open`）の書き足し（`view/append` など）、末尾を追う指定、`contributes.popupKeys` のモードの宣言（今はノーマルモードだけで引く）。ACP の返答（FR-111）、デバッグ対象の出力（FR-108）、ファインダー（FR-106）で要る（PR #242 のレビューの推奨 5）。#399 で、書き足しを `view/append` にし、末尾の追従をカーソルが最後の行にあるかで決める形にした（1.4 の「#399 の切り替えの部品と書き足し」。FR-272）。`popupKeys` のモードの宣言は、ACP の取り消しのキー（FR-111）の issue で決める | 1.4、5.3 |
 | 切り替えの部品（FR-269）の中でだけ別の操作にするキーの割り当ての口。オーナーの nvim は DAP のペインの中の `<Tab>` と `<S-Tab>` で区画を切り替えるが、本体の `<Tab>` はタブの移動（FR-98）で、`keymap` は部品を区別しない（1.4 の「#399 の切り替えの部品と書き足し」）。裁定までは既定のキーと子の `key` だけで作り（PR #401 の裁定要 1 の A）、部品の中だけの割り当てを後で足せるよう、キーを引く順の 2 番目を空けておく。推奨は、`keymap` に部品の中だけの割り当ての置き場を足す形（同じく B） | 1.4、7 |
-| `${input:ID}` のように文字列で展開した値を、数を要る構成の項目に渡すときに数に直すか（6.7 の「設定の文字列の変数の展開」）。`${pickProcess}` だけは、#408 で、値の全体がその変数だけなら数にした（6.4 の「#408 の設定の作り替え」） | 6.4、6.7 |
 | DAP の `serverPort` のつなぎ方で、空いたポートを決めてからアダプターが待ち受けるまでの間に、別のプロセスが同じ番号を取りうること（6.4 の「アダプターのつなぎ方」） | 6.4 |
 | tmux の中の構成（server と編集の client が別のプロセス）の起動時間と RSS を NFR-05 の対象にするか | 9.1 |
 | herdr のポップアップにプレビュー（FR-149）を出すかを、端末の幅で決める方法。herdr の層は端末の幅を返す口を持たず、今は開いた client のペインの幅で代える（分割した狭いペインから開くと、端末の幅で数えるより出しにくい）。herdr のポップアップでの見え方は確かめていない（#288） | 1.4 |

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/tailscale/hujson"
 
+	"github.com/piplupflipper/vi-imitation/ext/expand"
 	"github.com/piplupflipper/vi-imitation/ext/project"
 )
 
@@ -54,12 +56,16 @@ type launchFile struct {
 	configurations []map[string]any
 	// hasCompounds は、compounds を書いていることを表す。
 	hasCompounds bool
+	// inputs は、${input:ID} の問いの表である（FR-298）。
+	inputs inputTable
+	// written は、configurations と同じ並びの、構成ごとの利用者に聞く変数の書かれた順である（writtenVars）。
+	written [][]expand.Var
 }
 
 // readLaunchJSON は、folder の .vscode/launch.json を JSONC として読む（hujson で JSON に直してから UseNumber で読む）。
-// version は読まない。compounds は候補にしない。presentation.hidden が真の構成は候補から外す。
+// version は読まない。compounds は候補にしない。presentation.hidden が真の構成は候補から外す。inputs は ${input:ID} の問いの表にする。
 //
-// req: FR-281
+// req: FR-281, FR-298
 func readLaunchJSON(folder string) (*launchFile, error) {
 	path := filepath.Join(folder, launchJSONPath)
 	data, err := os.ReadFile(path)
@@ -87,6 +93,9 @@ func readLaunchJSON(folder string) (*launchFile, error) {
 			lf.hasCompounds = true
 		}
 	}
+	if lf.inputs, err = parseInputs(top["inputs"], false); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	raw, ok := top["configurations"]
 	if !ok || raw == nil {
 		return lf, nil
@@ -95,6 +104,7 @@ func readLaunchJSON(folder string) (*launchFile, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s: configurations is not an array", path)
 	}
+	rawConfigs := configsRaw(std)
 	for i, c := range arr {
 		m, ok := c.(map[string]any)
 		if !ok {
@@ -106,8 +116,25 @@ func readLaunchJSON(folder string) (*launchFile, error) {
 			}
 		}
 		lf.configurations = append(lf.configurations, m)
+		var w []expand.Var
+		if i < len(rawConfigs) {
+			w = writtenVars(rawConfigs[i])
+		}
+		lf.written = append(lf.written, w)
 	}
 	return lf, nil
+}
+
+// configsRaw は、JSON の data の最上位の configurations の配列の要素を、読む前の文字列のまま返す（writtenVars のため）。
+// 読めなければ nil を返す（聞く順は展開の口の順になる）。
+func configsRaw(data []byte) []json.RawMessage {
+	var top struct {
+		Configurations []json.RawMessage `json:"configurations"`
+	}
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil
+	}
+	return top.Configurations
 }
 
 // applyPlatform は、構成の linux の中のキーで、構成の同じキーを置き換える（文書の「Platform-specific properties」）。

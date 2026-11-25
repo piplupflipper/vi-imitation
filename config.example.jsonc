@@ -424,6 +424,17 @@
               "cwd": "${workspaceFolder}",
               "python": "${workspaceFolder}/.venv/bin/python",
             },
+            // 引数を聞いて渡す。${input:args} は下の inputs の split の項目なので、答えを ASCII の空白で分けた複数の引数になる
+            {
+              "name": "今のファイルを実行（引数を聞く）",
+              "type": "python",
+              "request": "launch",
+              "program": "${file}",
+              "args": ["${input:args}"],
+              "console": "internalConsole",
+              "cwd": "${workspaceFolder}",
+              "python": "${workspaceFolder}/.venv/bin/python",
+            },
             {
               "name": "pytest: 今のファイル",
               "type": "python",
@@ -434,15 +445,37 @@
               "cwd": "${workspaceFolder}",
               "python": "${workspaceFolder}/.venv/bin/python",
             },
-            // python -m debugpy --listen 127.0.0.1:5678 app.py で待つプロセス（コンテナなど）へ attach する。
-            // ソースは bind mount の前提で、localRoot（ワークスペースの根）と remoteRoot を対応づける
+            // pytest -k の式を聞く。式は空白を含みうるので分けずに 1 つの引数にする。空の答えは -k "" で、どのテストも選ぶ
             {
-              "name": "debugpy へ attach（5678）",
+              "name": "pytest: 今のファイル（-k を聞く）",
+              "type": "python",
+              "request": "launch",
+              "module": "pytest",
+              "args": ["-s", "${file}", "-k", "${input:pytestK}"],
+              "console": "internalConsole",
+              "cwd": "${workspaceFolder}",
+              "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            // モジュールの名前と引数を聞いて python -m で実行する（相対の import を持つパッケージの中のモジュール、uvicorn など）
+            {
+              "name": "モジュールを実行（-m を聞く）",
+              "type": "python",
+              "request": "launch",
+              "module": "${input:module}",
+              "args": ["${input:args}"],
+              "console": "internalConsole",
+              "cwd": "${workspaceFolder}",
+              "python": "${workspaceFolder}/.venv/bin/python",
+            },
+            // python -m debugpy --listen 127.0.0.1:5678 app.py で待つプロセス（コンテナなど）へ、ポートを聞いて attach する。
+            // ソースは bind mount の前提で、localRoot（ワークスペースの根）と、聞いた remoteRoot を対応づける
+            {
+              "name": "debugpy へ attach（ポートを聞く）",
               "type": "python",
               "request": "attach",
               "justMyCode": false,
-              "connect": { "host": "127.0.0.1", "port": 5678 },
-              "pathMappings": [{ "localRoot": "${workspaceFolder}", "remoteRoot": "/app" }],
+              "connect": { "host": "127.0.0.1", "port": "${input:debugpyPort}" },
+              "pathMappings": [{ "localRoot": "${workspaceFolder}", "remoteRoot": "${input:remoteRoot}" }],
             },
           ],
           // javascriptreact と typescriptreact で使うときは、同じ構成を並べる
@@ -487,6 +520,18 @@
             { "name": "開発用のサーバーへ attach（9229）", "type": "pwa-node", "request": "attach", "port": 9229, "cwd": "${workspaceFolder}", "sourceMaps": true, "skipFiles": ["<node_internals>/**"] },
           ],
         },
+        // ${input:ID} で、始めるときに聞く値（.vscode/launch.json の inputs と同じ形）。同じ ID は 1 回の開始で 1 回だけ、構成に書いた順に聞く。
+        // promptString は 1 行の入力（default は初めの中身）、pickString は options から選ばせる。command の種類と password は扱えない。
+        // split（VS Code に無い項目。この設定にだけ書け、.vscode/launch.json には書けない）が真なら、配列の要素の全体が ${input:ID} だけのとき、
+        // 答えを ASCII の空白で分けた複数の要素にする（全角の空白では分けず、引用符は解かない。空白を含む引数は split の無い別の変数にする）。
+        // debug.runLast（<leader>dl）と debug.restart は、前回の答えを使い、聞き直さない
+        "inputs": [
+          { "id": "module", "type": "promptString", "description": "モジュール（-m）" },
+          { "id": "args", "type": "promptString", "description": "引数", "split": true },
+          { "id": "pytestK", "type": "promptString", "description": "pytest -k" },
+          { "id": "debugpyPort", "type": "promptString", "description": "debugpy のポート", "default": "5678" },
+          { "id": "remoteRoot", "type": "promptString", "description": "remoteRoot", "default": "/app" },
+        ],
       },
     },
     "activation": { "lsp": [{ "on": "filetype", "pattern": "python" }] },
