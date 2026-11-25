@@ -124,10 +124,13 @@ type session struct {
 	halted bool
 	// exec は、止まった位置である。止まっていないか、位置が分からなければ nil。
 	exec *execPoint
-	// thread は、選んでいるスレッドの ID である（最後に止まったスレッド。0 は未知）。
-	thread int
-	// frame は、選んでいるフレームの ID である（止まったスレッドの先頭のフレーム。0 は未知）。
-	frame int
+	// thread は、選んでいるスレッドの ID である（最後に止まったスレッド）。hasThread が false なら未知。
+	// vscode-js-debug はスレッドの ID に 0 を使うので、0 を未知の印にしない（2026-11-25 に確かめた）。
+	thread    int
+	hasThread bool
+	// frame は、選んでいるフレームの ID である（止まったスレッドの先頭のフレーム）。hasFrame が false なら未知。
+	frame    int
+	hasFrame bool
 }
 
 // linesStartAt1 は、initialize で送る linesStartAt1 と columnsStartAt1 である。
@@ -449,6 +452,26 @@ func (s *session) start() error {
 	return <-launched
 }
 
+// reconfigure は、restart の後に届いた initialized に応えて、すべてのブレークポイントの setBreakpoints と、
+// configurationDone（対応していれば）を送り直す（DAP の仕様の Launch Sequencing と同じ順）。
+func (s *session) reconfigure() {
+	ctx, cancel := context.WithTimeout(s.eventCtx, s.d.timeouts.launch)
+	defer cancel()
+	s.d.mu.Lock()
+	paths := slices.Sorted(maps.Keys(s.d.bps))
+	s.d.mu.Unlock()
+	for _, path := range paths {
+		if err := s.sendBreakpoints(ctx, path); err != nil {
+			s.d.logf("setBreakpoints %s: %v", path, err)
+		}
+	}
+	if c := s.getConn(); c != nil && s.supports(func(c *capabilities) bool { return c.SupportsConfigurationDoneRequest }) {
+		if err := c.call(ctx, "configurationDone", nil, nil); err != nil {
+			s.d.logf("configurationDone after restart: %v", err)
+		}
+	}
+}
+
 // sendBreakpoints は、path のブレークポイントのすべてを setBreakpoints で送り、応答で印を付け直す。
 // アダプターが条件付きのブレークポイントに対応していなければ（supportsConditionalBreakpoints が無ければ）、条件を外して送り、
 // 対応していないことをセッションごとに 1 回メッセージの行に出す（FR-286）。
@@ -477,6 +500,12 @@ func (s *session) sendBreakpoints(ctx context.Context, path string) error {
 	var res setBreakpointsResponse
 	if err := c.call(ctx, "setBreakpoints", args, &res); err != nil {
 		return err
+	}
+	if len(res.Breakpoints) != len(args.Breakpoints) {
+		// 応答の breakpoints は、送った breakpoints と同じ順に並ぶ（仕様の SetBreakpoints Request）ので、数が合わない応答は印に使わない。
+		// vscode-js-debug の子のセッションは、2 回目の initialized の後に送り直した setBreakpoints へ空の列を返す（2026-11-25 に確かめた）。
+		s.d.logf("session %d: setBreakpoints %s: %d results for %d breakpoints; ignored", s.id, path, len(res.Breakpoints), len(args.Breakpoints))
+		return nil
 	}
 	s.d.applyBreakpoints(s, path, gen, res.Breakpoints)
 	return nil
@@ -512,9 +541,9 @@ func (s *session) callGen(ctx context.Context, gen uint64, command string, args,
 // threadID は、続行やステップ実行の対象のスレッドを返す。選んでいるスレッドが無ければ threads で問い合わせ、最初のスレッドにする。
 func (s *session) threadID(ctx context.Context) (int, error) {
 	s.d.mu.Lock()
-	id := s.thread
+	id, ok := s.thread, s.hasThread
 	s.d.mu.Unlock()
-	if id != 0 {
+	if ok {
 		return id, nil
 	}
 	c := s.getConn()
@@ -772,7 +801,14 @@ func (s *session) handleEvents() {
 func (s *session) handleEvent(e dapEvent) {
 	switch e.name {
 	case "initialized":
-		s.initializedOnce.Do(func() { close(s.initialized) })
+		select {
+		case <-s.initialized:
+			// 2 回目の initialized は、restart の後にアダプターが設定を求め直したもの（dlv 1.27.2 の onRestartRequest は、
+			// 始め直した後に initialized を送る）。ブレークポイントと configurationDone を送り直す。
+			go s.reconfigure()
+		default:
+			s.initializedOnce.Do(func() { close(s.initialized) })
+		}
 	case "stopped":
 		var body stoppedEvent
 		if err := json.Unmarshal(e.body, &body); err != nil {
@@ -782,6 +818,15 @@ func (s *session) handleEvent(e dapEvent) {
 		s.stopped(&body)
 	case "continued":
 		s.d.continued(s)
+	case "breakpoint":
+		var body breakpointEvent
+		if err := json.Unmarshal(e.body, &body); err != nil {
+			s.d.logf("breakpoint event: %v", err)
+			return
+		}
+		if body.Reason == "changed" && body.Breakpoint.ID != 0 {
+			s.d.breakpointChanged(s, body.Breakpoint)
+		}
 	case "exited":
 		var body exitedEvent
 		if err := json.Unmarshal(e.body, &body); err == nil {
@@ -890,29 +935,27 @@ func (s *session) startChild(seq int, body json.RawMessage) {
 // 先頭のフレームの位置へカーソルを移し、実行位置の印を付ける。
 // stackTrace の応答が届くまでに世代が進んだら（続けた、選び直した。FR-287）、表示に使わずに捨てる。
 func (s *session) stopped(body *stoppedEvent) {
-	tid := 0
-	if body.ThreadID != nil {
-		tid = *body.ThreadID
+	if len(body.HitBreakpointIDs) > 0 {
+		s.d.breakpointsHit(s, body.HitBreakpointIDs)
 	}
-	gen := s.d.markStopped(s, tid)
+	gen := s.d.markStopped(s, body.ThreadID)
 	ctx, cancel := context.WithTimeout(s.eventCtx, s.d.timeouts.request)
 	defer cancel()
-	if tid == 0 {
-		id, err := s.threadID(ctx)
-		if err != nil {
-			s.d.logf("threads: %v", err)
-			s.d.stoppedWithoutSource(s, gen, body.Reason)
-			return
-		}
-		tid = id
+	tid, err := s.threadID(ctx)
+	if err != nil {
+		s.d.logf("threads: %v", err)
+		s.d.stoppedWithoutSource(s, gen, body.Reason)
+		return
+	}
+	if body.ThreadID == nil {
 		s.d.mu.Lock()
 		if s.gen.Load() == gen {
-			s.thread = tid
+			s.thread, s.hasThread = tid, true
 		}
 		s.d.mu.Unlock()
 	}
 	var st stackTraceResponse
-	err := s.callGen(ctx, gen, "stackTrace", stackTraceArguments{ThreadID: tid, StartFrame: 0, Levels: 1}, &st)
+	err = s.callGen(ctx, gen, "stackTrace", stackTraceArguments{ThreadID: tid, StartFrame: 0, Levels: 1}, &st)
 	if errors.Is(err, errStale) {
 		s.d.logf("session %d: stackTrace for thread %d: response arrived after the selection changed; dropped", s.id, tid)
 		return

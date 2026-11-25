@@ -64,10 +64,19 @@ type setBreakpointsArguments struct {
 
 // breakpoint は、仕様の Breakpoint のうち、使う項目である。
 type breakpoint struct {
+	// ID は、アダプターが振ったブレークポイントの ID である。無ければ 0。breakpoint の event で、検証の結果が後から変わったことを知らせるのに使う。
+	ID int `json:"id,omitempty"`
 	// Verified は、ブレークポイントを置けたかどうかである（望んだ位置とは限らない）。
 	Verified bool `json:"verified"`
 	// Line は、実際に置いた位置の開始の行である。無ければ 0。
 	Line int `json:"line,omitempty"`
+}
+
+// breakpointEvent は、breakpoint の event の body（仕様の BreakpointEvent）である。
+// reason が changed なら、setBreakpoints の応答で返した ID のブレークポイントの検証の結果か位置が変わったことを表す。
+type breakpointEvent struct {
+	Reason     string     `json:"reason"`
+	Breakpoint breakpoint `json:"breakpoint"`
 }
 
 // setBreakpointsResponse は、setBreakpoints の response の body である。
@@ -128,6 +137,8 @@ type stoppedEvent struct {
 	Reason      string `json:"reason"`
 	Description string `json:"description,omitempty"`
 	ThreadID    *int   `json:"threadId,omitempty"`
+	// HitBreakpointIDs は、止まったブレークポイントの ID（setBreakpoints の応答の id）である。
+	HitBreakpointIDs []int `json:"hitBreakpointIds,omitempty"`
 }
 
 // outputEvent は、output の event の body のうち、使う項目である。

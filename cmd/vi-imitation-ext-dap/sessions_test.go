@@ -312,8 +312,8 @@ func TestStaleStackTrace(t *testing.T) {
 			sels = append(sels, sel)
 		}
 		h.d.mu.Unlock()
-		if !h.d.selectFrame(s, 1, 0) {
-			t.Fatal("selectFrame = false")
+		if !h.d.selectThread(s, 1) {
+			t.Fatal("selectThread = false")
 		}
 		time.Sleep(600 * time.Millisecond)
 		mu.Lock()
@@ -333,9 +333,35 @@ func TestStaleStackTrace(t *testing.T) {
 			}
 			break
 		}
-		if sel := h.d.currentSelection(); sel.frame != 0 {
+		if sel := h.d.currentSelection(); sel.hasFrame {
 			t.Errorf("selection = %+v, want no frame from the stale stackTrace", sel)
 		}
+	})
+}
+
+// TestLateVerification は、setBreakpoints の応答で検証できなかったブレークポイントを、後から届いた breakpoint の event（reason が changed）と、
+// 止まったときの stopped の hitBreakpointIds で、検証できたものにすることを確かめる。親のセッションの応答が検証できないままでも、
+// 子のセッションが検証できたら検証できた印にする。スレッドの ID が 0 のアダプターでも続行できる（vscode-js-debug の形）。
+//
+// req: FR-285
+func TestLateVerification(t *testing.T) {
+	bp5u := ext.Sign{Line: 5, Kind: ext.SignBreakpointUnverified}
+	t.Run("event", func(t *testing.T) {
+		h := sessionHost(t, fakeDef(transportStdio), map[string]any{"fake": map[string]any{
+			"startDebugging": true, "neverVerify": true,
+			"childConfig": map[string]any{"name": "child", "type": "fake", "fake": map[string]any{"verifyLater": true, "threadZero": true}},
+		}})
+		h.mustExec(cmdStart, 0)
+		h.waitSigns(bp2, bp5, exec2)
+		h.mustExec(cmdContinue, 0)
+		h.waitSigns(bp2, bp5, exec5)
+		h.stopAndWait()
+	})
+	t.Run("hit", func(t *testing.T) {
+		h := sessionHost(t, fakeDef(transportStdio), map[string]any{"fake": map[string]any{"neverVerify": true}})
+		h.mustExec(cmdStart, 0)
+		h.waitSigns(bp2, bp5u, exec2)
+		h.stopAndWait()
 	})
 }
 

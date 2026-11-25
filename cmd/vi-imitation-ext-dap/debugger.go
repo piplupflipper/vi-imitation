@@ -169,8 +169,12 @@ type bpResult struct {
 type selection struct {
 	// session は、今のセッションである。デバッグ中でなければ nil。
 	session *session
-	// thread と frame は、選んでいるスレッドとフレームの ID である。0 は未知。
-	thread, frame int
+	// thread は、選んでいるスレッドの ID である。hasThread が false なら未知。
+	thread    int
+	hasThread bool
+	// frame は、選んでいるフレームの ID である。hasFrame が false なら未知。
+	frame    int
+	hasFrame bool
 }
 
 // opHandler は、この拡張機能の操作のハンドラーである。
@@ -475,7 +479,8 @@ func (d *debugger) selectionLocked() selection {
 	if d.cur == nil {
 		return selection{}
 	}
-	return selection{session: d.cur, thread: d.cur.thread, frame: d.cur.frame}
+	s := d.cur
+	return selection{session: s, thread: s.thread, hasThread: s.hasThread, frame: s.frame, hasFrame: s.hasFrame}
 }
 
 // currentSelection は、今のセッションと、その選んでいるスレッドとフレームを返す（後の issue のデバッグのペインが引く）。
@@ -500,32 +505,35 @@ func (d *debugger) notifySelect(sel selection) {
 //
 // req: FR-285, FR-287
 func (d *debugger) selectSession(s *session) bool {
-	d.mu.Lock()
-	if !slices.Contains(d.sessions, s) {
-		d.mu.Unlock()
-		return false
-	}
-	d.cur = s
-	s.gen.Add(1)
-	sel := d.selectionLocked()
-	d.mu.Unlock()
-	d.notifySelect(sel)
-	return true
+	return d.choose(s, func() {})
 }
 
-// selectFrame は、s を今のセッションにし、そのスレッド thread とフレーム frame（0 ならフレームを選ばない）を選ぶ
-// （後の issue のスレッドの区画でスレッドかフレームを選んだとき）。s の世代を進めるので、それより前に送った stackTrace などの応答は捨てる（FR-287）。
+// selectThread は、s を今のセッションにし、そのスレッド thread を選び、フレームの選択を外す
+// （後の issue のスレッドの区画でスレッドを選んだとき）。s の世代を進めるので、それより前に送った stackTrace などの応答は捨てる（FR-287）。
 // s が動いていなければ false を返す。
 //
 // req: FR-285, FR-287
+func (d *debugger) selectThread(s *session, thread int) bool {
+	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, 0, false })
+}
+
+// selectFrame は、s を今のセッションにし、そのスレッド thread とフレーム frame を選ぶ（後の issue のスレッドの区画でフレームを選んだとき）。
+// s の世代を進める（FR-287）。s が動いていなければ false を返す。
+//
+// req: FR-285, FR-287
 func (d *debugger) selectFrame(s *session, thread, frame int) bool {
+	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame = thread, true, frame, true })
+}
+
+// choose は、s を今のセッションにし、mu を持って set を呼び、s の世代を進めて、選択が変わったことを知らせる。
+func (d *debugger) choose(s *session, set func()) bool {
 	d.mu.Lock()
 	if !slices.Contains(d.sessions, s) {
 		d.mu.Unlock()
 		return false
 	}
 	d.cur = s
-	s.thread, s.frame = thread, frame
+	set()
 	s.gen.Add(1)
 	sel := d.selectionLocked()
 	d.mu.Unlock()
@@ -533,12 +541,15 @@ func (d *debugger) selectFrame(s *session, thread, frame int) bool {
 	return true
 }
 
-// markStopped は、s が止まった（stopped の event）ことを記録する。s を今のセッションにし、止まったスレッド tid（0 は未知）を選び、
+// markStopped は、s が止まった（stopped の event）ことを記録する。s を今のセッションにし、止まったスレッド tid（nil は未知）を選び、
 // フレームの選択を外し、世代を進めて、その世代を返す（FR-285、FR-287）。
-func (d *debugger) markStopped(s *session, tid int) uint64 {
+func (d *debugger) markStopped(s *session, tid *int) uint64 {
 	d.mu.Lock()
 	s.halted = true
-	s.thread, s.frame = tid, 0
+	s.thread, s.hasThread, s.frame, s.hasFrame = 0, tid != nil, 0, false
+	if tid != nil {
+		s.thread = *tid
+	}
 	gen := s.gen.Add(1)
 	if slices.Contains(d.sessions, s) {
 		d.cur = s
@@ -1147,6 +1158,51 @@ func (d *debugger) applyBreakpoints(s *session, path string, gen uint64, res []b
 	d.mergeBreakpointsLocked(path)
 }
 
+// breakpointChanged は、セッション s の breakpoint の event（reason が changed）で、setBreakpoints の応答で ID が b.ID だった
+// ブレークポイントの検証の結果と行を b に替え、印を付け直す（DAP の仕様の Breakpoint Event の「The id attribute is used to find
+// the target breakpoint, the other attributes are used as the new values」）。
+// vscode-js-debug は、setBreakpoints の応答では verified を false にし、デバッグ対象のスクリプトを読んだ後にこの event で検証を知らせる
+// （2026-11-25 に、手元の vscode-js-debug の launch で確かめた）。
+func (d *debugger) breakpointChanged(s *session, b breakpoint) {
+	d.updateBreakpointResults(s, []int{b.ID}, func(breakpoint) breakpoint { return b })
+}
+
+// breakpointsHit は、セッション s が stopped の hitBreakpointIds で知らせた ID のブレークポイントを、検証できたものにする。
+// vscode-js-debug の attach は、setBreakpoints の応答で verified を false にしたまま breakpoint の event を送らず、
+// そのブレークポイントで止まる（2026-11-25 に、手元の vscode-js-debug で node --inspect のプロセスへ attach して確かめた）。
+func (d *debugger) breakpointsHit(s *session, ids []int) {
+	d.updateBreakpointResults(s, ids, func(b breakpoint) breakpoint {
+		b.Verified = true
+		return b
+	})
+}
+
+// updateBreakpointResults は、セッション s の setBreakpoints の応答のうち、ID が ids のどれかのものを f で替え、印を付け直す。
+func (d *debugger) updateBreakpointResults(s *session, ids []int, f func(breakpoint) breakpoint) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for path, byS := range d.bpRes {
+		r, ok := byS[s]
+		if !ok || r.gen != d.gens[path] {
+			continue
+		}
+		changed := false
+		for i := range r.res {
+			if r.res[i].ID != 0 && slices.Contains(ids, r.res[i].ID) {
+				if !changed {
+					r.res = slices.Clone(r.res)
+					changed = true
+				}
+				r.res[i] = f(r.res[i])
+			}
+		}
+		if changed {
+			byS[s] = r
+			d.mergeBreakpointsLocked(path)
+		}
+	}
+}
+
 // mergeBreakpointsLocked は、path のブレークポイントの印を、セッションごとの応答（今の列の世代のもの）から決め直す。mu を持って呼ぶ。
 // どれかのセッションが検証できたものは breakpoint、応答があってどのセッションも検証できなかったものは breakpointUnverified にする
 // （vscode-js-debug の親のセッションのように、デバッグ対象を持たないセッションの応答で、子のセッションの検証を消さないため）。
@@ -1223,7 +1279,7 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, fram
 		return
 	}
 	s.exec = &execPoint{path: path, line: line}
-	s.frame = frame
+	s.frame, s.hasFrame = frame, true
 	d.publishLocked(path)
 	w := d.takeStopWaiterForLocked(s)
 	buf, opened := d.buffers[path]

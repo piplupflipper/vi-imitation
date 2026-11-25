@@ -69,6 +69,14 @@ type fakeOptions struct {
 	ChildListen bool `json:"childListen"`
 	// ParentRuns は、startDebugging を送った後も、自分のブレークポイントで止まる（debugpy の親のプロセスの代役）。
 	ParentRuns bool `json:"parentRuns"`
+	// VerifyLater は、setBreakpoints の応答では verified を false にして ID を振り、configurationDone の後に、
+	// reason が changed の breakpoint の event で verified を true にする（vscode-js-debug の launch の代役）。
+	VerifyLater bool `json:"verifyLater"`
+	// NeverVerify は、setBreakpoints の応答で verified を false にして ID を振り、breakpoint の event を送らず、
+	// 止まったときの stopped の hitBreakpointIds で知らせる（vscode-js-debug の attach の代役）。
+	NeverVerify bool `json:"neverVerify"`
+	// ThreadZero は、スレッドの ID を 0 にする（vscode-js-debug の代役）。
+	ThreadZero bool `json:"threadZero"`
 	// StackTraceDelayMs は、最初の stackTrace の応答を遅らせる時間（ミリ秒）である。受け取ったら "stackTrace requested" を出す。
 	StackTraceDelayMs int `json:"stackTraceDelayMs"`
 }
@@ -105,6 +113,9 @@ type adapter struct {
 	terminate bool
 	// delayed は、StackTraceDelayMs で stackTrace を遅らせ終えたことを表す。
 	delayed bool
+	// bpIDs は、VerifyLater と NeverVerify で振ったブレークポイントの ID（置いた位置から）である。nextBPID は次に振る ID。
+	bpIDs    map[location]int
+	nextBPID int
 
 	// stateMu は、stops、cur、running を守る。StopDelayMs の停止は別の goroutine で起きる。
 	stateMu sync.Mutex
@@ -155,7 +166,7 @@ func main() {
 		fmt.Println("fakeadapter stdout")
 	}
 	fmt.Fprintln(os.Stderr, "fakeadapter started")
-	a := &adapter{r: bufio.NewReader(r), w: w, bps: map[string][]int{}, cur: -1, terminate: *terminate}
+	a := &adapter{r: bufio.NewReader(r), w: w, bps: map[string][]int{}, bpIDs: map[location]int{}, cur: -1, terminate: *terminate}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM)
 	go func() {
@@ -220,7 +231,7 @@ func acceptLoop(ln net.Listener, terminate bool) {
 		if err != nil {
 			return
 		}
-		a := &adapter{r: bufio.NewReader(c), w: c, bps: map[string][]int{}, cur: -1, terminate: terminate, conn: c}
+		a := &adapter{r: bufio.NewReader(c), w: c, bps: map[string][]int{}, bpIDs: map[location]int{}, cur: -1, terminate: terminate, conn: c}
 		servedMu.Lock()
 		served = append(served, a)
 		servedMu.Unlock()
@@ -336,7 +347,10 @@ func (a *adapter) handle(m *message) {
 		a.stateMu.Lock()
 		a.stops, a.cur, a.running = nil, -1, false
 		a.stateMu.Unlock()
-		a.run()
+		// dlv と同じく、始め直した後に initialized を送り、setBreakpoints と configurationDone を待ってから走らせる。
+		a.launchSeq = 0
+		a.bps = map[string][]int{}
+		a.event("initialized", nil)
 	case "launch", "attach":
 		var args struct {
 			Program string      `json:"program"`
@@ -398,7 +412,13 @@ func (a *adapter) handle(m *message) {
 			if b.Condition != "" {
 				a.output("console", fmt.Sprintf("condition %d %q\n", line, b.Condition))
 			}
-			res = append(res, map[string]any{"verified": !slices.Contains(a.opts.Unverified, b.Line), "line": line})
+			r := map[string]any{"verified": !slices.Contains(a.opts.Unverified, b.Line), "line": line}
+			if a.opts.VerifyLater || a.opts.NeverVerify {
+				a.nextBPID++
+				r["id"], r["verified"] = a.nextBPID, false
+				a.bpIDs[location{args.Source.Path, line}] = a.nextBPID
+			}
+			res = append(res, r)
 		}
 		a.bps[args.Source.Path] = lines
 		a.output("console", fmt.Sprintf("setBreakpoints %s %v\n", filepath.Base(args.Source.Path), lines))
@@ -410,6 +430,11 @@ func (a *adapter) handle(m *message) {
 		}
 		a.output("stdout", "hello from debuggee\n")
 		a.output("telemetry", "telemetry must not be shown\n")
+		if a.opts.VerifyLater {
+			for _, id := range a.bpIDs {
+				a.event("breakpoint", map[string]any{"reason": "changed", "breakpoint": map[string]any{"id": id, "verified": true}})
+			}
+		}
 		if a.opts.Reverse {
 			a.send(message{Type: "request", Command: "runInTerminal", Arguments: json.RawMessage(`{"args":["true"]}`)})
 			return
@@ -425,7 +450,7 @@ func (a *adapter) handle(m *message) {
 		}
 		a.run()
 	case "threads":
-		a.respond(m, map[string]any{"threads": []map[string]any{{"id": 1, "name": "main"}}})
+		a.respond(m, map[string]any{"threads": []map[string]any{{"id": a.threadID(), "name": "main"}}})
 	case "stackTrace":
 		a.stateMu.Lock()
 		loc := a.stops[a.cur]
@@ -457,6 +482,14 @@ func (a *adapter) handle(m *message) {
 		}
 		a.respond(m, map[string]any{"stackFrames": []map[string]any{frame}})
 	case "continue", "next", "stepIn", "stepOut":
+		var targs struct {
+			ThreadID int `json:"threadId"`
+		}
+		_ = json.Unmarshal(m.Arguments, &targs)
+		if targs.ThreadID != a.threadID() {
+			a.respondError(m, fmt.Sprintf("unknown thread %d", targs.ThreadID))
+			return
+		}
 		a.stateMu.Lock()
 		running := a.running
 		a.running = a.opts.StopDelayMs > 0
@@ -623,7 +656,22 @@ func (a *adapter) next(reason string) {
 func (a *adapter) stopped(reason string) {
 	body := map[string]any{"reason": reason, "allThreadsStopped": true}
 	if !a.opts.NoThreadID {
-		body["threadId"] = 1
+		body["threadId"] = a.threadID()
+	}
+	if reason == "breakpoint" {
+		a.stateMu.Lock()
+		if id, ok := a.bpIDs[a.stops[a.cur]]; ok {
+			body["hitBreakpointIds"] = []int{id}
+		}
+		a.stateMu.Unlock()
 	}
 	a.event("stopped", body)
+}
+
+// threadID は、スレッドの ID である。ThreadZero なら 0、そうでなければ 1。
+func (a *adapter) threadID() int {
+	if a.opts.ThreadZero {
+		return 0
+	}
+	return 1
 }
