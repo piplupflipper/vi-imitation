@@ -89,10 +89,10 @@ func (e *Editor) completeKey(f *floatState, k editcmd.Key) bool {
 	if e.consoleMenuShown(f) {
 		switch {
 		case slices.Contains(completeNextKeys, k):
-			c.selected = stepSelected(c.selected, 1, len(c.shown))
+			c.selected = c.choice().step(1)
 			return true
 		case slices.Contains(completePrevKeys, k):
-			c.selected = stepSelected(c.selected, -1, len(c.shown))
+			c.selected = c.choice().step(-1)
 			return true
 		case slices.Contains(completeAcceptKeys, k):
 			if c.selected >= 0 {
@@ -114,20 +114,14 @@ func (e *Editor) completeKey(f *floatState, k editcmd.Key) bool {
 	return false
 }
 
-// stepSelected は、n 個の候補の一覧で選んでいる候補 sel（-1 は選んでいない）を d だけ動かした先を返す。
-// 最後の候補の次と最初の候補の前は、選んでいない状態（-1）へ戻り、その次はもう一方の端へ回る（Vim の補完の一覧と同じ）。
-func stepSelected(sel, d, n int) int {
-	if n == 0 {
-		return -1
+// choice は、出している候補と選んでいる候補を、コマンドラインの補完と同じ選び方（completionChoice）の形にして返す。
+// 最後の候補の次と最初の候補の前は、選んでいない状態（-1）へ戻り、その次はもう一方の端へ回る（Neovim の補完の一覧と同じ）。
+func (c *consoleCompletion) choice() *completionChoice {
+	items := make([]string, len(c.shown))
+	for i, j := range c.shown {
+		items[i] = c.items[j].Insert()
 	}
-	next := sel + d
-	switch {
-	case sel < 0 && d < 0:
-		return n - 1
-	case next >= n || next < 0:
-		return -1
-	}
-	return next
+	return &completionChoice{items: items, shown: items, orig: c.text, selected: c.selected}
 }
 
 // requestCompletion は、組 f の入力の行の今の中身とカーソルで、持ち主の拡張機能へ console/complete を問い合わせる（FR-297）。
@@ -374,7 +368,7 @@ func (e *Editor) uiConsoleMenu(f *floatState) *ui.CompletionMenu {
 	}
 	c := &f.con.comp
 	m := &ui.CompletionMenu{
-		ID:        uint64(f.id)<<32 | c.menuID,
+		ID:        f.id<<32 | c.menuID,
 		Selected:  c.selected,
 		Start:     c.at,
 		MaxHeight: e.options.Get(option.CompletionMenuHeight).Int(),

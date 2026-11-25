@@ -315,7 +315,7 @@ func TestConsoleCompleteReplay(t *testing.T) {
 
 // 補完を引き受けない組（今までの組）は問い合わせず、<Tab> はタブ文字として入る。
 //
-// req: FR-274
+// req: FR-274, FR-297
 func TestConsoleNoComplete(t *testing.T) {
 	h := start(t, Config{Extensions: fakeSpecs(t)})
 	openConsole(t, h)

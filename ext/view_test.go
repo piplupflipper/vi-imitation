@@ -43,10 +43,14 @@ func TestViewComponentValidate(t *testing.T) {
 		{"組の項目", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, Items: []ViewItem{item("a", "A")}}}, "items"},
 		{"補完する組", PopupOpenParams{Component: ViewComponent{Kind: ViewConsole, Complete: true}}, ""},
 		{"組でない部品の補完", PopupOpenParams{Component: ViewComponent{Kind: ViewText, Complete: true}}, "complete は console"},
-		{"切り替えの部品の補完", PopupOpenParams{Placement: PopupCenter, Component: ViewComponent{Kind: ViewSwitcher, Complete: true,
-			Children: []ViewChild{{ID: "r", Title: "R", Component: ViewComponent{Kind: ViewConsole, Complete: true}}}}}, "complete"},
-		{"切り替えの部品の子の補完", PopupOpenParams{Placement: PopupCenter, Component: ViewComponent{Kind: ViewSwitcher,
-			Children: []ViewChild{{ID: "r", Title: "R", Component: ViewComponent{Kind: ViewConsole, Complete: true}}}}}, ""},
+		{"切り替えの部品の補完", PopupOpenParams{Placement: PopupCenter, Component: ViewComponent{
+			Kind: ViewSwitcher, Complete: true,
+			Children: []ViewChild{{ID: "r", Title: "R", Component: ViewComponent{Kind: ViewConsole, Complete: true}}},
+		}}, "complete"},
+		{"切り替えの部品の子の補完", PopupOpenParams{Placement: PopupCenter, Component: ViewComponent{
+			Kind:     ViewSwitcher,
+			Children: []ViewChild{{ID: "r", Title: "R", Component: ViewComponent{Kind: ViewConsole, Complete: true}}},
+		}}, ""},
 	}
 	for _, tt := range tests {
 		err := tt.p.Validate()

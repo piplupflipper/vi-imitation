@@ -188,6 +188,8 @@ func (r *Renderer) drawConsole(g *Grid, theme Theme, fl *Float) (Cursor, bool) {
 // 同じだが、選んでいない項目は StylePopup でなく、バッファの本文と同じ色（端末の既定の色）で描く。組の窓の全体が StylePopup の色なので、
 // 同じ色で描くと一覧と出力の境目が見えないためである（#427 の画面の確認で見つけた。Neovim で浮かべた窓の上に出す補完の一覧が、
 // 窓の NormalFloat と違う Pmenu の色になるのと同じく、窓と違う色にする）。
+//
+// req: FR-297
 func (r *Renderer) drawConsoleMenu(g *Grid, theme Theme, m *CompletionMenu, view *Frame, curCol, inRow, top, left, right int) {
 	col := curCol
 	if view != nil && view.Text != nil && view.Text.LineCount() > 0 {

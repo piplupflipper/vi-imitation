@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.23.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.24.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -319,6 +319,7 @@ params と result の型の項目は、`vi-imitation --docs extension-types <型
 - `buffer/open`: 通知。params は `BufferOpenParams`。
 - `buffer/willSave`: リクエスト。params は `BufferWillSaveParams`、result は `BufferWillSaveResult`。宣言ファイルの saveHook が true の稼働中の拡張機能にだけ、保存の直前に送る。
 - `command/execute`: リクエスト。params は `CommandExecuteParams`、result は `CommandExecuteResult`。宣言ファイルの contributes.commands に書いたコマンドを実行する（仮）。
+- `console/complete`: リクエスト。params は `ConsoleCompleteParams`、result は `ConsoleCompleteResult`。
 - `initialize`: リクエスト。params は `InitializeParams`、result は `InitializeResult`。応答が届いた時点で、拡張機能は稼働中になる。
 - `input/change`: 通知。params は `InputChangeParams`。
 - `motion/resolve`: リクエスト。params は `MotionResolveParams`、result は `MotionResolveResult`。

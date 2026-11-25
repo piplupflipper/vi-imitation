@@ -106,6 +106,7 @@ const (
 	// 履歴は部品ごとに本体が持ち、閉じたら捨てる。拡張機能は、開き直すときに受けた中身を History で渡す（AppendConsoleHistory）。
 	// インサートモードの <Esc> はノーマルモードへ戻り、閉じない。<C-w>w で出力と入力の行の間でフォーカスを移す。
 	// view/update は出力（Text、Highlights）と Prompt だけを置き換え、Input と History は読まない（利用者が打っているため）。
+	// Complete を真にして開くと、入力の行を拡張機能が console/complete で返す候補で補う（API 0.24.0 から。consolecomplete.go）。
 	ViewConsole ViewKind = "console"
 	// ViewSwitcher は、ほかの種類の部品を子（Children）として並べ、見出しの行で選んだ 1 つの子だけを出す部品である
 	// （FR-269。API 0.23.0 で足した。nvim-dap-view の見出しの行に当たる）。子にできるのは ViewText、ViewList、ViewTree、ViewConsole で、

@@ -3676,6 +3676,53 @@ s.Command("echo.open", func(_ context.Context, _ *server.Buffer, _ *ext.CommandE
 })
 ```
 
+#### 入力の行の補完
+
+部品の `Complete` を `true` にして開いた組は、入力の行を拡張機能が返す候補で補う（拡張機能 API の 0.24.0 から）。
+デバッガーの REPL で、式の続き（`obj.` の後の属性の名前など）を補うのに使う。
+`Complete` は開くとき（`OpenPane`、`OpenPopup`、切り替えの部品の新しい子）だけ読み、`UpdateView` では変わらない。
+`Complete` の無い組は今までどおりで、`<Tab>` はタブ文字として入る。
+
+本体は、インサートモードで入力の行を打つたびに、入力の行の中身とカーソルの位置を `console/complete` で問い合わせ、返った候補を入力の行の上の一覧に出す。
+カーソルの前が空白か入力の行の先頭なら問い合わせず、一覧を閉じる。
+一覧の行の数の上限（`completionMenu.height`）と、選んだ候補と打った語の色は、コマンドラインの補完と同じである。
+選んでいない候補は、組の窓と見分けられるように、本文と同じ色で描く。
+キーは次のとおりである（オーナーの nvim の blink.cmp の設定に合わせた）。
+
+| キー（インサートモード） | 一覧を出しているとき | 一覧を出していないとき |
+|---|---|---|
+| `<C-n>`、`<Tab>`、`<Down>` | 次の候補を選ぶ（最初は何も選んでいない） | `<C-n>` と `<Tab>` は問い合わせて一覧を出す。`<Down>` は履歴 |
+| `<C-p>`、`<S-Tab>`、`<Up>` | 前の候補を選ぶ | `<C-p>` と `<S-Tab>` は問い合わせて一覧を出す。`<Up>` は履歴 |
+| `<C-Space>` | （補完では扱わない） | 問い合わせて一覧を出す |
+| `<CR>` | 選んだ候補を入れる。選んでいなければ一覧を閉じて送る | 送る |
+| `<C-y>` | 選んだ候補を入れる。選んでいなければ一覧を閉じる | （補完では扱わない） |
+| `<C-e>` | 一覧を閉じる | （補完では扱わない） |
+| `<Esc>` | 一覧を閉じてノーマルモードへ戻る | ノーマルモードへ戻る |
+
+問い合わせは、答えを待たずにキーの処理を続ける。
+答えを待つ間に打ち足した文字は、前の答えの候補を絞り込んで出し続け、次の答えで置き換える。
+本体は、入力の行が変わるたびに前の問い合わせを取り消し（`$/cancel`）、最後に送った問い合わせの答えだけを使う。
+マクロの再生の中では問い合わせず、一覧も出さない。
+
+拡張機能は、`Server.ConsoleComplete`（時間のかかる問い合わせ先へ問うなら `ConsoleCompleteAsync`）で答えを返す。
+候補（`ext.ConsoleCompletionItem`）は、一覧に出す `Label`、入れる文字列 `Text`（空なら `Label`）、選んだときに置き換える入力の行の中のバイトの範囲 `Start` と `End`、省ける種類 `Kind`（一覧の項目の右に出る）を持つ。
+`Start` はカーソル（`p.Cursor`）より後ろにできない。カーソルの前の語の一部だけを置き換えるなら、語の始まりを `Start` に、カーソルを `End` にする。
+候補を求められないときは、誤りでなく `OK` を `false` にして返す。
+
+```go
+s.ConsoleComplete(func(_ context.Context, p *ext.ConsoleCompleteParams) (ext.ConsoleCompleteResult, error) {
+	before := p.Text[:p.Cursor]
+	start := strings.LastIndexAny(before, " .(") + 1
+	res := ext.ConsoleCompleteResult{OK: true}
+	for _, w := range []string{"append", "apply", "items"} {
+		if strings.HasPrefix(w, before[start:]) {
+			res.Items = append(res.Items, ext.ConsoleCompletionItem{Label: w, Start: start, End: p.Cursor, Kind: "method"})
+		}
+	}
+	return res, nil
+})
+```
+
 ### 複数の子を見出しの行で切り替える
 
 切り替えの部品（`ext.ViewSwitcher`）は、テキスト、一覧、木、出力と入力の行の組の部品を子として並べ、見出しの行で選んだ 1 つの子だけを出す（拡張機能 API の 0.23.0 から）。
