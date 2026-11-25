@@ -147,6 +147,10 @@ func TestConsoleMenu(t *testing.T) {
 	if a := s.Grid.At(4, 11).Attr; a != completionTheme[StylePopupSelected].Over(Attr{Bold: true}) {
 		t.Errorf("選んだ項目の打った語の色 = %+v", a)
 	}
+	// 選んでいない項目は、窓の色（popup）でなく、本文と同じ既定の色で描く（窓と一覧の境目を見せるため）。
+	if a, w := s.Grid.At(3, 13).Attr, s.Grid.At(2, 13).Attr; a != (Attr{}) || w != completionTheme[StylePopup] {
+		t.Errorf("選んでいない項目の色 = %+v、窓の色 = %+v", a, w)
+	}
 	if c := s.Cursor; c.Row != 5 || c.Col != 13 {
 		t.Errorf("カーソル = %+v", c)
 	}

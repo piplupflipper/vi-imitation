@@ -184,7 +184,10 @@ func (r *Renderer) drawConsole(g *Grid, theme Theme, fl *Float) (Cursor, bool) {
 // drawConsoleMenu は、書き足すテキストと入力の行の組の入力の行の補完の候補の一覧 m（Console.Menu。FR-297）を、入力の行（inRow 行目）の
 // 真上に描く。項目は、入力の行の m.Start の文字の列から並べる（カーソルの列 curCol から、m.Start からカーソルまでの表示幅を引いた列）。
 // 一覧は、窓の中（top 行目から inRow 行目の手前までの行と、left 列から right 列の手前までの列）に収め、出力、見出しの行、
-// 切り替えの部品の見出しの行の上に重ねる。描き方（色、選んでいる項目、スクロールバー、種類の欄）はコマンドラインの一覧と同じである。
+// 切り替えの部品の見出しの行の上に重ねる。描き方（選んでいる項目、打った語の色、スクロールバー、種類の欄）はコマンドラインの一覧と
+// 同じだが、選んでいない項目は StylePopup でなく、バッファの本文と同じ色（端末の既定の色）で描く。組の窓の全体が StylePopup の色なので、
+// 同じ色で描くと一覧と出力の境目が見えないためである（#427 の画面の確認で見つけた。Neovim で浮かべた窓の上に出す補完の一覧が、
+// 窓の NormalFloat と違う Pmenu の色になるのと同じく、窓と違う色にする）。
 func (r *Renderer) drawConsoleMenu(g *Grid, theme Theme, m *CompletionMenu, view *Frame, curCol, inRow, top, left, right int) {
 	col := curCol
 	if view != nil && view.Text != nil && view.Text.LineCount() > 0 {
@@ -206,5 +209,5 @@ func (r *Renderer) drawConsoleMenu(g *Grid, theme Theme, m *CompletionMenu, view
 	if p.scrollbar {
 		rt++
 	}
-	r.drawCompletionRows(g, theme, m, p, l, rt, theme.attr(StylePopup))
+	r.drawCompletionRows(g, theme, m, p, l, rt, Attr{})
 }
