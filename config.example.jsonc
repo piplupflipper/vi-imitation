@@ -543,6 +543,13 @@
           "sections": ["watches", "scopes", "exceptions", "breakpoints", "threads", "repl", "console"],
           "defaultSection": "scopes",
         },
+        // 止まっている間、選んでいるフレームの変数の値をソースの行に出す（nvim-dap-virtual-text に当たる）。
+        // 既定は出さず、ここはオーナーの nvim の値（行末に、コメントの形で）にした
+        "virtualText": {
+          "enabled": true,
+          "position": "eol",
+          "commented": true,
+        },
       },
     },
     "activation": { "lsp": [{ "on": "filetype", "pattern": "python" }] },

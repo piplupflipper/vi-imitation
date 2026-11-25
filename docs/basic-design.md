@@ -3278,6 +3278,7 @@ DAP の拡張機能の設定（`initialize` の `settings`。7 章の拡張機�
 | `configurations` | ファイルの種類の名前から、構成の列への対応。構成は `.vscode/launch.json` の構成と同じ形で、`name`、`type`、`request` と、アダプターへ渡す引数を同じ階層に書く。ほかに、拡張機能が読む項目 `resolveCommand`（FR-282）を書ける |
 | `inputs` | `${input:ID}` の問い。`.vscode/launch.json` の `inputs` と同じ形（下の「`.vscode/launch.json` の読み方」）。`.vscode/launch.json` の構成の `${input:ID}` は、その `launch.json` の `inputs` を先に引き、無ければ設定の `inputs` を引く |
 | `ui` | `autoOpen`（始めたときにペインを開くか。既定は false）、`autoClose`（すべてのセッションが終わったら閉じるか。既定は false）、`direction`（`right` か `down`。既定は `down`）、`size`（元のペインに対する百分率。既定は 25）、`sections`（出す区画の ID とその並び）、`defaultSection`（開いたときに選ぶ区画） |
+| `virtualText` | 行末の変数の値（FR-296。#426 で足した。下の「#426 の行末の変数の値」）。`enabled`（出すか。既定は false）、`position`（`eol` か `inline`。既定は `inline`）、`commented`（コメントの形で包むか。既定は false）、`maxLength`（値の文字数の上限。0 は切らない。既定は 0）、`highlightChanged`（変わった値に色を付けるか。既定は true） |
 | 今までの 1 組の設定 | `adapter`、`adapterID`、`launch` を書いた設定は、名前を「既定」、種類をその 1 組のアダプター、`request` を `launch` にした構成 1 つとして読み、どのファイルの種類でも候補にする。どれも省いた設定は、今までどおり `dlv dap` の構成 1 つになる。`adapters` か `configurations` を書いた設定では、1 組の設定の既定（`dlv dap`）を足さない |
 
 既定の値（`autoOpen` と `autoClose` は false、区画は 7 つ、最初はウォッチ式、下に 25%）は、nvim-dap-view の既定に合わせた（要件定義の FR-108 と FR-277 の後の段落）。
@@ -3537,7 +3538,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 
 #### #399 の DAP の拡張機能の範囲の外
 
-- 行末の変数の値（FR-296）と REPL の補完（FR-297）は第 2 弾（#399 の段 6）
+- 行末の変数の値（FR-296）と REPL の補完（FR-297）は第 2 弾（#399 の段 6）。行末の変数の値は #426 で作った（下の「#426 の行末の変数の値」）
 - `runInTerminal` は作らない（FR-288）。nvim-dap-view の `console` の区画の端末と、VS Code の `integratedTerminal` には当たるものを持たない
 - `preLaunchTask` と `postDebugTask`（VS Code のタスク）と `compounds` は作らない（FR-281）
 - データのブレークポイント、関数のブレークポイント、ログの出力点（`logMessage`）、ヒットの回数の条件（`hitCondition`）、メモリの表示、逆向きのステップ実行は、#399 の範囲に入れていない
@@ -3744,6 +3745,29 @@ PR #418 のレビュー（推奨 1）で、2 つの問いが続く構成で、1 
 - **REPL とデバッグ対象の出力**: nvim-dap は `output` の event を REPL に書き足し、nvim-dap-view はデバッグ対象の端末（`runInTerminal`）を `console` の区画に出す。この拡張機能は `runInTerminal` を作らず（FR-288）、出力の区画が `output` の event を受け持つ（FR-291）ので、REPL には評価だけを書く
 - **例外のフィルター**: アダプターの種類（設定の `adapters` の名前。子のセッションも親と同じ）ごとに、利用者が切り替えた有効と無効を持ち、覚えていないフィルターは `default` に従う（nvim-dap-view の `listeners.lua` の `initialize` の listener と同じ）。開始の流れの 9 のとおり、ブレークポイントの後、`configurationDone` の前に `setExceptionBreakpoints` を送り、2 回目の `initialized` の後にも送り直す。区画で選ぶと、そのアダプターの動いているすべてのセッションへすぐ送る（nvim-dap-view の `update_exception_breakpoints_filters`）。dlv 1.27.2 は、デバッグ対象が動いている間の `setExceptionBreakpoints` を「debuggee is running」で断る（2026-11-25 に実物で確かめた。nvim-dap-view も、delve の止まっていないセッションには送らない）ので、動いている間に断られたら、そのことを知らせ、次に止まって止まった位置を出した後に送り直す。デバッグしていない間は、最後に `initialize` の応答を受けたアダプターのフィルターを「次のデバッグの開始で送る」と添えて出し、切り替えられるようにする（nvim-dap-view は `No active session` と出す）。フィルターの `description` があれば、`label` の後に添える
 - **例外で止まったとき**: `stopped` の `reason` が `exception` なら、止まった位置を出し終えた後に、アダプターが `supportsExceptionInfoRequest` を持てば止まったスレッドの `exceptionInfo` を読み、`例外で止まった（例外の ID、breakMode: 説明）` をメッセージの行に、型の名前とメッセージとスタックトレースと内側の例外（5 段まで）を REPL に書き足す。持たなければ request を送らず、`stopped` の `text` か `description` を出す。nvim-dap の `_show_exception_info` は、同じ中身を止まった行の診断にするが、この拡張機能の診断は LSP の診断と同じ一覧に並ぶ（6.7 の `diagnostic/set`）ので、REPL にした
+
+#### #426 の行末の変数の値
+
+#426 で、止まっている間、選んでいるフレームの変数の値をソースの行に出す（FR-296）ようにした（`cmd/vi-imitation-ext-dap` の `virtualtext.go`）。
+出し方は、オーナーの nvim に入っている nvim-dap-virtual-text（コミット fbdb48c2ed45f4a8293d0d483f7730d24467ccb6）の `lua/nvim-dap-virtual-text.lua` と `lua/nvim-dap-virtual-text/virtual_text.lua` を 2026-11-26 に読んで合わせた。
+オーナーの設定（`~/.config/nvim/lua/plugins/dap.lua`）は `virt_text_pos = "eol"` と `commented = true` で、ほかは既定である。
+拡張機能 API の版は上げていない（`virtualText/set` と `option/get` は 0.23.0 までにある）。
+表の点は、どれも仮である。
+
+| 点 | 決めたこと |
+|---|---|
+| 出す変数 | 今のセッションの選んでいるフレームの、`expensive` でないスコープの最上位の変数（nvim-dap は止まるたびに `expensive` でないスコープの `variables` を読み、nvim-dap-virtual-text はそれを使う。`lua/dap/session.lua` の `_request_scopes`）。同じ名前が複数のスコープにあれば、先のスコープのものを採り、先のものが `presentationHint` が `locals` のスコープでなく後のものがそうなら、後のものを採る（`variables_from_scopes` の「prefer "locals"」）。識別子でない名前（dlv の `(x)`、debugpy の `special variables`、vscode-js-debug の `[[Prototype]]`）と `this` は出さない。値に `<module` を含むもの（既定の `filter_references_pattern`）と、`<function `、`<class `、`<built-in `、`<bound method ` で始まるものは出さない（下の「出す行」の違いの補い） |
+| 出す行 | 止まった行（選んでいるフレームの行）を含む関数の範囲の中で、名前が識別子として最初に現れる位置。関数の範囲は、止まった行から上へ、字下げの浅くなる行をたどり、関数の見出しの形の行（行の終わりが `{` か `:` で、`func`、`def`、`function`、`fn`、`=>` を含むか、JavaScript のメソッドの形 `名前(…) {`）の最も内側のものを見出しにし、その行から、見出しの字下げ以下の次の行の手前（閉じ括弧で始まる行ならその行）までにする。見出しが無ければファイルの全体にする。範囲の中の、止まった行を含まない関数の見出しの行と本体、コメントだけの行（`//`、`#`、`/*`、`*`、`--` で始まる行）、直前が `.` の名前（メンバーの参照）は数えない |
+| 出す行の違い | nvim-dap-virtual-text は tree-sitter の `locals` のクエリで定義の位置（`@local.definition`）を探し、止まった行を含まないスコープの中の定義を除き、同じ名前の最初の定義に出す（`only_first_definition` が既定の真、`all_references` が既定の偽）。DAP の拡張機能には構文の情報を得る口が無い（拡張機能 API に、tree-sitter の拡張機能の構文木を問い合わせる口が無く、DAP の拡張機能に tree-sitter を組み込むと cgo が要る）ので、名前の一致で代えた。定義の行は、ふつうは関数の中で名前が最初に現れる行なので同じになるが、文字列の中の同じ語、ループの外で止まったときのループの変数、関数の外で定義した大域の変数（nvim-dap-virtual-text はその定義の行に出し、この拡張機能は関数の中で最初に現れる行に出す）は違いうる |
+| 文字列 | `eol` は `名前 = 値`、`inline` は ` = 値`（`display_callback` の既定）。値の空白の並び（改行を含む）を空白 1 つにする。`commented` なら、バッファの設定 `comment.string`（`option/get` で読み、バッファを開き直すまで覚える）の `%s` を文字列に置き換える（nvim-dap-virtual-text の `commentstring` の置き換え）。`eol` で同じ行に複数あれば、名前の現れた順に並べ、最後のもの以外の後ろに `,` を足す（`separator`）。位置は、`eol` は名前の現れたバイト（本体は同じ行の `eol` をバイトの順に並べる）、`inline` は名前の直後。値は設定の `maxLength`（0 なら切らない）と、区画と同じ 500 文字の小さい方で切って `…` を足す（nvim-dap-virtual-text は切らない） |
+| 色 | 色の名前 `comment`（`NvimDapVirtualText` は `Comment` へのリンク）。`highlightChanged` が真なら、同じフレーム（セッション、ファイル、関数の名前の組。アダプターは止まるたびにフレームの ID を振り直すので、nvim-dap-virtual-text のようにフレームの ID では比べない）の前の停止から値の変わった変数を `diagnostic.warning`（`NvimDapVirtualTextChanged` は `DiagnosticVirtualTextWarn` へのリンク）にする。前の停止に無かった変数は変わったことにしない（`highlight_new_as_changed` の既定の偽） |
+| 読み込み | スコープの区画と同じ写し（`loadScopes` と `varsOf`。セッションと世代ごと）を使い、同じ `scopes` と `variables` を 2 回送らない。区画が見えていなくても、ペインを閉じていても、`scopes` と、`expensive` でないスコープごとの `variables` を読む。読み始める時機は区画と同じ規則（止まった位置を出し終えるまで読まない、続けて打っている間は `settleDelay` だけ待つ）に従い、ペインの goroutine で、区画より先に行う |
+| 消す時機 | 動き出してから `runningShowDelay`（150 ms）の後に、まだ動いていれば消す。すぐ止まるステップ実行では、消さずに新しい値の一覧に置き換える（nvim-dap-virtual-text の `clear_on_continue` の既定の偽と同じく、ちらつかせない。消すと本体の描き直しの分だけ止まった位置への移動が遅れうる）。すべてのセッションが終わったら消す。今のセッションでないセッションが止まっても出さない |
+| フレーム | 選んでいるフレーム（`session.frameAt`。止まった位置を出したときと、スレッドの区画でフレームを選んだときに、ソースのパス、行、関数の名前を覚える）のファイルのバッファに出す。前に出したほかのバッファのものは消す。開いていないファイルのフレームは、そのバッファが開いたとき（`buffer/open`）に出す。覚えた行は、`buffer/change` の編集に合わせてずらす |
+| 版 | 出し直すときは、拡張機能の複製の今の版の行で決め、その版の番号で送る。送った後の編集は本体が位置をずらす。前に送ったものと同じ版で同じ一覧なら送らない |
+
+nvim-dap-virtual-text の、例外で止まった理由を止まった行に出すこと（`show_stop_reason`。既定は真）、すべてのフレームに出すこと（`all_frames`）、仮想の行（`virt_lines`）、窓の列で置くこと（`virt_text_win_col`）、切り替えのコマンド（`DapVirtualTextToggle` など）は作っていない。
+例外で止まった理由は、#424 のとおりメッセージの行と REPL に出す。
 
 ### 6.5 ACP
 

@@ -566,10 +566,12 @@ func (d *debugger) selectThread(s *session, thread int) bool {
 //
 // req: FR-287
 func (d *debugger) selectThreadFrame(s *session, thread int, f stackFrame) bool {
-	return d.choose(s, func() { s.thread, s.hasThread, s.frame, s.hasFrame, s.frameAt = thread, true, f.ID, true, frameLocOf(f) })
+	return d.choose(s, func() {
+		s.thread, s.hasThread, s.frame, s.hasFrame, s.frameAt = thread, true, f.ID, true, frameLocOf(f)
+	})
 }
 
-// selectFrame は、s を今のセッションにし、フレーム frame を選ぶ（スレッドの区画でフレームを <CR> で選んだとき）。
+// selectFrame は、s を今のセッションにし、フレーム f を選ぶ（スレッドの区画でフレームを <CR> で選んだとき）。
 // 選んでいるスレッド（続行とステップ実行の送り先）は替えない。別のスレッドのフレームを見るために選んでも、ステップ実行が黙って
 // そのスレッドへ送られないためである（nvim-dap（コミット cfa2d58f4537aca6ca83e2de1a0d9f1491121264）の lua/dap/session.lua の
 // _frame_set は current_frame だけを替え、ステップ実行は stopped_thread_id へ送る。PR #423 のレビューの裁定要 1）。
