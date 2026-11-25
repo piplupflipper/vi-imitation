@@ -369,7 +369,12 @@ type scopesView struct {
 	verr     map[int]error
 	// info は、最後に作った木の項目の ID から、その項目の変数への対応である（s と [[）。last は、最後に作った木である。
 	info map[string]varInfo
-	last ext.ViewComponent
+	// setValues は、セッション setFor の世代 setGen の間に書き換えた変数の項目の ID から、setVariable か setExpression の応答の値への対応である
+	// （setValue）。世代が替われば使わない。
+	setFor    *session
+	setGen    uint64
+	setValues map[string]string
+	last      ext.ViewComponent
 	// frame は、last を作ったときのセッションとフレームと世代である（s で書き換えるとき、止まった状態が変わっていないかを確かめる）。
 	snap sessionSnap
 }
@@ -530,6 +535,9 @@ func (p *pane) variableItems(x sessionSnap, parent string, ref int) ([]ext.ViewI
 	for _, v := range vs {
 		id := uniqueID(seen, parent+"\x1f"+oneLine(v.Name))
 		sv.info[id] = varInfo{parent: parent, ref: ref, v: v}
+		if val, ok := sv.setValues[id]; ok && sv.setFor == x.s && sv.setGen == x.gen {
+			v.Value = val
+		}
 		label, hs := variableLabel(v)
 		item := ext.ViewItem{ID: id, Label: label, Highlights: hs, HasChildren: v.VariablesReference > 0}
 		if v.VariablesReference > 0 {
@@ -604,12 +612,12 @@ func (p *pane) scopesSetValue(item string) {
 		if err != nil || res.Cancelled {
 			return
 		}
-		p.post(func() { p.setValue(x, info, useExpr, res.Value) })
+		p.post(func() { p.setValue(x, item, info, useExpr, res.Value) })
 	}()
 }
 
 // setValue は、変数 info の値を value に書き換え、スコープの区画を読み直す。
-func (p *pane) setValue(x sessionSnap, info varInfo, useExpr bool, value string) {
+func (p *pane) setValue(x sessionSnap, id string, info varInfo, useExpr bool, value string) {
 	if x.s.gen.Load() != x.gen {
 		p.d.showError("止まった状態が変わったので、値を書き換えなかった")
 		return
@@ -617,16 +625,30 @@ func (p *pane) setValue(x sessionSnap, info varInfo, useExpr bool, value string)
 	ctx, cancel := p.ctx()
 	defer cancel()
 	var err error
+	var res struct {
+		Value string `json:"value"`
+	}
 	if useExpr {
-		err = x.s.callGen(ctx, x.gen, "setExpression", setExpressionArguments{Expression: info.v.EvaluateName, Value: value, FrameID: x.frame}, nil)
+		err = x.s.callGen(ctx, x.gen, "setExpression", setExpressionArguments{Expression: info.v.EvaluateName, Value: value, FrameID: x.frame}, &res)
 	} else {
-		err = x.s.callGen(ctx, x.gen, "setVariable", setVariableArguments{VariablesReference: info.ref, Name: info.v.Name, Value: value}, nil)
+		err = x.s.callGen(ctx, x.gen, "setVariable", setVariableArguments{VariablesReference: info.ref, Name: info.v.Name, Value: value}, &res)
 	}
 	switch {
 	case errors.Is(err, errStale):
 		p.d.showError("止まった状態が変わったので、書き換えた値を出さない")
 	case err != nil:
 		p.d.showError(fmt.Sprintf("値を書き換えられない: %v", err))
+	default:
+		// vscode-js-debug 1.117.0 は、setExpression の直後の variables で書き換える前の値を返す（#421 で実物で確かめた。
+		// nvim-dap-view も scopes/view.lua で、vscode-js-debug の issue 2320 への回り道として応答の値を出す）。
+		// 同じ止まった状態の間は、応答の値をその変数の値として出す。
+		sv := &p.scopes
+		if sv.setFor != x.s || sv.setGen != x.gen {
+			sv.setFor, sv.setGen, sv.setValues = x.s, x.gen, map[string]string{}
+		}
+		if res.Value != "" {
+			sv.setValues[id] = res.Value
+		}
 	}
 	// 書き換えると、ほかの変数の値と参照も変わりうる（DAP の仕様の SetVariableResponse）ので、読んだ変数を捨てて読み直す。
 	p.scopes.vars = nil

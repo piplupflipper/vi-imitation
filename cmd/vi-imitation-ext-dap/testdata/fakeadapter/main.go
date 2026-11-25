@@ -91,6 +91,9 @@ type fakeOptions struct {
 	VariablesDelayMs int `json:"variablesDelayMs"`
 	// ExtraOutput は、configurationDone の後に、stderr の CRLF の行、塊の境目で分かれた CRLF、\r だけの行、important の行を出す。
 	ExtraOutput bool `json:"extraOutput"`
+	// StaleAfterSet は、setVariable と setExpression の応答では新しい値を返し、その後の variables では前の値を返す
+	// （vscode-js-debug 1.117.0 の setExpression の代役）。
+	StaleAfterSet bool `json:"staleAfterSet"`
 }
 
 type message struct {
@@ -599,7 +602,9 @@ func (a *adapter) handle(m *message) {
 		if a.overrides == nil {
 			a.overrides = map[string]string{}
 		}
-		a.overrides[name] = sargs.Value
+		if !a.opts.StaleAfterSet {
+			a.overrides[name] = sargs.Value
+		}
 		a.stateMu.Unlock()
 		a.respond(m, map[string]any{"value": sargs.Value})
 	case "continue", "next", "stepIn", "stepOut":

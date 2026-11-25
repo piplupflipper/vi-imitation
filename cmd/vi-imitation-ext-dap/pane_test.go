@@ -272,13 +272,16 @@ func TestPaneSetVariable(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string
+		fake map[string]any
 		want string
 	}{
-		{"setVariable", nil, "setVariable x=42 ref=1"},
-		{"setExpression", []string{"-set-expression"}, "setExpression x=42 ref=0"},
+		{"setVariable", nil, nil, "setVariable x=42 ref=1"},
+		{"setExpression", []string{"-set-expression"}, nil, "setExpression x=42 ref=0"},
+		// 書き換えた直後の variables が前の値を返しても（vscode-js-debug）、応答の値を出す。
+		{"stale", []string{"-set-expression"}, map[string]any{"staleAfterSet": true}, "setExpression x=42 ref=0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := paneHost(t, tc.args, nil, map[string]any{"defaultSection": "scopes"})
+			h := paneHost(t, tc.args, tc.fake, map[string]any{"defaultSection": "scopes"})
 			h.toggleUI()
 			p := h.waitPane()
 			h.mustExec(cmdStart, 0)
