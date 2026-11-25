@@ -60,8 +60,12 @@ func TestPlaceVirtualTexts(t *testing.T) {
 	lines := strings.Split(vtGoSrc, "\n")
 	eol := vtSettings{enabled: true, placement: ext.VirtualTextEOL, maxLength: 20, highlightChanged: true}
 	vars := []vtVar{
-		{name: "x", value: "3"}, {name: "big", value: "[]int len: 3000"}, {name: "s", value: strings.Repeat("long ", 400)},
-		{name: "nested", value: "{...}"}, {name: "値", value: "日本語\n二行目"}, {name: "i", value: "2"},
+		{name: "x", value: "3"},
+		{name: "big", value: "[]int len: 3000"},
+		{name: "s", value: strings.Repeat("long ", 400)},
+		{name: "nested", value: "{...}"},
+		{name: "値", value: "日本語\n二行目"},
+		{name: "i", value: "2"},
 	}
 	got := vtLines(placeVirtualTexts(lines, 14, vars, eol, "// %s", map[string]bool{"x": true}))
 	// helper の x（2 行目）と go func の s（18 行目）は範囲の外か入れ子の関数の中、12 行目のコメントの i と 15 行目の obj.s は数えない。

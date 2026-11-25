@@ -87,13 +87,13 @@ func parseVTSettings(raw any) (vtSettings, error) {
 				v.highlightChanged = b
 			}
 		case "position":
+			// overlay（本文の上に重ねる）は、本文を隠すので受けない。
 			s, _ := x.(string)
-			switch ext.VirtualTextPlacement(s) {
-			case ext.VirtualTextEOL, ext.VirtualTextInline:
-				v.placement = ext.VirtualTextPlacement(s)
-			default:
+			pl := ext.VirtualTextPlacement(s)
+			if pl != ext.VirtualTextEOL && pl != ext.VirtualTextInline {
 				return v, fmt.Errorf("virtualText.position %v is not \"eol\" or \"inline\"", x)
 			}
+			v.placement = pl
 		case "maxLength":
 			n, ok := x.(json.Number)
 			i, err := n.Int64()
