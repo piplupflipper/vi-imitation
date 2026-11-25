@@ -31,9 +31,6 @@ import (
 // アドレスは "unix:" に続けてソケットのパスを書く形で、dlv の --client-addr の書き方に合わせる。
 const clientAddrPlaceholder = "${clientAddr}"
 
-// outputChannel は、output/append で書き足す欄の名前である（基本設計 6.4）。
-const outputChannel = "dap"
-
 // session は、1 つのデバッグのセッションである。デバッグアダプターとの DAP の接続と、拡張機能が起動したならその子プロセスを持つ。
 //
 // 拡張機能はセッションを同時に複数持てる（FR-285）。最上位のセッションは debug.continue などで始め、
@@ -103,8 +100,11 @@ type session struct {
 	// gen は、遅れて届いた応答を捨てるための世代の番号である（FR-287。基本設計 6.4 の「セッションと状態の分離」）。
 	// 止まった、続けた、続行とステップ実行と一時停止を送った、スレッドかフレームかセッションを選び直した、のたびに 1 つ進める。
 	gen atomic.Uint64
-	// output は、このセッションのデバッグ対象の出力の写しである（基本設計 6.4。後の issue のデバッグのペインの出力の区画が使う）。
+	// output は、このセッションのデバッグ対象の出力の写しである（基本設計 6.4。ペインの出力の区画に結びつける。FR-291）。
 	output *server.TextLog
+	// crMu は crPending を守る。crPending は、出力の種類ごとの、前の塊が \r で終わったこと（次の塊の先頭の \n を捨てる）である（normalizeCR）。
+	crMu      sync.Mutex
+	crPending map[string]bool
 	// reply は、子のセッションで、親が受けた startDebugging へ応答する関数である。最上位のセッションでは nil。
 	// replyOnce で 1 回だけ呼ぶ（replyStart）。
 	reply     func(error)
@@ -589,6 +589,7 @@ func (s *session) resume(ctx context.Context, command string) error {
 	wasHalted := s.halted
 	s.halted = false
 	gen := s.gen.Add(1)
+	s.d.pane.markDirty(secThreads, secScopes)
 	s.d.mu.Unlock()
 	if err := c.call(ctx, command, threadArguments{ThreadID: tid}, nil); err != nil {
 		s.d.mu.Lock()
@@ -609,6 +610,7 @@ func (s *session) pause(ctx context.Context, tid int) error {
 		return errDAPClosed
 	}
 	s.gen.Add(1)
+	s.d.pane.markDirty(secThreads, secScopes)
 	return c.call(ctx, "pause", threadArguments{ThreadID: tid}, nil)
 }
 
@@ -875,7 +877,13 @@ func (s *session) handleEvent(e dapEvent) {
 		if body.Category == "telemetry" {
 			return
 		}
-		s.appendOutput(body.Output)
+		if body.Category == "important" {
+			// 目立つように出すことの勧め（同仕様）なので、メッセージの行にも出す（FR-291）。
+			if text := strings.TrimSpace(body.Output); text != "" {
+				s.d.showInfo(text)
+			}
+		}
+		s.appendOutput(body.Output, body.Category)
 	default:
 		if command, ok := strings.CutPrefix(e.name, lateFailureEvent); ok {
 			// 応答を待ち終えた request へ、後から届いた失敗の応答（dlv の restart のビルドの失敗。PR #414 のレビューの推奨 3）。
@@ -903,12 +911,54 @@ func (s *session) handleEvent(e dapEvent) {
 	}
 }
 
-// appendOutput は、デバッグ対象の出力を、セッションの写しと output/append の dap の欄へ書き足す（基本設計 6.4）。
-func (s *session) appendOutput(text string) {
-	if err := s.output.Append(text, ""); err != nil {
+// appendOutput は、デバッグ対象の出力を、セッションの写し（出力の区画）へ書き足す（基本設計 6.4。FR-291）。
+// category は DAP の output の event の category で、stderr は diagnostic.error、console と important は comment の色で書き足す（仮）。
+// 写しが出力の区画に結びついていれば view/append で送り、ペインを閉じている間は写しにだけ足す（FR-273）。
+// 段階 2 の output/append の dap の欄へは書かない（基本設計 1.4 の「output/append」）。
+// 改行の \r\n は \n にし、\n の前でない \r も \n にする（normalizeCR）。
+//
+// req: FR-291
+func (s *session) appendOutput(text, category string) {
+	text = s.normalizeCR(category, text)
+	style := ""
+	switch category {
+	case "stderr":
+		style = "diagnostic.error"
+	case "console", "important":
+		style = "comment"
+	}
+	if err := s.output.Append(text, style); err != nil {
 		s.d.logf("output log: %v", err)
 	}
-	s.d.appendOutput(text)
+	if tap := s.d.outputTap; tap != nil {
+		tap(text)
+	}
+}
+
+// appendStream は、アダプターの標準出力と標準エラー出力（clientSocket の dlv dap がデバッグ対象の出力を書く所）を書き足す。
+func (s *session) appendStream(text string) { s.appendOutput(text, "") }
+
+// normalizeCR は、出力の改行の \r を扱う（PR #405 の未確認事項の決め）。\r\n は \n にし、\n の前でない \r（進み具合の表示が行を
+// 書き直すもの）も \n にする。写しと本体の行は \r を ^M で出すうえ、行の書き直しはできないので、書き直した行を次の行に並べる。
+// 塊が \r で終わったときは \n にしておき、次の塊（同じ category）の先頭の \n を捨てる。\r\n が塊の境目で分かれても行が増えない。
+func (s *session) normalizeCR(category, text string) string {
+	s.crMu.Lock()
+	defer s.crMu.Unlock()
+	if s.crPending[category] {
+		text = strings.TrimPrefix(text, "\n")
+		delete(s.crPending, category)
+	}
+	if !strings.Contains(text, "\r") {
+		return text
+	}
+	if strings.HasSuffix(text, "\r") {
+		if s.crPending == nil {
+			s.crPending = map[string]bool{}
+		}
+		s.crPending[category] = true
+	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	return strings.ReplaceAll(text, "\r", "\n")
 }
 
 // startChild は、アダプターからの startDebugging（seq の逆向きの request）を受けて、子のセッションを始める（FR-285。基本設計 6.4 の

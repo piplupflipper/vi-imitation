@@ -87,6 +87,10 @@ type fakeOptions struct {
 	NoThreads bool `json:"noThreads"`
 	// StackTraceDelayMs は、最初の stackTrace の応答を遅らせる時間（ミリ秒）である。受け取ったら "stackTrace requested" を出す。
 	StackTraceDelayMs int `json:"stackTraceDelayMs"`
+	// VariablesDelayMs は、最初の variables（参照 1）の応答を遅らせる時間（ミリ秒）である。受け取ったら "variables requested" を出す。
+	VariablesDelayMs int `json:"variablesDelayMs"`
+	// ExtraOutput は、configurationDone の後に、stderr の CRLF の行、塊の境目で分かれた CRLF、\r だけの行、important の行を出す。
+	ExtraOutput bool `json:"extraOutput"`
 }
 
 type message struct {
@@ -121,6 +125,12 @@ type adapter struct {
 	terminate bool
 	// delayed は、StackTraceDelayMs で stackTrace を遅らせ終えたことを表す。
 	delayed bool
+	// varDelayed は、VariablesDelayMs で variables を遅らせ終えたことを表す。stateMu で守る。
+	varDelayed bool
+	// nstop は、止まった回数である。overrides は、setVariable と setExpression で書き換えた値（名前から）で、止まるたびに捨てる。
+	// どちらも stateMu で守る。
+	nstop     int
+	overrides map[string]string
 	// bpIDs は、VerifyLater と NeverVerify で振ったブレークポイントの ID（置いた位置から）である。nextBPID は次に振る ID。
 	bpIDs    map[location]int
 	nextBPID int
@@ -144,6 +154,8 @@ type capFlags struct {
 	noConditional bool
 	restart       bool
 	restartFail   bool
+	noSetVariable bool
+	setExpression bool
 }
 
 var flagCaps capFlags
@@ -156,6 +168,8 @@ func main() {
 	flag.BoolVar(&flagCaps.noConditional, "no-conditional", false, "do not support conditional breakpoints")
 	flag.BoolVar(&flagCaps.restart, "restart", false, "support the restart request")
 	flag.BoolVar(&flagCaps.restartFail, "restart-fail", false, "fail the restart after acknowledging it (as dlv does on a build error)")
+	flag.BoolVar(&flagCaps.noSetVariable, "no-set-variable", false, "do not support setVariable")
+	flag.BoolVar(&flagCaps.setExpression, "set-expression", false, "support setExpression")
 	flag.Parse()
 	if *sleep {
 		select {}
@@ -349,6 +363,7 @@ func (a *adapter) handle(m *message) {
 		a.respond(m, map[string]any{
 			"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": a.terminate,
 			"supportsConditionalBreakpoints": !flagCaps.noConditional, "supportsRestartRequest": flagCaps.restart,
+			"supportsSetVariable": !flagCaps.noSetVariable, "supportsSetExpression": flagCaps.setExpression,
 		})
 		a.output("console", fmt.Sprintf("initialize supportsStartDebuggingRequest=%v\n", args.SupportsStartDebuggingRequest))
 	case "restart":
@@ -446,6 +461,12 @@ func (a *adapter) handle(m *message) {
 		}
 		a.output("stdout", "hello from debuggee\n")
 		a.output("telemetry", "telemetry must not be shown\n")
+		if a.opts.ExtraOutput {
+			a.output("stderr", "err line\r\n")
+			a.output("stdout", "split\r")
+			a.output("stdout", "\nprogress 1\rprogress 2\n")
+			a.output("important", "important note\n")
+		}
 		if a.opts.VerifyLater {
 			for _, id := range a.bpIDs {
 				a.event("breakpoint", map[string]any{"reason": "changed", "breakpoint": map[string]any{"id": id, "verified": true}})
@@ -509,7 +530,78 @@ func (a *adapter) handle(m *message) {
 		if a.opts.NoSource {
 			delete(frame, "source")
 		}
-		a.respond(m, map[string]any{"stackFrames": []map[string]any{frame}})
+		// 先頭のフレームの後に、subtle のフレームと、呼んだ側のフレームを並べる（スレッドの区画のテスト）。levels が 1 なら先頭だけ。
+		frames := []map[string]any{frame,
+			{"id": 1001, "name": "runtime.main", "line": 1, "column": 1, "presentationHint": "subtle",
+				"source": map[string]any{"name": filepath.Base(loc.path), "path": loc.path}},
+			{"id": 1002, "name": "main.caller", "line": 3, "column": 1,
+				"source": map[string]any{"name": filepath.Base(loc.path), "path": loc.path}},
+		}
+		var sargs struct {
+			Levels int `json:"levels"`
+		}
+		_ = json.Unmarshal(m.Arguments, &sargs)
+		if sargs.Levels > 0 && sargs.Levels < len(frames) {
+			frames = frames[:sargs.Levels]
+		}
+		a.respond(m, map[string]any{"stackFrames": frames, "totalFrames": 3})
+	case "scopes":
+		var sargs struct {
+			FrameID int `json:"frameId"`
+		}
+		_ = json.Unmarshal(m.Arguments, &sargs)
+		a.output("console", fmt.Sprintf("scopes %d\n", sargs.FrameID))
+		if sargs.FrameID == 1002 {
+			a.respond(m, map[string]any{"scopes": []map[string]any{{"name": "Locals", "variablesReference": 11}}})
+			return
+		}
+		a.respond(m, map[string]any{"scopes": []map[string]any{
+			{"name": "Locals", "variablesReference": 1},
+			{"name": "Globals", "variablesReference": 2, "expensive": true},
+		}})
+	case "variables":
+		var vargs struct {
+			VariablesReference int `json:"variablesReference"`
+		}
+		_ = json.Unmarshal(m.Arguments, &vargs)
+		a.stateMu.Lock()
+		vars, ok := a.variables(vargs.VariablesReference)
+		delay := vargs.VariablesReference == 1 && a.opts.VariablesDelayMs > 0 && !a.varDelayed
+		a.varDelayed = a.varDelayed || delay
+		a.stateMu.Unlock()
+		if !ok {
+			a.respondError(m, fmt.Sprintf("unknown variablesReference %d", vargs.VariablesReference))
+			return
+		}
+		if delay {
+			a.output("console", "variables requested\n")
+			go func() {
+				time.Sleep(time.Duration(a.opts.VariablesDelayMs) * time.Millisecond)
+				a.respond(m, map[string]any{"variables": vars})
+			}()
+			return
+		}
+		a.respond(m, map[string]any{"variables": vars})
+	case "setVariable", "setExpression":
+		var sargs struct {
+			VariablesReference int    `json:"variablesReference"`
+			Name               string `json:"name"`
+			Expression         string `json:"expression"`
+			Value              string `json:"value"`
+		}
+		_ = json.Unmarshal(m.Arguments, &sargs)
+		name := sargs.Name
+		if m.Command == "setExpression" {
+			name = sargs.Expression
+		}
+		a.output("console", fmt.Sprintf("%s %s=%s ref=%d\n", m.Command, name, sargs.Value, sargs.VariablesReference))
+		a.stateMu.Lock()
+		if a.overrides == nil {
+			a.overrides = map[string]string{}
+		}
+		a.overrides[name] = sargs.Value
+		a.stateMu.Unlock()
+		a.respond(m, map[string]any{"value": sargs.Value})
 	case "continue", "next", "stepIn", "stepOut":
 		var targs struct {
 			ThreadID int `json:"threadId"`
@@ -694,7 +786,46 @@ func (a *adapter) next(reason string) {
 	a.stopped(reason)
 }
 
+// variables は、参照 ref の子の変数を返す。stateMu を持って呼ぶ。
+//   - 1（先頭のフレームの Locals）: x（止まった回数。書き換えればその値）、big（3000 の要素の列）、s（長い文字列）、nested（深い入れ子）
+//   - 2（Globals）: g
+//   - 3: big の要素。11（呼んだ側のフレームの Locals）: y。20 から: nested の子
+func (a *adapter) variables(ref int) ([]map[string]any, bool) {
+	val := func(name, def string) string {
+		if v, ok := a.overrides[name]; ok {
+			return v
+		}
+		return def
+	}
+	switch {
+	case ref == 1:
+		return []map[string]any{
+			{"name": "x", "value": val("x", strconv.Itoa(a.nstop)), "type": "int", "evaluateName": "x", "variablesReference": 0},
+			{"name": "big", "value": "[]int len: 3000", "type": "[]int", "evaluateName": "big", "variablesReference": 3},
+			{"name": "s", "value": strings.Repeat("long ", 400), "type": "string", "variablesReference": 0},
+			{"name": "nested", "value": "{...}", "type": "T", "variablesReference": 20},
+		}, true
+	case ref == 2:
+		return []map[string]any{{"name": "g", "value": "1", "type": "int", "variablesReference": 0}}, true
+	case ref == 3:
+		out := make([]map[string]any, 3000)
+		for i := range out {
+			out[i] = map[string]any{"name": fmt.Sprintf("[%d]", i), "value": strconv.Itoa(i), "type": "int", "variablesReference": 0}
+		}
+		return out, true
+	case ref == 11:
+		return []map[string]any{{"name": "y", "value": val("y", "7"), "type": "int", "variablesReference": 0}}, true
+	case ref >= 20 && ref < 120:
+		return []map[string]any{{"name": "next", "value": fmt.Sprintf("depth %d", ref-19), "variablesReference": ref + 1}}, true
+	}
+	return nil, false
+}
+
 func (a *adapter) stopped(reason string) {
+	a.stateMu.Lock()
+	a.nstop++
+	a.overrides = map[string]string{}
+	a.stateMu.Unlock()
 	body := map[string]any{"reason": reason, "allThreadsStopped": true}
 	if !a.opts.NoThreadID {
 		body["threadId"] = a.threadID()

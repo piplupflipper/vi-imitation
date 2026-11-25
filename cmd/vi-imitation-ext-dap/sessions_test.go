@@ -648,11 +648,8 @@ func TestExtensionKilledWithChildSessions(t *testing.T) {
 	h.openFT(srcPath, "go")
 	h.mustExec(cmdToggleBreakpoint, 2)
 	h.mustExec(cmdStart, 0)
-	var pids []int
-	for _, what := range []string{"adapter", "child", "adapter", "child"} {
-		pids = append(pids, h.waitPID(what))
-	}
 	h.waitSigns(bp2, exec2)
+	pids := waitFakePIDs(t, cmd.Process.Pid, 4)
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}

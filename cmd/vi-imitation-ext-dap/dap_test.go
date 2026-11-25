@@ -73,6 +73,9 @@ type host struct {
 	// inputAsks と inputAnswers は、input/ask の問いと、テストが渡す答えである。
 	inputAsks    chan ext.InputAskParams
 	inputAnswers chan ext.InputAskResult
+	// updates と appends は、拡張機能が送った view/update と view/append である（ペインのテスト）。
+	updates chan ext.ViewUpdateParams
+	appends chan ext.ViewAppendParams
 
 	mu       sync.Mutex
 	versions map[ext.BufferID]ext.Version
@@ -99,6 +102,13 @@ func newHost(t *testing.T, settings string) *host {
 	d.timeouts = timeouts{initialize: testTimeout, launch: testTimeout, stop: 2 * time.Second, request: testTimeout}
 	h := newHostState(t)
 	h.d = d
+	// デバッグ対象の出力は、セッションの写しに足したものを受け取る（output/append の欄には書かない）。
+	d.outputTap = func(s string) {
+		select {
+		case h.outputs <- s:
+		default:
+		}
+	}
 	hostR, extW := io.Pipe()
 	extR, hostW := io.Pipe()
 	served := make(chan error, 1)
@@ -137,6 +147,8 @@ func newHostState(t *testing.T) *host {
 		answers:      make(chan ext.ChoiceAskResult, 16),
 		inputAsks:    make(chan ext.InputAskParams, 16),
 		inputAnswers: make(chan ext.InputAskResult, 16),
+		updates:      make(chan ext.ViewUpdateParams, 4096),
+		appends:      make(chan ext.ViewAppendParams, 4096),
 		versions:     map[ext.BufferID]ext.Version{},
 		ids:          map[string]ext.BufferID{},
 		workDir:      t.TempDir(),
@@ -177,11 +189,11 @@ func (h *host) notification(_ context.Context, n *rpc.Notification) {
 	case ext.MethodMessageShow:
 		h.msgs <- decode[ext.MessageShowParams](h.t, n.Params)
 	case ext.MethodOutputAppend:
-		p := decode[ext.OutputAppendParams](h.t, n.Params)
-		if p.Channel != outputChannel {
-			h.t.Errorf("output/append channel = %q, want %q", p.Channel, outputChannel)
-		}
-		h.outputs <- p.Text
+		h.t.Errorf("output/append was sent: %s", n.Params)
+	case ext.MethodViewUpdate:
+		h.updates <- decode[ext.ViewUpdateParams](h.t, n.Params)
+	case ext.MethodViewAppend:
+		h.appends <- decode[ext.ViewAppendParams](h.t, n.Params)
 	case ext.MethodViewClose:
 		h.closes <- decode[ext.ViewCloseParams](h.t, n.Params).View
 	}
@@ -911,6 +923,20 @@ func TestManifest(t *testing.T) {
 	}
 	if !slices.Equal(m.Provides, providedOps) || len(m.Contributes.Commands) != 0 || len(m.Activation) != 0 {
 		t.Errorf("manifest = %+v, want provides %v only", m, providedOps)
+	}
+	// 区画の中のキーは、pane.go が view/key で受ける ID と、効かせる区画が合う（子を切り替える 2 つは区画を限らない）。
+	want := map[string][]string{
+		keyScopesParent: {secScopes}, keyScopesSetValue: {secScopes},
+		keyThreadsSubtle: {secThreads}, keyThreadsFilter: {secThreads}, keyThreadsInvert: {secThreads},
+		keyBreakpointsDel: {secBreakpoints}, keyConsoleNext: {secConsole}, keyConsolePrev: {secConsole},
+		"dap.view.next": nil, "dap.view.prev": nil,
+	}
+	got := map[string][]string{}
+	for _, k := range m.Contributes.PopupKeys {
+		got[k.ID] = k.Children
+	}
+	if mustJSON(t, got) != mustJSON(t, want) {
+		t.Errorf("popupKeys = %v, want %v", got, want)
 	}
 }
 

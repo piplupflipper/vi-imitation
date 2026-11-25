@@ -25,6 +25,62 @@ type capabilities struct {
 	SupportsTerminateRequest         bool `json:"supportsTerminateRequest,omitempty"`
 	SupportsConditionalBreakpoints   bool `json:"supportsConditionalBreakpoints,omitempty"`
 	SupportsRestartRequest           bool `json:"supportsRestartRequest,omitempty"`
+	// SupportsSetVariable と SupportsSetExpression は、setVariable と setExpression に対応するかである（スコープの区画の値の書き換え。FR-289）。
+	SupportsSetVariable   bool `json:"supportsSetVariable,omitempty"`
+	SupportsSetExpression bool `json:"supportsSetExpression,omitempty"`
+}
+
+// scopesArguments は、scopes の引数（仕様の ScopesArguments）である。frameId は今の止まった状態で得たものに限る（同仕様）。
+type scopesArguments struct {
+	FrameID int `json:"frameId"`
+}
+
+// scope は、仕様の Scope のうち、使う項目である。
+type scope struct {
+	Name               string `json:"name"`
+	VariablesReference int    `json:"variablesReference"`
+	// Expensive は、変数が多いか読むのが重いことを表す（同仕様）。スコープの区画は、これの無いスコープだけを開いて出す（基本設計 6.4）。
+	Expensive bool `json:"expensive,omitempty"`
+}
+
+// scopesResponse は、scopes の response の body である。
+type scopesResponse struct {
+	Scopes []scope `json:"scopes"`
+}
+
+// variablesArguments は、variables の引数（仕様の VariablesArguments）である。start と count を省き、すべての子を読む。
+type variablesArguments struct {
+	VariablesReference int `json:"variablesReference"`
+}
+
+// variable は、仕様の Variable のうち、使う項目である。VariablesReference が 0 より大きければ子を持つ（同仕様）。
+type variable struct {
+	Name               string `json:"name"`
+	Value              string `json:"value"`
+	Type               string `json:"type,omitempty"`
+	EvaluateName       string `json:"evaluateName,omitempty"`
+	VariablesReference int    `json:"variablesReference"`
+}
+
+// variablesResponse は、variables の response の body である。
+type variablesResponse struct {
+	Variables []variable `json:"variables"`
+}
+
+// setVariableArguments は、setVariable の引数（仕様の SetVariableArguments）である。
+type setVariableArguments struct {
+	// VariablesReference は、変数を持つ入れ物（スコープか親の変数）の参照である。
+	VariablesReference int    `json:"variablesReference"`
+	Name               string `json:"name"`
+	Value              string `json:"value"`
+}
+
+// setExpressionArguments は、setExpression の引数（仕様の SetExpressionArguments）である。
+type setExpressionArguments struct {
+	Expression string `json:"expression"`
+	Value      string `json:"value"`
+	// FrameID は、式を評価するフレームである。
+	FrameID int `json:"frameId,omitempty"`
 }
 
 // restartArguments は、restart の引数（仕様の RestartArguments）である。
@@ -106,11 +162,15 @@ type stackFrame struct {
 	Line   int     `json:"line"`
 	// Column は、UTF-16 のコード単位で数えた列である。0 から数えるか 1 から数えるかは columnsStartAt1 で決まる。
 	Column int `json:"column"`
+	// PresentationHint は、normal、label、subtle のどれかである（仕様の StackFrame）。スレッドの区画は subtle を既定で隠す（FR-290）。
+	PresentationHint string `json:"presentationHint,omitempty"`
 }
 
 // stackTraceResponse は、stackTrace の response の body である。
 type stackTraceResponse struct {
 	StackFrames []stackFrame `json:"stackFrames"`
+	// TotalFrames は、スタックのフレームの総数である（省かれうる）。
+	TotalFrames int `json:"totalFrames,omitempty"`
 }
 
 // thread は、仕様の Thread である。

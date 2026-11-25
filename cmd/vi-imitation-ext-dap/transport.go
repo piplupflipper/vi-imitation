@@ -292,7 +292,7 @@ func (s *session) startProcess(p adapterProcess) error {
 			return fail(err)
 		}
 		cmd.Stdout, cmd.Stderr = w, w
-		go s.forward(r, s.appendOutput)
+		go s.forward(r, s.appendStream)
 	case transportServerPort:
 		// アダプターの出力はアダプターのログなので、拡張機能のログ（本体が記録する）へ書く。
 		r, w, err := pipe()
