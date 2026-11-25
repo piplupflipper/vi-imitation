@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
+	"github.com/piplupflipper/vi-imitation/ext/expand"
+	userconfig "github.com/piplupflipper/vi-imitation/internal/config"
 )
 
 // この節は、設定の形（アダプターの表と構成の一覧）、つなぎ方、構成の出どころと値の当て方のテストである（基本設計 6.4。#408）。
@@ -686,6 +688,47 @@ func TestPickProcess(t *testing.T) {
 	p = h.waitPane()
 	h.closeView(p.id)
 	h.waitMessage("デバッグの開始を取り消した")
+}
+
+// TestConfigExample は、同梱する設定の例（config.example.jsonc）の DAP の部分が、この拡張機能の設定として誤り無く読め、
+// オーナーの nvim の Python（debugpy）、JS と TS（vscode-js-debug）と、Go（dlv）のアダプターと構成を持つことを確かめる。
+func TestConfigExample(t *testing.T) {
+	data, err := os.ReadFile("../../config.example.jsonc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ucfg, errs := userconfig.Parse("config.example.jsonc", data)
+	if len(errs) != 0 {
+		t.Fatalf("設定の例の誤り: %v", errs)
+	}
+	s, err := parseSettings(ucfg.ExtensionSettings["dap"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.legacy != nil {
+		t.Error("the example keeps the default dlv dap")
+	}
+	for name, transport := range map[string]string{"go": transportClientSocket, "python": transportStdio, "debugpy": transportStdio, "pwa-node": transportServerPort, "pwa-chrome": transportServerPort} {
+		if a := s.adapters[name]; a == nil || a.transport != transport {
+			t.Errorf("adapters[%s] = %+v, want %s", name, a, transport)
+		}
+	}
+	for _, ft := range []string{"go", "python", "javascript", "typescript"} {
+		cands := s.settingsCandidates(ft)
+		if len(cands) == 0 {
+			t.Errorf("no configurations for %s", ft)
+		}
+		for _, c := range cands {
+			if _, err := s.lookupAdapter(c); err != nil {
+				t.Errorf("%s: %v", ft, err)
+			}
+			unit := map[string]any{"configuration": c.config}
+			r := (&debugger{}).resolver(t.Context(), invocation{}, "/w")
+			if err := expand.Check(unit, r); err != nil {
+				t.Errorf("%s %s: %v", ft, c.name, err)
+			}
+		}
+	}
 }
 
 // TestApplyEnvFile は、envFile の読み方（コメントと空の行を飛ばし、引用符を外し、env にある名前を上書きしない）を確かめる。

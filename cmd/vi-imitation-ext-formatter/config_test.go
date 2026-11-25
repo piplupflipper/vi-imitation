@@ -91,10 +91,11 @@ func TestConfigExample(t *testing.T) {
 
 	// 同梱の宣言ファイルを、配布物と同じ extensions/<名前>/ の並びに置いて読む。
 	// 設定の例は treesitter の設定（見出しの帯。#380）と colorizer の設定（色コードの着色。#388）も持つので、
-	// その宣言ファイルも置く（置かないと、設定の先の拡張機能が無い誤りになる）。
+	// その宣言ファイルも置く（置かないと、設定の先の拡張機能が無い誤りになる）。DAP の設定（アダプターと構成。#408）も同じ。
 	dir := t.TempDir()
 	for name, src := range map[string]string{
-		"colorizer": "../vi-imitation-ext-colorizer", "formatter": ".", "lsp": "../vi-imitation-ext-lsp", "treesitter": "../vi-imitation-ext-treesitter",
+		"colorizer": "../vi-imitation-ext-colorizer", "dap": "../vi-imitation-ext-dap", "formatter": ".", "lsp": "../vi-imitation-ext-lsp",
+		"treesitter": "../vi-imitation-ext-treesitter",
 	} {
 		m, err := os.ReadFile(filepath.Join(src, "manifest.json"))
 		if err != nil {
@@ -111,11 +112,11 @@ func TestConfigExample(t *testing.T) {
 	if len(problems) != 0 {
 		t.Fatalf("宣言ファイルの誤り: %v", problems)
 	}
-	if len(exts) != 4 || exts[0].Manifest.ID != "colorizer" || exts[1].Manifest.ID != "formatter" || exts[2].Manifest.ID != "lsp" ||
-		exts[3].Manifest.ID != "treesitter" {
-		t.Fatalf("拡張機能の並び = %+v, want colorizer, formatter, lsp, treesitter", exts)
+	if len(exts) != 5 || exts[0].Manifest.ID != "colorizer" || exts[1].Manifest.ID != "dap" || exts[2].Manifest.ID != "formatter" ||
+		exts[3].Manifest.ID != "lsp" || exts[4].Manifest.ID != "treesitter" {
+		t.Fatalf("拡張機能の並び = %+v, want colorizer, dap, formatter, lsp, treesitter", exts)
 	}
-	formatter, lsp := exts[1].Manifest, exts[2].Manifest
+	formatter, lsp := exts[2].Manifest, exts[3].Manifest
 	for ft := range want {
 		if !formatter.HandlesFileType(ft) || !formatter.ProvidesOp(ext.OpFormat) {
 			t.Errorf("formatter が %s の format の提供者の候補にならない", ft)

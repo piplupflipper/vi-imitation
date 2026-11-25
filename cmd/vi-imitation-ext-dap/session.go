@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -555,6 +556,11 @@ func (s *session) handleEvent(e dapEvent) {
 		}
 		s.d.appendOutput(body.Output)
 	default:
+		if command, ok := strings.CutPrefix(e.name, reverseRequestEvent); ok {
+			// 対応しない逆向きの request（dapConn が失敗で応答した）。vscode-js-debug の子のセッションの startDebugging など。
+			s.d.logf("adapter request %s is not supported: %s", command, e.body)
+			return
+		}
 		// breakpoint、thread、module などの event は、最初の範囲では使わない。
 	}
 }
