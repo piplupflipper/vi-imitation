@@ -313,12 +313,27 @@ func runFakeExt(mode string) int {
 			_ = s.ShowMessage(ext.MessageInfo, msg)
 			if e.Kind == server.ViewKey && e.Key == "fake.yank" {
 				// ポップアップの中の zy は、カーソルの項目を、キーの前に付けたレジスターへ入れる（DAP のウォッチ式の c の形。FR-315）。
-				p := ext.RegisterSetParams{Register: e.Register, Text: "yank:" + e.Item}
-				go func() {
-					if err := s.SetRegister(hostCtx, p); err != nil {
+				// 再生中（Sync）は、少し待ってから応答で返す（評価の往復の代わり）。ほかは SetRegisterAsync で、打った順に積む。
+				p := ext.RegisterSetParams{Register: e.Register, Text: "yank:" + e.Item, Origin: e.Origin}
+				if reply := e.Defer(); reply != nil {
+					go func() {
+						time.Sleep(20 * time.Millisecond)
+						_ = reply(ext.ViewKeyResult{Register: &p})
+					}()
+				} else if e.Item == "update" {
+					// update の項目は、300 ms 後に送る（その間にほかの client がこの拡張機能へ問い合わせても、打った client へ送ることの確かめ）。
+					time.AfterFunc(300*time.Millisecond, func() { _ = s.SetRegisterAsync(p, nil) })
+				} else if err := s.SetRegisterAsync(p, func(err error) {
+					if err != nil {
 						_ = s.ShowMessage(ext.MessageInfo, "setreg err="+err.Error())
 					}
-				}()
+				}); err != nil {
+					_ = s.ShowMessage(ext.MessageInfo, "setreg err="+err.Error())
+				}
+			}
+			if e.Kind == server.ViewKey && e.Key == "fake.noreply" {
+				// 再生中の zn は、応答しない（本体は再生の期限で止める。FR-19）。
+				_ = e.Defer()
 			}
 			if e.Child != "" && fakeSwitcherEvent(s, e) {
 				return
@@ -942,7 +957,8 @@ func fakeSpecs(t *testing.T) []exthost.Spec {
 				// d と zs は、一覧の子 list の中でだけ効く（FR-271）。
 				PopupKeys: []ext.Contribution{
 					contrib("fake.pick", "x"), contrib("fake.two", "zq"), contrib("fake.gx", "gx"), contrib("fake.watch", "zw"),
-					contrib("fake.yank", "zy"),
+					{ID: "fake.yank", Keys: "zy", Sync: true},
+					{ID: "fake.noreply", Keys: "zn", Sync: true},
 					{ID: "fake.next", Keys: "<Tab>", Action: ext.PopupKeyChildNext, Children: fakeSwitcherChildren},
 					{ID: "fake.prev", Keys: "<S-Tab>", Action: ext.PopupKeyChildPrev, Children: fakeSwitcherChildren},
 					{ID: "fake.del", Keys: "d", Children: []string{"list"}},

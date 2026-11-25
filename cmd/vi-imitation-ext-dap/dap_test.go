@@ -154,7 +154,7 @@ func newHostState(t *testing.T) *host {
 		updates:      make(chan ext.ViewUpdateParams, 4096),
 		appends:      make(chan ext.ViewAppendParams, 4096),
 		popups:       make(chan ext.PopupOpenParams, 16),
-		registers:    make(chan ext.RegisterSetParams, 16),
+		registers:    make(chan ext.RegisterSetParams, 1024),
 		versions:     map[ext.BufferID]ext.Version{},
 		ids:          map[string]ext.BufferID{},
 		workDir:      t.TempDir(),

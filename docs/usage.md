@@ -2863,7 +2863,7 @@ nvim の conform.nvim と違う点は次のとおりである。
 - ペインの中の `W`、`B`、`E` は区画の切り替えなので、そのモーションは使えない（nvim-dap-view と同じ）
 - 例外で止まったときは、メッセージの行に「例外で止まった（例外の ID、止まった条件: 説明）」が出る（アダプターが `exceptionInfo` に対応しなければ、アダプターが止まったときに添えた文）
 - デバッグ対象の出力は `Console` にだけ出し、`REPL` には出さない（nvim-dap の REPL は出力も書き足す）
-- ウォッチ式の `c` は、入れたことを知らせない（`y` と同じ）。履歴に積むには大きすぎる値と、クリップボードへ送るには大きすぎる値だけ、`y` と同じくメッセージの行に出る。nvim-dap-view の `c` は `+` のレジスターへ入れて知らせる。この本体に `+` のレジスターは無く、無名のレジスターに入れた値がクリップボードへ送られる。使えない名前（`".c` など）は E354 になる。スコープの区画に `c` は無い（nvim-dap-view と同じ）
+- ウォッチ式の `c` は、入れたことを知らせない（`y` と同じ）。履歴に積むには大きすぎる値と、クリップボードへ送るには大きすぎる値だけ、`y` と同じくメッセージの行に出る。nvim-dap-view の `c` は `+` のレジスターへ入れて知らせる。この本体に `+` のレジスターは無く、無名のレジスターに入れた値がクリップボードへ送られる。使えない名前（`".c` など）は E354 になる。続けて打った `c` は打った順に入り、マクロ（`qq"Acjq` の後の `5@q` など）の中の `c` は、入れ終えてから次のキーへ進む。64 MiB に近い値は入れずに、大きすぎることを知らせる。スコープの区画に `c` は無い（nvim-dap-view と同じ）
 - 区画を切り替えた直後、読み直すまでの間は、先頭に「読み直しています」の行が出る（前の停止の値と見分けるため）。ステップ実行を続けて打っている（前のステップ実行から 0.35 秒の内に打った）ときは、止まってから区画を読み始めるまでに約 0.12 秒の待ちがあり、その間に次のステップ実行を打つと、その停止の区画は読まない（続けて打ったときに遅れないため）。1 回だけ止めたときは、すぐ読む
 - vscode-js-debug で、2 万の要素の列のような評価に時間のかかる式や、10 個ほどのウォッチ式を置いて、ウォッチ式の区画を出しているときは、止まってから読み終えるまで約 0.4〜0.6 秒かかり、その間にステップ実行を打つと約 40 ms（アダプターの request 1 つ分）遅れることがある。vscode-js-debug は送った request を取り消せない（`supportsCancelRequest` を示さない）ので、読み込みの途中で打った `next` が、その後ろに並ぶためである。ほかの区画を出していれば遅れない
 - REPL に打った式は、打ったときの停止とフレームで評価する。前の評価を待つ間にステップ実行して、その停止が無くなっていれば評価しない
@@ -3821,7 +3821,7 @@ s.Command("greet.ask", func(_ context.Context, _ *server.Buffer, _ *ext.CommandE
 
 ### レジスターへ入れる
 
-本体のレジスターへテキストを入れるには、`SetRegister` を使う（拡張機能 API の 0.25.0 から）。
+本体のレジスターへテキストを入れるには、`SetRegisterAsync` を使う（拡張機能 API の 0.25.0 から）。
 `Register` に名前（`a`〜`z`、`A`〜`Z`、`_`）を書けばそのレジスターへ、省けば無名のレジスターへ入れる。
 `Linewise` を `true` にすると行単位、省くと文字単位で入る。行単位の `Text` の最後の改行は、書いても書かなくてもよい。
 入れ方は、名前を付けた `y` と同じである（`"ay` のように名前付きのレジスターに書いて履歴にも積み、大文字の名前は追記し、`_` には何も書かない）。
@@ -3830,16 +3830,32 @@ s.Command("greet.ask", func(_ context.Context, _ *server.Buffer, _ *ext.CommandE
 使えない名前は、本体が E354 をメッセージの行に出し、誤りを返す。
 利用者が `"a` のように名前を付けてペインやポップアップの中のキー（`contributes.popupKeys`）を打つと、`OnView` の `ViewEvent` の `Register` にその名前が入る（付けなければ空）。
 それを `Register` に渡せば、利用者が指定したレジスターへ入れられる。
+`ViewEvent` の `Origin`（キーの番号）も `Origin` に渡すと、本体はメッセージとクリップボードを、そのキーを打った client へ送る。
 拡張機能がレジスターを読む口は無い。
-`SetRegister` は本体の応答を待つので、ハンドラーの中からは `go` で別の goroutine を起こして呼ぶ。
+
+`SetRegisterAsync` は、応答を待たずに戻り、呼んだ順に 1 つずつ本体へ送る（前の応答を待ってから次を送る）。
+本体は届いた順に書くので、続けて入れるもの（`"ac` の後の `"Ac`）は、フックの中か、拡張機能が持つ 1 本の goroutine から順に呼ぶ。
+入れるたびに `go` で goroutine を起こして呼ぶと、呼ぶ順が決まらず、続けて入れたものの順が入れ替わる。
+応答を待ちたいときは `SetRegister` を使う（同じ列に積み、その応答を待つ。フックの中からは呼べない）。
+JSON にして 64 MiB（本体が読む 1 件のメッセージの上限）に近い値は、送らずに `server.ErrRegisterTooLarge` を返す。
+
+マクロとドットリピートの再生の中でも打たれるキーは、宣言ファイルの `popupKeys` の項目に `"sync": true` を書く。
+再生中にそのキーを打つと、本体は `ViewEvent` の `Sync` を真にして知らせ、応答を待ってから次のキーへ進む（`"azy<Esc>"ap` の `"ap` が、入れた後の `a` を貼る）。
+フックは `e.Defer()` で応答の関数を受け取り、入れる中身を `ext.ViewKeyResult` の `Register` に入れて返す（このときは `SetRegisterAsync` で送らない）。
+応答しないと、本体は再生の期限でその位置の再生を止める。
 
 ```go
+// manifest.json: "popupKeys": [{ "id": "hello.copy", "keys": "c", "sync": true }]
 s.OnView(func(_ context.Context, e *server.ViewEvent) {
 	if e.Kind != server.ViewKey || e.Key != "hello.copy" {
 		return
 	}
-	p := ext.RegisterSetParams{Register: e.Register, Text: e.Item}
-	go func() { _ = s.SetRegister(context.Background(), p) }()
+	p := ext.RegisterSetParams{Register: e.Register, Text: e.Item, Origin: e.Origin}
+	if reply := e.Defer(); reply != nil {
+		_ = reply(ext.ViewKeyResult{Register: &p}) // 再生中。後から（別の goroutine で）呼んでもよい
+		return
+	}
+	_ = s.SetRegisterAsync(p, nil)
 })
 ```
 

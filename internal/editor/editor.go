@@ -456,6 +456,8 @@ type Editor struct {
 
 	// clipPushes は、ホストのクリップボードへ最後に送ったか、送るかを判定したときの command.Registers.Pushes の値である（syncClipboard）。
 	clipPushes uint64
+	// origins は、拡張機能のポップアップのキー（view/key）に付けた番号と、そのキーを打った client の組である（keysync.go。FR-315）。
+	origins keyOrigins
 
 	// choices は、拡張機能の問い（choice/ask と input/ask。FR-275）の 1 本の列である。先頭の 1 つだけを出し、残りは届いた順に待たせる。
 	choices []*extQuestion

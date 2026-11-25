@@ -46,6 +46,11 @@ type replayWait struct {
 	rest []command.ReplaySegment
 	// interrupted は、<C-c> で問い合わせを取り消したかである。
 	interrupted bool
+	// key は、操作の問い合わせでなく、Sync の popupKeys のキーの view/keySync の待ちであることを表す（keysync.go。FR-315）。
+	// State はキーの KeyHook の誤りとして止まるので、d は無く、rest だけを持つ。結果は keyReplayAnswered が受ける。
+	key bool
+	// held は、State が止まったことを返し、holdReplay が rest（と d）を結びつけたことを表す。
+	held bool
 }
 
 // replayAnswers は、再生の途中で止めた操作を実行し直す間に、届いた結果を問い合わせた順に返す（extQuery.call）。
@@ -98,18 +103,19 @@ func (e *Editor) sendReplay(bs *bufferState, ref editcmd.Ref, method string, par
 // 結びつく問い合わせが無ければ、State が止めた操作を続ける手立てが無いので、誤りを返す。
 func (e *Editor) holdReplay(res command.Result) error {
 	w := e.view.replay
-	if w == nil || w.d != nil || res.Deferred == nil {
+	if w == nil || w.held || (res.Deferred == nil) != w.key {
 		return errors.New("再生の続きを待てません（内部の誤り）")
 	}
 	w.d = res.Deferred
 	w.rest = res.Remaining
+	w.held = true
 	return nil
 }
 
 // dropOrphanReplay は、問い合わせを送ったのに State が止まったことを返さなかった（誤りに変えた）待ちを取り消す。
 // handleResult が、ErrQueryPending でない結果を扱った後に呼ぶ。
 func (e *Editor) dropOrphanReplay() {
-	if c := e.view; c != nil && c.replay != nil && c.replay.d == nil {
+	if c := e.view; c != nil && c.replay != nil && !c.replay.held {
 		e.log.Warn("再生中の問い合わせの結果を待たずに捨てる", "ext", c.replay.ref.Extension, "id", c.replay.ref.ID)
 		c.replay.q.Cancel()
 		c.replay = nil
@@ -175,7 +181,12 @@ func (e *Editor) replayAnswered(c *clientView, r *exthost.QueryResult) {
 		signal(e.keys.ready)
 	}
 	bs := w.bs
-	if w.d == nil || !slices.Contains(e.bufs, bs) || c.detached {
+	if !w.held || !slices.Contains(e.bufs, bs) || c.detached {
+		return
+	}
+	if w.key {
+		// Sync の popupKeys のキーの待ち（keysync.go。FR-315）。
+		e.keyReplayAnswered(c, w, r, interrupted)
 		return
 	}
 	e.useClient(c)

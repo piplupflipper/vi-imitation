@@ -2,8 +2,10 @@ package editor
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/piplupflipper/vi-imitation/internal/command"
 )
@@ -191,5 +193,163 @@ func TestPopupKeyRegister(t *testing.T) {
 	h.e.do(func() { line = h.e.float.bs.state.Cursor().Line })
 	if line != 0 {
 		t.Errorf("@r with an invalid name ran the rest: cursor line %d", line)
+	}
+}
+
+// openFakeList は、偽の拡張機能の一覧のポップアップを開き、開いた知らせを待つ。
+func (h *harness) openFakeList() {
+	h.t.Helper()
+	var before uint64
+	h.e.do(func() {
+		if h.e.float != nil {
+			before = h.e.float.id
+		}
+	})
+	h.keys(":fake.popup list<CR>")
+	h.eventually("一覧", func() bool { return h.e.float != nil && h.e.float.ext == "fake" && h.e.float.id != before })
+	var view uint64
+	h.e.do(func() { view = h.e.float.id })
+	h.waitPopupOpened(view)
+}
+
+// 続けて打ったキーの register/set は、打った順に書く（PR #433 のレビューの必須 1 の再現。偽の拡張機能はフックから SetRegisterAsync で積む）。
+//
+// req: FR-315
+func TestRegisterSetOrder(t *testing.T) {
+	h := start(t, Config{Extensions: fakeSpecs(t)})
+	h.openFakeList()
+	const want = "yank:oneyank:closeyank:oneyank:close"
+	for i := range 10 {
+		h.keys(`gg"azyj"Azyk"Azyj"Azy`)
+		h.settle()
+		h.eventually(fmt.Sprintf("%d 回目の a", i), func() bool {
+			r, _ := h.e.cur.state.Registers().Get('a')
+			return len(r.Text) == len(want)
+		})
+		if r := h.regOf('a'); r.Text != want {
+			t.Fatalf("%d 回目: a = %q, want %q", i, r.Text, want)
+		}
+	}
+}
+
+// マクロの再生中の Sync の popupKeys のキー（zy）は、拡張機能の応答（view/keySync）を待ち、応答の中身をレジスターへ書いてから次のキーへ
+// 進む。"azy<Esc>"ap の再生は、入れた後の a を貼る（PR #433 のレビューの裁定要 1 の再現）。応答が無ければ、再生の期限でその位置で止める。
+//
+// req: FR-19, FR-315
+func TestRegisterSetReplayWaits(t *testing.T) {
+	h := start(t, Config{Extensions: fakeSpecs(t), ReplayTimeout: 2 * time.Second})
+	h.openFakeList()
+	h.keys(`qq"azy<Esc>"apq`)
+	h.settle()
+	if r := h.regOf('q'); r.Text != "\"azy\x1b\"ap" {
+		t.Fatalf(`"q = %q`, r.Text)
+	}
+	for i := range 5 {
+		h.keys(`:fake.setreg a c "old"<CR>`)
+		h.eventually("old", func() bool { r, _ := h.e.cur.state.Registers().Get('a'); return r.Text == "old" })
+		h.keys("ggdG")
+		h.openFakeList()
+		h.keys("@q")
+		h.settle()
+		h.eventually("再生の後", func() bool { return h.e.float == nil && !h.e.replayPending() })
+		if got := h.text(); got != "yank:one" {
+			t.Fatalf("%d 回目: @q pasted %q, want yank:one", i, got)
+		}
+	}
+
+	// 応答しないキー（zn）は、再生の期限で止め、残り（j）を再生しない。
+	h.openFakeList()
+	h.keys("qwznjq")
+	h.settle()
+	h.keys("gg@w")
+	h.waitMessage("待ったので、再生を止めました")
+	h.settle()
+	var line int
+	h.e.do(func() { line = h.e.float.bs.state.Cursor().Line })
+	if line != 0 {
+		t.Errorf("@w after the timeout ran the rest: cursor line %d", line)
+	}
+}
+
+// 再生中の Sync のキーの待ちを挟む再帰のマクロ（qr"Azy@rq の後の @r）も、待ちを挟まない再帰と同じく入れ子の上限で止まり、
+// <C-c> を打てば、上限より前に止まる（dev-cycle 2.2。PR #249 の 4 回目の確認の必須と同じ確かめ）。
+//
+// req: FR-05, FR-19, FR-315
+func TestRegisterSetReplayRecursion(t *testing.T) {
+	h := start(t, Config{Extensions: fakeSpecs(t)})
+	h.openFakeList()
+	h.keys(`qr"Azy@rq`)
+	h.settle()
+	run := func(keys string) int {
+		t.Helper()
+		h.keys(`:fake.setreg a c ""<CR>`)
+		h.eventually("空の a", func() bool { r, _ := h.e.cur.state.Registers().Get('a'); return r.Text == "" })
+		if _, ok := h.float(); !ok {
+			h.openFakeList()
+		}
+		h.keys(keys)
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			var done bool
+			h.e.do(func() { done = !h.e.replayPending() })
+			if done {
+				time.Sleep(300 * time.Millisecond)
+				h.e.do(func() { done = !h.e.replayPending() })
+				if done {
+					break
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: 再生が止まらない", keys)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		h.settle()
+		return strings.Count(h.regOf('a').Text, "yank:one")
+	}
+	if n := run("@r"); n < 90 || n > 101 {
+		t.Errorf("上限: a に %d 回入れた（約 100 回で止まるはず）", n)
+	}
+	if n := run("@r<C-c>"); n >= 90 {
+		t.Errorf("<C-c>: a に %d 回入れた（中断で止まらなかった）", n)
+	}
+}
+
+// キーの結果の register/set は、届くまでの間にほかの client がその拡張機能へ問い合わせても、キーを打った client の端末の
+// クリップボードへ送る（view/key の Origin。PR #433 のレビューの推奨 2）。
+//
+// req: FR-315
+func TestRegisterSetOrigin(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "one\n", "b.txt": "beta\n"})
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t)}, "a.txt")
+	b := h.attach(ClientInfo{ID: 2, Files: []string{filepath.Join(dir, "b.txt")}})
+	h.openFakeList()
+	// update の項目の zy は、偽の拡張機能が 300 ms 後に register/set を送る。その間に B が fake.echo を問い合わせる。
+	h.keys("jjzy")
+	h.settle()
+	b.keys(":fake.echo x<CR>")
+	h.settle()
+	// レジスターは client の間で共有するので、最後に持った State（e.shared）から読む。
+	h.eventually("無名のレジスター", func() bool { r, _ := h.e.shared.Registers().Get(0); return r.Text == "yank:update" })
+	h.eventually("A のクリップボード", func() bool {
+		c := h.term.clipboard()
+		return len(c) > 0 && c[len(c)-1] == "yank:update"
+	})
+	if c := b.term.clipboard(); len(c) > 0 {
+		t.Errorf("B's clipboard = %q", c)
+	}
+}
+
+// 64 MiB のメッセージの上限を超える値は、ext/server が送らずに誤りを返し、拡張機能は止まらない（PR #433 のレビューの推奨 1）。
+//
+// req: FR-315
+func TestRegisterSetTooLarge(t *testing.T) {
+	h := start(t, Config{Extensions: fakeSpecs(t)})
+	h.keys(":fake.setreg - c big:70000000<CR>")
+	h.waitMessage("setreg err=server: register/set exceeds the message size limit")
+	h.keys(`:fake.setreg - c "after"<CR>`)
+	h.eventually("上限の後", func() bool { r, _ := h.e.cur.state.Registers().Get(0); return r.Text == "after" })
+	if msg := h.message(); strings.Contains(msg, "異常終了") {
+		t.Errorf("message = %q", msg)
 	}
 }

@@ -17,10 +17,13 @@ import (
 // クリップボードへ送るには大きすぎたことだけを、メッセージの行に出す。
 // 使えない名前（FR-50 の a〜z、A〜Z、_ の他。Vim の読み取り専用のレジスター . : % なども含む）は、本体の y と同じく E354 を
 // メッセージの行に出し、何も書かずに、code が CodeInvalidParams の誤りで応答する。
-// メッセージは、その拡張機能へ最後に問い合わせを始めた client に出す（message/show と同じ）。
+// メッセージとホストのクリップボードは、Origin のキーを打った client へ送り、Origin が無ければ操作中の client へ送る。
+// 本体は届いた順に書くので、続けて入れる（"ac の後の "Ac）ときは、届く順が入れる順になるよう送る（ext/server の SetRegisterAsync は、
+// 呼んだ順に 1 つずつ送る）。
 //
 // 利用者がレジスターの名前を前に付けて contributes.popupKeys のキーを打ったとき（"ac）は、本体はその名前を view/key の
 // Register（ViewKeyParams）に入れて知らせる。拡張機能は、それを RegisterSetParams.Register に入れて送れば、利用者の指定どおりに入れられる。
+// マクロとドットリピートの再生中は、Sync を書いた popupKeys のキーに view/keySync を送り、入れる中身を応答（ViewKeyResult）で受ける。
 //
 // 古い本体（0.24.0 まで）は register/set に method not found で応答し、view/key の Register を送らない
 // （古い本体では、"a の後のキーは popupKeys に当たらず、本体のキーとして解釈する）。
@@ -36,6 +39,10 @@ type RegisterSetParams struct {
 	// Linewise は、行単位のテキストとして入れるかである。省く（false）と文字単位である。
 	// 行単位では、Text の "\n" で区切った各部分を 1 行とする。最後の行の後の改行は書いても書かなくてもよい（書けば 1 つだけ取り除く）。
 	Linewise bool `json:"linewise,omitempty"`
+	// Origin は、このテキストを入れるきっかけになった view/key の Origin（ViewKeyParams.Origin）である。省ける。
+	// 本体は、メッセージとホストのクリップボードを、そのキーを打った client（ペインの部品の client なら、その元の編集の client）へ送る。
+	// 省いたときと、本体が覚えていない番号（古いキー）のときは、操作中の client へ送る（FR-56 の注の表）。
+	Origin uint64 `json:"origin,omitempty"`
 }
 
 // Validate は、register/set の params の形を確かめる。Register は 1 文字以下でなければならない。

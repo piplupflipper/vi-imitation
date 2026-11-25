@@ -784,6 +784,12 @@ func (e *Editor) popupKey(f *floatState, k editcmd.Key, st *command.State) (bool
 			case floatText, floatList, floatTree:
 				p.Item = floatItem(f)
 			}
+			p.Origin = e.noteKeyOrigin()
+			if pk.sync && st.Replaying() {
+				// 再生中の Sync のキーは、応答を待ってから次のキーへ進む（keysync.go。FR-19、FR-315）。
+				f.keyErr = e.sendKeyReplay(f, pk.id, p)
+				return true, nil
+			}
 			e.notifyView(f, ext.MethodViewKey, p)
 			return true, nil
 		case hasKeyPrefix(pk.keys, seq):
@@ -835,6 +841,9 @@ type popupKeyBinding struct {
 	child string
 	// children は、キーを効かせる切り替えの部品の子の ID の列（ext.Contribution.Children）である。空なら、どの部品でも効く（FR-271）。
 	children []string
+	// sync は、マクロとドットリピートの再生中に view/key の代わりに view/keySync を送り、応答を待つことを表す
+	// （ext.Contribution.Sync。FR-19、FR-315。keysync.go）。
+	sync bool
 }
 
 // loadPopupKeys は、拡張機能の宣言ファイルの contributes.popupKeys を、拡張機能ごとのキーの列の表にする（FR-69）。
@@ -853,7 +862,7 @@ func loadPopupKeys(specs []exthost.Spec, leader []editcmd.Key) (map[string][]pop
 				errs = append(errs, fmt.Errorf("拡張機能 %s の popupKeys の %s のキー %q を読めない: %w", m.ID, c.ID, c.Keys, err))
 				continue
 			}
-			b := popupKeyBinding{keys: ks, id: c.ID, selects: c.Action == ext.PopupKeySelect, children: c.Children}
+			b := popupKeyBinding{keys: ks, id: c.ID, selects: c.Action == ext.PopupKeySelect, children: c.Children, sync: c.Sync && c.Action == ""}
 			if how, ok := strings.CutPrefix(string(c.Action), input.ViewChildPrefix); ok && c.Action.Known() {
 				b.child = how
 			}

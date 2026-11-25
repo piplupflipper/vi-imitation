@@ -635,7 +635,16 @@ func (p *pane) holdOnce(d time.Duration) {
 }
 
 // onEvent は、本体からのペインの知らせを処理する。run で呼ぶ。
-func (p *pane) onEvent(e server.ViewEvent) {
+// reply は、再生中の Sync のキー（view/keySync）の応答の関数で、ほかでは nil である（ViewEvent.Defer）。
+// 受け持つキー（c）が使わなければ、ここで空の結果で応答する（本体は再生を続ける）。
+func (p *pane) onEvent(e server.ViewEvent, reply server.ViewKeyReply) {
+	if reply != nil {
+		defer func() {
+			if reply != nil {
+				_ = reply(ext.ViewKeyResult{})
+			}
+		}()
+	}
 	if uint64(e.View) != p.view.Load() || e.View == 0 {
 		return
 	}
@@ -674,6 +683,11 @@ func (p *pane) onEvent(e server.ViewEvent) {
 			p.warnRunning(e.Expanded)
 		}
 	case server.ViewKey:
+		if e.Key == keyWatchesCopy {
+			p.copyWatchValue(e, reply)
+			reply = nil // copyWatchValue が応答する
+			return
+		}
 		p.onKey(e)
 	case server.ViewInputChanged, server.ViewTabChanged:
 	}
@@ -708,8 +722,6 @@ func (p *pane) onKey(e server.ViewEvent) {
 		p.deleteWatch(e.Item)
 	case keyWatchesSet:
 		p.askSetValue(&p.watches.varTree, e.Item)
-	case keyWatchesCopy:
-		p.copyWatchValue(e.Item, e.Register)
 	case keyScopesSetValue:
 		p.scopesSetValue(e.Item)
 	case keyThreadsSubtle:

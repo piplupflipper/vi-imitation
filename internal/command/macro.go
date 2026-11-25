@@ -243,6 +243,18 @@ func (s *State) ContinueReplay(segs []ReplaySegment) Result {
 	return s.take()
 }
 
+// AbortReplay は、拡張機能の結果を待つために止めた再生の残り segs を、err で止める（FR-19）。
+// segs のキーは再生せず、segs の Dot の印のうち最後のものをドットリピートの対象にする（ContinueReplay の失敗と同じ。FR-57）。
+// 拡張機能のポップアップのキーの view/keySync（internal/editor の keysync.go）の結果を得られなかったときに使う。
+//
+// req: FR-19
+func (s *State) AbortReplay(segs []ReplaySegment, err error) Result {
+	s.res = Result{}
+	s.fail(err)
+	s.stopSegments(segs)
+	return s.take()
+}
+
 // playSegments は、再生の残り segs を先頭から再生する（ContinueReplay と ResumeReplay）。
 // 区切りの Dot の印に来たら、ドットリピートの対象をその値にする。
 // 再生がまた止まった（suspendsReplay）ら、まだ再生していない区切りを Result.Remaining に足す。

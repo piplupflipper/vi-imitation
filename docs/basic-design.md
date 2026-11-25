@@ -1502,6 +1502,7 @@ MCP の `open_file` を `focus` が false で呼んだ後に `save_buffer` を�
 | 大文字での追記（`"Ayw`） | `a` に追記する | 追記した後の `a` の内容全体を先頭に積む |
 | `_` を指定した操作 | 変えない | 変えない |
 | マクロの記録（`qa`〜`q`） | `a` に書く（`qA` は追記） | 変えない |
+| 拡張機能の `register/set`（5.3 の「#432 のレジスターへ入れる口」。FR-315） | 名前を指定したヤンクと同じ（名前を省けば変えない、`A` は追記、`_` は何もしない） | 名前を指定したヤンクと同じ（名前を省いても積む） |
 | ビジュアルモードの貼り付けで置き換えられたテキスト（未実装） | 変えない | 変えない |
 
 1 回の Ex コマンドの行の中で何度も消すとき（`:g/pat/d`、`:d|d`）は、履歴の 1 件として扱い、最初の削除で積み、後の削除は履歴の先頭を置き換える（Vim の無名のレジスターが最後に消した行を持つのと同じ。PR #166 のレビュー）。
@@ -2374,14 +2375,19 @@ DAP の拡張機能のウォッチ式の区画の `c`（FR-311。6.4）のため
 |---|---|---|---|---|
 | 拡張機能 → 本体 | `register/set` | リクエスト | レジスターへテキストを入れる（`ext.RegisterSetParams`。`register`（1 文字。省けば無名のレジスター）、`text`、`linewise`）。result は空（`ext.RegisterSetResult`） | FR-315 |
 | 本体 → 拡張機能 | `view/key` の `register` | 通知の項目 | 利用者が `"a` のように名前を付けて `contributes.popupKeys` のキーを打ったときの、その名前 | FR-315 |
+| 本体 → 拡張機能 | `view/key` の `origin`、`register/set` の `origin` | 項目 | 本体がキーごとに付ける番号。拡張機能はそのキーの結果の `register/set` に入れて返す（下の「どの client か」） | FR-315 |
+| 宣言ファイル | `contributes.popupKeys` の `sync` | 項目 | 再生中にこのキーを打ったら、`view/key` の代わりに `view/keySync` を送って応答を待つ（下の「再生中のキー」） | FR-19、FR-315 |
+| 本体 → 拡張機能 | `view/keySync` | リクエスト | 再生中の `sync` のキーを知らせる。params は `view/key` と同じ（`ext.ViewKeyParams`）。result はそのキーの結果としてレジスターへ入れる中身（`ext.ViewKeyResult` の `register`。省ける） | FR-19、FR-315 |
 
 本体の扱いは次のとおりである（どれも仮）。
 
 - **書き方**: 名前を指定した `y` と同じく、4.5 の表のとおりに書く（`command.Registers.Yank`）。名前を省けば履歴の先頭に積み、`a`〜`z` はそのレジスターに書いて履歴にも積み、`A`〜`Z` は追記した後の内容を積み、`_` には何も書かない。削除と変更ではないので、`deleteToHistory`（FR-52）に依らず積む。`linewise` のときは、`text` の最後の改行を 1 つだけ取り除く（`command.Register` は最後の行の後の改行を含めない。4.5）
 - **知らせ**: `y` と同じにする。書いたことは知らせない。履歴の 1 件の上限を超えて積まなかったこと（FR-53）と、ホストのクリップボードへ送るには大きすぎたこと（FR-56 の `MaxClipboardEncoded`）だけをメッセージの行に出す。`y` の一時的な色（FR-140）は、バッファの範囲が無いので付けない
 - **使えない名前**: FR-50 の名前でなければ（`.`、`:`、`%`、`+`、数字など、Vim の読み取り専用のレジスターも含む）、`y` と同じ E354 をメッセージの行に出し、何も書かずに code が `CodeInvalidParams` の誤りで応答する。2 文字以上の `register` は、exthost が params の誤りとして断る（E354 は出さない）。#432 の issue の契約の「問い合わせの失敗は result の `ok` が false」は、本体から拡張機能への問い合わせの決めなので、拡張機能から本体へのこのリクエストは、`option/set` と同じく誤りの応答にした
-- **どの client か**: メッセージとクリップボードの送り先は、その拡張機能へ最後に問い合わせを始めた client（`extView`。`message/show` と同じ）である。レジスターは client の間で共有する（FR-58）ので、最後に共有の状態を持った `State`（`Editor.shared`）から、その client のカーソルのあるタブの `State` へ引き継いでから書く（`useClient` と同じ）。クリップボードへの送り出し（`syncClipboard`）が、そのタブの `State` の履歴を読むためである
+- **どの client か**: 本体は、`view/key` と `view/keySync` を送るたびに番号（`origin`）を付け、そのキーを打った client（ペインの部品の client で打ったキーは、元の編集の client。1.2）と組にして覚える（`internal/editor` の `keysync.go`。新しい 256 件まで。仮）。`register/set` の `origin` が覚えている番号なら、メッセージとクリップボードをその client へ送る。`origin` が無いか、忘れた番号なら、操作中の client へ送る（FR-56 の注の表の「キーを伴わない変更」）。最初の実装は、その拡張機能へ最後に問い合わせを始めた client（`extView`）へ送ったので、キーを打ってから `register/set` が届くまでの間にほかの client がその拡張機能へ問い合わせると、その client へ行った（PR #433 のレビューの推奨 2）。レジスターは client の間で共有する（FR-58）ので、最後に共有の状態を持った `State`（`Editor.shared`）から、その client のカーソルのあるタブの `State` へ引き継いでから書く（`useClient` と同じ）。クリップボードへの送り出し（`syncClipboard`）が、そのタブの `State` の履歴を読むためである
 - **クリップボード**: 書いた後に `syncClipboard` を呼ぶ。`registers.clipboard` が `"off"` なら送らない。`y` と同じく、履歴の先頭が変わったときだけ送る（上限を超えて積まなかった値と、`_` は送らない）
+- **順**: 本体は届いた順に書く。`ext/server` の `Server.SetRegisterAsync` は、呼んだ順に列に積み、1 本の goroutine が前の応答を待ってから次を送る。`SetRegister` も同じ列に積んで応答を待つ。最初の実装は、DAP の拡張機能が `c` のたびに goroutine を起こして `SetRegister` を送ったので、続けて打った `"ac`、`"Ac`、`"Ac` の順が入れ替わった（PR #433 のレビューの必須 1。50 回のうち 4〜9 回）
+- **大きさ**: 本体は拡張機能から届く 1 件のメッセージを `rpc.DefaultMaxMessageSize`（64 MiB）までしか読まず、超えると接続を切って拡張機能を止める。`ext/server` は、params を送るときと同じ `encoding/json` で JSON にした大きさが `MaxRegisterSetBytes`（64 MiB から封筒の分の 4 KiB を引いたもの）を超えたら、送らずに `ErrRegisterTooLarge` を返す（`CheckRegisterSet`。PR #433 のレビューの推奨 1）。DAP の拡張機能は、そのとき値が大きすぎて入れられないことを知らせる
 
 `view/key` の `register` は、次のとおりに知らせる（どれも仮）。
 
@@ -2389,7 +2395,18 @@ DAP の拡張機能のウォッチ式の区画の `c`（FR-311。6.4）のため
 - 名前の後では、子を直に切り替えるキー（`ext.ViewChild.Key`）、子を切り替える `action`、`select` の `action`、回数を引かない。`<Esc>` と `<CR>` もポップアップを閉じたり選んだりせず、本体のキーとして解釈する（`"a<Esc>` は名前を捨てるだけで、ポップアップを閉じない）
 - `2"ac` のように回数を付けた後と、`"a3c` のように名前の後に回数を付けた後は、今までどおり `popupKeys` を引かずに本体のキーとして解釈する（回数を付けた `popupKeys` を本体のキーとして解釈する今の規則と同じ）
 - 名前が FR-50 で使えないもの（`".c`）なら、`view/key` を送らずに E354 を操作の失敗として `State` へ返す。マクロの再生も、本体の `".y` と同じくそこで止まる
-- `"ac` はマクロに記録され、再生でも同じ名前を知らせる（キーの解釈が `State` の `feed` を通るため）。拡張機能は `view/key` を受けてから `register/set` を送るので、再生の続きのキー（`"ap` など）が、入れる前のレジスターを読むことがある。`view/key` は通知で、本体は拡張機能の応答を待たないためである
+- `"ac` はマクロに記録され、再生でも同じ名前を知らせる（キーの解釈が `State` の `feed` を通るため）
+
+**再生中のキー**（PR #433 のレビューの裁定要 1 へのオーケストレータの決め。FR-19）: `view/key` は通知で、本体は拡張機能の応答を待たないので、最初の実装では `"azy<Esc>"ap` のマクロの再生の `"ap` が、拡張機能が入れる前の `a` を貼った。
+宣言ファイルの `popupKeys` の項目に `sync` を書いたキーは、再生中（`State.Replaying`）に打つと、`view/key` の代わりに `view/keySync`（リクエスト）を送り、応答を待つ間は再生を止める。
+
+- 待ち方は、再生中の操作の問い合わせ（5.4 の FR-19。`replayWait`）に合わせ、イベントループを止めない。`popupKey` は `view/keySync` を送り、`command.ErrQueryPending` を `KeyHook` の誤りとして返す。`State` は、ほかの再生を止める誤りと同じく、再生の残りのキーを `Result.Remaining` に入れて止まる。操作の問い合わせと違って実行し直す操作（`Deferred`）が無いので、待ちの控え（`replayWait`）には残りだけを持たせる（`replayWait.key`）
+- 本体は待つ間も拡張機能のリクエストを処理するが、応答の後に届く `register/set` と順が入れ替わらないよう、拡張機能はそのキーの結果を `register/set` でなく応答の `register`（`ext.ViewKeyResult`）で返す。本体は応答を受けてから書き（`writeRegister`）、カーソルのあるバッファの `State` の `ContinueReplay` で残りを続ける
+- 期限（`Config.ReplayTimeout`）までに応答が無い、拡張機能が誤りで応答した、`<C-c>` で取り消した、応答の `register` が使えない名前、のどれかなら、その位置で再生を止め、残りを再生しない（`State.AbortReplay`。ドットリピートの対象は `ContinueReplay` の失敗と同じに決める）
+- 待ちを挟む再帰のマクロ（`qr"Azy@rq` の後の `@r`）は、残りの区切りが入れ子の深さ（`ReplaySegment.Depth`）を持つので、待ちを挟まない再帰と同じく入れ子の上限で止まり、`<C-c>` でも止まる（`TestRegisterSetReplayRecursion`。dev-cycle 2.2）
+- 待ちの前後の変更は、`ErrBufferSwitched` の続きと同じく、1 回の `u` でまとめて戻らない（外部のコマンドの待ちのようにアンドゥの単位をつながない）
+- `ext/server` では、`view/keySync` は `OnView` のフックに、`Sync` を真にした `ViewKey` の `ViewEvent` として届く。フックは `ViewEvent.Defer` で応答を後に回し、返った関数（`ViewKeyReply`）で応答する。`Defer` を呼ばずに戻れば、空の結果で応答する
+- 再生でないときは、今までどおり `view/key` を送り、待たない。古い本体は `sync` を読まずに捨て、再生中も `view/key` を送る
 
 古い本体（0.24.0 まで）は、`register/set` に method not found で応答し、`"a` の後のキーを `popupKeys` に当てずに本体のキーとして解釈する。
 
@@ -3807,7 +3824,7 @@ PR #418 のレビュー（推奨 1）で、2 つの問いが続く構成で、1 
 - **式の持ち方**: 式は拡張機能のプロセスが動いている間（本体を終えるまで）持ち、ファイルには書かない（上の「セッションと状態の分離」の「拡張機能に 1 つ」）。デバッグの前にも足せ、そのときは式だけを出す（nvim-dap-view は止まっていないと足せない。`guard.expect_stopped`）。同じ式は足さず、カーソルをその式に置く（nvim-dap-view は式を鍵にして持つ）
 - **`i` と `e`**: `i` は、カーソルの項目の式（子の変数なら、その式）の前に差し込む（基本設計の表のとおり。nvim-dap-view の `insert_expression` は先頭に足す）。`e` は、式の位置を保って書き換える（nvim-dap-view の `edit_expr` は消して末尾に足し直す）。`e` と `d` は式の行でだけ効き、子の変数の行では知らせる（nvim-dap-view の `remove_watch_expr` と同じ）
 - **`s`**: 式の行は、`evaluate` の結果に `evaluateName` が無いので、式を `setExpression` で書き換え、アダプターが `supportsSetExpression` を持たなければ聞かずに知らせる（FR-309。nvim-dap-view の `set_expr` と同じく、式の行には `setVariable` を使わない）。子の変数はスコープの区画と同じ規則にする。書き換えたら、スコープとウォッチ式の両方の区画を読み直す（nvim-dap-view の `listeners.lua` も、`setExpression` と `setVariable` の後にウォッチ式を評価し直す）
-- **`c`（値のヤンク）**: #424 では、本体の拡張機能 API に拡張機能がレジスターへ値を入れる口が無かったので、値を中央のポップアップのテキストに出し、利用者がその中で `y` でヤンクする形にし、レジスターへ直に入れる振る舞いを FR-311 に分けた。#432 で、口（`register/set`。5.3 の「#432 のレジスターへ入れる口」）を作り、値（`supportsClipboardContext` があり、項目に式か `evaluateName` があれば `context` を `clipboard` にした `evaluate` の結果、無ければ表示している値の切る前のもの）を、利用者がキーの前に付けたレジスター（`"ac` の `a`。`view/key` の `register`）か、付けなければ無名のレジスターへ直に入れる形に改めた（`panewatches.go` の `putRegister`）。改行は `\n` にそろえ、値が改行で終わるときだけ行単位で、ほかは文字単位で入れる。nvim-dap-view（コミット b4486a6e83c45db4712849c09a76ef95b41a2133）の `lua/dap-view/watches/eval.lua` の `copy_expr` は `vim.fn.setreg("+", result.result)` と型を指定せずに入れ、Vim の `setreg()` は型を指定しなければ改行で終わる文字列を行単位にするので、それに合わせた。履歴、ホストのクリップボード、知らせは本体が `y` と同じに扱うので、拡張機能は入れたことを知らせない（nvim-dap-view は `Variable ... copied to clipboard` と知らせる）。nvim-dap-view は `+` のレジスターへ入れるが、この本体には `+` が無く、履歴の先頭をホストのクリップボードへ送る（FR-56）ので、無名のレジスターへ入れればクリップボードにも入る。評価の誤りの行は、今までどおり誤りの全文をポップアップに出し、値が空の行は「コピーする値が無い」と知らせる。スコープの区画には `c` を足さない。nvim-dap-view の既定のキー（`lua/dap-view/config.lua` の `keymaps.scopes`）は `toggle`、`jump_to_parent`、`set_value` だけで、値のコピーはウォッチ式（`keymaps.watches.copy_value`）にしか無いためである。拡張機能の `minAPIVersion` は、`register/set` の版の 0.25.0 に上げた
+- **`c`（値のヤンク）**: #424 では、本体の拡張機能 API に拡張機能がレジスターへ値を入れる口が無かったので、値を中央のポップアップのテキストに出し、利用者がその中で `y` でヤンクする形にし、レジスターへ直に入れる振る舞いを FR-311 に分けた。#432 で、口（`register/set`。5.3 の「#432 のレジスターへ入れる口」）を作り、値（`supportsClipboardContext` があり、項目に式か `evaluateName` があれば `context` を `clipboard` にした `evaluate` の結果、無ければ表示している値の切る前のもの）を、利用者がキーの前に付けたレジスター（`"ac` の `a`。`view/key` の `register`）か、付けなければ無名のレジスターへ直に入れる形に改めた（`panewatches.go` の `putRegister`）。ペインの知らせは 1 本の goroutine（`pane.run`）が順に処理し、`SetRegisterAsync` で積むので、続けて打った `c` は打った順に入る。宣言ファイルの `c` に `sync` を書き、マクロとドットリピートの再生中の `c` は、入れる中身を `view/keySync` の応答で返す（5.3 の「#432 のレジスターへ入れる口」の「再生中のキー」）。JSON にして本体のメッセージの上限を超える値は、送らずに「値が大きすぎて、レジスターへ入れられない」と知らせる。改行は `\n` にそろえ、値が改行で終わるときだけ行単位で、ほかは文字単位で入れる。nvim-dap-view（コミット b4486a6e83c45db4712849c09a76ef95b41a2133）の `lua/dap-view/watches/eval.lua` の `copy_expr` は `vim.fn.setreg("+", result.result)` と型を指定せずに入れ、Vim の `setreg()` は型を指定しなければ改行で終わる文字列を行単位にするので、それに合わせた。履歴、ホストのクリップボード、知らせは本体が `y` と同じに扱うので、拡張機能は入れたことを知らせない（nvim-dap-view は `Variable ... copied to clipboard` と知らせる）。nvim-dap-view は `+` のレジスターへ入れるが、この本体には `+` が無く、履歴の先頭をホストのクリップボードへ送る（FR-56）ので、無名のレジスターへ入れればクリップボードにも入る。評価の誤りの行は、今までどおり誤りの全文をポップアップに出し、値が空の行は「コピーする値が無い」と知らせる。スコープの区画には `c` を足さない。nvim-dap-view の既定のキー（`lua/dap-view/config.lua` の `keymaps.scopes`）は `toggle`、`jump_to_parent`、`set_value` だけで、値のコピーはウォッチ式（`keymaps.watches.copy_value`）にしか無いためである。拡張機能の `minAPIVersion` は、`register/set` の版の 0.25.0 に上げた
 - **REPL**: 出力は `server.NewConsoleLog` の写しを拡張機能に 1 つ持ち、セッションをまたいで残す（nvim-dap の REPL のバッファと同じ）。入力の行の `<CR>`（`view/select`）で、`> 式` の行を書き足してから評価する。評価は打った順に 1 つずつ、ペインの処理とは別の goroutine で行う。空の入力は前の式を評価し直す（nvim-dap の `execute`）。デバッグしていなければ `デバッグしていない` を書く（nvim-dap の `No active debug session`）。止まっていなければ `frameId` を付けずに評価する（FR-293）。止まっている間に送った評価の応答が、世代が進んだ後に届いたら、結果を出さずにそのことを書く（FR-305）。入力の履歴は、本体と同じ規則（`ext.AppendConsoleHistory`）で拡張機能も積み、ペインを開き直すときに `history` で渡す
 - **REPL の構造を持つ結果**: 上の表は「子の展開はしない」としたが、nvim-dap の REPL の `evaluate_handler` が子を先に読んで木で出すのに合わせ、子を 1 段だけ（100 個まで）読んで `  名前: 型 = 値` の行で書き足し、残りの数を添える。REPL はテキストなので開閉はできず、深く見るときはウォッチ式に足す
 - **REPL とデバッグ対象の出力**: nvim-dap は `output` の event を REPL に書き足し、nvim-dap-view はデバッグ対象の端末（`runInTerminal`）を `console` の区画に出す。この拡張機能は `runInTerminal` を作らず（FR-288）、出力の区画が `output` の event を受け持つ（FR-291）ので、REPL には評価だけを書く

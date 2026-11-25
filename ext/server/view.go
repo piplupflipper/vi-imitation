@@ -102,8 +102,18 @@ type ViewEvent struct {
 	// その子の ID である。ViewChildSelected では選んだ子の ID である。ほかでは空である（API 0.23.0 で足した）。
 	Child string
 	// Register は、ViewKey のときの、利用者がキーの前に付けたレジスターの名前（"ac の "a"）である。付けなければ空である
-	// （ext.ViewKeyParams.Register。API 0.25.0 で足した）。レジスターへ入れるキーは、これを SetRegister の Register に入れる。
+	// （ext.ViewKeyParams.Register。API 0.25.0 で足した）。レジスターへ入れるキーは、これを SetRegisterAsync の Register に入れる。
 	Register string
+	// Origin は、ViewKey のときの、本体がそのキーに付けた番号である（ext.ViewKeyParams.Origin。API 0.25.0 で足した）。
+	// そのキーの結果として入れる register/set の Origin に入れると、本体はキーを打った client へメッセージとクリップボードを送る。
+	Origin uint64
+	// Sync は、本体がマクロとドットリピートの再生中に view/keySync で送り、応答を待っている ViewKey であることを表す
+	// （宣言ファイルの popupKeys の Sync。API 0.25.0 で足した）。フックは Defer で応答を後に回し、結果を応答で返す。
+	Sync bool
+
+	// respond と deferred は、Sync の知らせの応答の関数と、フックが Defer を呼んだかである（register.go）。
+	respond  ViewKeyReply
+	deferred bool
 }
 
 // ListEditor は、本体へ editor/list を送り、本体が持つ一覧（タブ、コマンド、キーの一覧、レジスターの履歴、ジャンプリスト）の 1 つを
@@ -156,7 +166,7 @@ func (s *Server) viewNotification(ctx context.Context, n *rpc.Notification) {
 	case ext.MethodViewKey:
 		var p ext.ViewKeyParams
 		err = decodeParams(n, &p)
-		e = ViewEvent{Kind: ViewKey, View: p.View, Item: p.Item, Key: p.ID, Input: p.Input, Child: p.Child, Register: p.Register}
+		e = ViewEvent{Kind: ViewKey, View: p.View, Item: p.Item, Key: p.ID, Input: p.Input, Child: p.Child, Register: p.Register, Origin: p.Origin}
 	case ext.MethodViewExpand:
 		var p ext.ViewExpandParams
 		err = decodeParams(n, &p)

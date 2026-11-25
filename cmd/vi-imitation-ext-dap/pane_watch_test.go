@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -392,6 +393,48 @@ func TestPaneWatchesSetCopy(t *testing.T) {
 				t.Errorf("register/set %+v was sent", r)
 			case pp := <-h.popups:
 				t.Errorf("popup/open %+v was sent", pp)
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			// 続けて打った c は、打った順に入れる（PR #433 のレビューの必須 1 の再現。"ac、"Ac、"Ac を 50 回）。
+			// キーの番号（Origin）は、そのまま register/set に返す（同じレビューの推奨 2）。
+			for i := range 50 {
+				base := uint64(i*3 + 1)
+				for j, k := range []struct{ item, reg string }{{"w1", "a"}, {"w3", "A"}, {"w1", "A"}} {
+					h.notifyView(ext.MethodViewKey, ext.ViewKeyParams{
+						View: p.id, ID: keyWatchesCopy, Item: k.item, Child: secWatches, Register: k.reg, Origin: base + uint64(j),
+					})
+				}
+				for j, want := range []ext.RegisterSetParams{
+					{Register: "a", Text: tc.copyWant}, {Register: "A", Text: tc.prefix + "line1\nline2"}, {Register: "A", Text: tc.copyWant},
+				} {
+					want.Origin = base + uint64(j)
+					h.waitRegister(want)
+				}
+			}
+
+			// 再生中の c（view/keySync）は、入れる中身を応答で返し、register/set を送らない（FR-19、FR-315）。
+			var res ext.ViewKeyResult
+			ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+			err := h.conn.Call(ctx, ext.MethodViewKeySync, ext.ViewKeyParams{
+				View: p.id, ID: keyWatchesCopy, Item: "w3", Child: secWatches, Register: "c",
+			}, &res)
+			cancel()
+			if err != nil || res.Register == nil || *res.Register != (ext.RegisterSetParams{Register: "c", Text: tc.prefix + "line1\nline2"}) {
+				t.Errorf("view/keySync = %+v, %v", res.Register, err)
+			}
+			// 入れない行（評価の誤り）でも、空の結果で応答する。
+			res = ext.ViewKeyResult{}
+			ctx, cancel = context.WithTimeout(context.Background(), testTimeout)
+			err = h.conn.Call(ctx, ext.MethodViewKeySync, ext.ViewKeyParams{View: p.id, ID: keyWatchesCopy, Item: "w2", Child: secWatches}, &res)
+			cancel()
+			if err != nil || res.Register != nil {
+				t.Errorf("view/keySync on the error line = %+v, %v", res.Register, err)
+			}
+			<-h.popups
+			select {
+			case r := <-h.registers:
+				t.Errorf("register/set %+v was sent during the replay", r)
 			case <-time.After(100 * time.Millisecond):
 			}
 			h.stopAndWait()
