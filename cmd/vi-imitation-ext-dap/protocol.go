@@ -28,6 +28,67 @@ type capabilities struct {
 	// SupportsSetVariable と SupportsSetExpression は、setVariable と setExpression に対応するかである（スコープの区画の値の書き換え。FR-289）。
 	SupportsSetVariable   bool `json:"supportsSetVariable,omitempty"`
 	SupportsSetExpression bool `json:"supportsSetExpression,omitempty"`
+	// SupportsClipboardContext は、evaluate の context に clipboard を使えるかである（ウォッチ式の区画の値のヤンク。FR-292）。
+	SupportsClipboardContext bool `json:"supportsClipboardContext,omitempty"`
+	// SupportsExceptionInfoRequest は、exceptionInfo に対応するかである（例外で止まったときの中身。基本設計 6.4）。
+	SupportsExceptionInfoRequest bool `json:"supportsExceptionInfoRequest,omitempty"`
+	// ExceptionBreakpointFilters は、setExceptionBreakpoints の filters に使える例外のフィルターである（例外の区画。FR-294）。
+	ExceptionBreakpointFilters []exceptionFilter `json:"exceptionBreakpointFilters,omitempty"`
+}
+
+// exceptionFilter は、仕様の ExceptionBreakpointsFilter のうち、使う項目である。
+// Default は、フィルターの初めの値で、省かれたら false である（同仕様）。
+type exceptionFilter struct {
+	Filter      string `json:"filter"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Default     bool   `json:"default,omitempty"`
+}
+
+// setExceptionBreakpointsArguments は、setExceptionBreakpoints の引数（仕様の SetExceptionBreakpointsArguments）である。
+// Filters は、有効にするフィルターの ID の列で、空の列はすべてを無効にする。
+type setExceptionBreakpointsArguments struct {
+	Filters []string `json:"filters"`
+}
+
+// evaluateArguments は、evaluate の引数（仕様の EvaluateArguments）である。
+// FrameID を省くと、大域の範囲で評価する（同仕様）。Context は watch、repl、clipboard などである。
+type evaluateArguments struct {
+	Expression string `json:"expression"`
+	FrameID    *int   `json:"frameId,omitempty"`
+	Context    string `json:"context,omitempty"`
+}
+
+// evaluateResponse は、evaluate の response の body（仕様の EvaluateResponse）のうち、使う項目である。
+// VariablesReference が 0 より大きければ、結果は構造を持ち、子を variables で読める（止まっている間だけ）。
+type evaluateResponse struct {
+	Result             string `json:"result"`
+	Type               string `json:"type,omitempty"`
+	VariablesReference int    `json:"variablesReference"`
+	NamedVariables     int    `json:"namedVariables,omitempty"`
+	IndexedVariables   int    `json:"indexedVariables,omitempty"`
+}
+
+// exceptionInfoArguments は、exceptionInfo の引数（仕様の ExceptionInfoArguments）である。
+type exceptionInfoArguments struct {
+	ThreadID int `json:"threadId"`
+}
+
+// exceptionInfoResponse は、exceptionInfo の response の body（仕様の ExceptionInfoResponse）である。
+// BreakMode は never、always、unhandled、userUnhandled のどれかである。
+type exceptionInfoResponse struct {
+	ExceptionID string            `json:"exceptionId"`
+	Description string            `json:"description,omitempty"`
+	BreakMode   string            `json:"breakMode"`
+	Details     *exceptionDetails `json:"details,omitempty"`
+}
+
+// exceptionDetails は、仕様の ExceptionDetails のうち、使う項目である。
+type exceptionDetails struct {
+	Message        string             `json:"message,omitempty"`
+	TypeName       string             `json:"typeName,omitempty"`
+	StackTrace     string             `json:"stackTrace,omitempty"`
+	InnerException []exceptionDetails `json:"innerException,omitempty"`
 }
 
 // scopesArguments は、scopes の引数（仕様の ScopesArguments）である。frameId は今の止まった状態で得たものに限る（同仕様）。
@@ -204,7 +265,9 @@ type disconnectArguments struct {
 type stoppedEvent struct {
 	Reason      string `json:"reason"`
 	Description string `json:"description,omitempty"`
-	ThreadID    *int   `json:"threadId,omitempty"`
+	// Text は、止まった理由の追加の情報（例外の名前など）である（仕様の StoppedEvent）。
+	Text     string `json:"text,omitempty"`
+	ThreadID *int   `json:"threadId,omitempty"`
 	// HitBreakpointIDs は、止まったブレークポイントの ID（setBreakpoints の応答の id）である。
 	HitBreakpointIDs []int `json:"hitBreakpointIds,omitempty"`
 }

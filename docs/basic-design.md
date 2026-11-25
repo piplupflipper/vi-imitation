@@ -3498,7 +3498,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 | 例外（`exceptions`、`E`） | 一覧 | `exceptionBreakpointFilters` の `label` に、有効なら `[x]`、無効なら `[ ]` を付けた項目 | `<CR>` 有効と無効の切り替え | `setExceptionBreakpoints`（`filters`） |
 | ブレークポイント（`breakpoints`、`B`） | 一覧 | `パス:行` と、条件があれば条件、確かめられていなければその印。項目にプレビュー（FR-149）とファイルのアイコン（FR-152）を付ける | `<CR>` その位置を元の client のタブに開く、`d` 消す | `setBreakpoints`（消したとき） |
 | スレッド（`threads`、`T`） | 木 | セッション（2 つ以上あるとき）、スレッド（止まっているかを添える）、フレーム（`名前  パス:行`）。今のセッションの止まったスレッドを開いて出し、選んでいるフレームに印を付ける。フレームの項目にプレビューを付ける | `<CR>` フレームを選んで開く（セッションとスレッドの項目では開閉）、`s` セッションかスレッドを選ぶ（#421 で足した。下の「#421 のペイン」）、`t` `subtle` のフレームを出すかの切り替え、`f` フレームの絞り込みの文字列を聞く（`input/ask`）、`o` 絞り込みの反転 | `threads`、`stackTrace` |
-| REPL（`repl`、`R`） | 書き足すテキストと入力の行の組（`console`） | 打った式（`> 式`）と結果の文字列。結果は `evaluate` の `result` で、子の展開はしない | 本体の部品のキー（`<CR>` 送信、インサートモードの `<Up>` と `<Down>` で履歴、`<C-w>w`） | `evaluate`（`context` は `repl`） |
+| REPL（`repl`、`R`） | 書き足すテキストと入力の行の組（`console`） | 打った式（`> 式`）と結果の文字列。結果は `evaluate` の `result` で、子の展開はしない（#424 で、子を 1 段だけ書き足すことにした。下の「#424 のウォッチ式、REPL、例外」） | 本体の部品のキー（`<CR>` 送信、インサートモードの `<Up>` と `<Down>` で履歴、`<C-w>w`） | `evaluate`（`context` は `repl`） |
 | 出力（`console`、`C`） | テキスト（`view/append` で書き足す） | 今のセッションのデバッグ対象の出力。`stderr` は `diagnostic.error` の色、`console` と `important` は `comment` の色で書き足す（仮）。`telemetry` は書かない | `]s` 次のセッション、`[s` 前のセッション（nvim-dap-view の `console` の区画のキー） | 無し（`output` イベント） |
 
 区画の中で値を聞く操作（`a`、`i`、`e`、`s`、`f`）は、`input/ask`（FR-275）で聞く。`e` と `s` と `f` は、今の式、今の値、今の絞り込みを初めの中身にする（nvim-dap-view が `vim.ui.input` の `default` に渡すのと同じ）。
@@ -3693,7 +3693,7 @@ PR #418 のレビュー（推奨 1）で、2 つの問いが続く構成で、1 
 #### #421 のペイン
 
 #421 で、上の「区画」と「表示の更新と、表示を閉じた後の中身」のうち、スコープ、スレッド、ブレークポイント、出力の区画と、`debug.toggleUI`、設定の `ui` を実装した（`cmd/vi-imitation-ext-dap` の `pane.go`、`paneviews.go`）。
-ウォッチ式、例外、REPL の区画は、並びには入れ、中身を「まだ作っていない」と書いたテキストの子にした（次の issue で、同じ ID の子の部品を置き換える）。
+ウォッチ式、例外、REPL の区画は、並びには入れ、中身を「まだ作っていない」と書いたテキストの子にした（#424 で中身に置き換えた。下の「#424 のウォッチ式、REPL、例外」）。
 拡張機能の `minAPIVersion` は、切り替えの部品の版の 0.23.0 に上げた（FR-306）。
 デバッグ対象の出力は、`output/append` の `dap` の欄へ書くのをやめ、セッションごとの写し（`server.TextLog`）にだけ足す。
 上の表に無い点は、次のとおりに決めた（どれも仮）。
@@ -3716,6 +3716,24 @@ PR #418 のレビュー（推奨 1）で、2 つの問いが続く構成で、1 
 - **改行の `\r`**（PR #405 の未確認事項）: `\r\n` を `\n` にし、`\n` の前でない `\r` も `\n` にする（本体は `\r` を `^M` で出し、行の書き直しはできないので、書き直した行を次の行に並べる）。塊が `\r` で終わったときは、同じ `category` の次の塊の先頭の `\n` を捨てる。`clientSocket` のアダプターの標準出力と標準エラー出力（dlv がデバッグ対象の出力を書く所）は、色を付けずに同じく扱う
 - **端末の制御の並び（PR #423 のレビューの推奨 2）**: 出力の ESC で始まる並びは、ECMA-48 の形（CSI、OSC などの制御文字列、文字集合を指す `ESC ( B` のような中間のバイトを持つ並び、2 バイトの並び）に沿って取り除く。CSI の途中に形の外のバイト（多バイト文字など）が来たら、そこで打ち切って本文に戻し、制御文字列は改行をまたいで待たない。ESC の後が多バイト文字なら ESC だけを捨て、不正な UTF-8 を作らない（再レビューの推奨 3）。色に直さないのは、`view/append` の `highlights` は 7.1 の色の名前しか持てず、本体の色の表に端末の 16 色に当たる名前が無いためである（色に直すには、本体の色の表か、範囲に直に色を付ける口が要る）。並びが塊の境目で途切れたら、同じ `category` の次の塊と合わせて取り除く
 - **テストからの出力の読み方**: 出力を `output/append` へ書かなくなったので、拡張機能を本体の役のテストで動かすときは、写しに足したテキストを受け取る口（`debugger.outputTap`）で読む。拡張機能を別のプロセスで動かすテストは、アダプターの pid を `/proc` から探す
+
+#### #424 のウォッチ式、REPL、例外
+
+#424 で、上の「区画」の表のうち、ウォッチ式、例外、REPL の区画と、capabilities の表の残り（値のヤンク、例外のフィルター）と、例外で止まったときの中身を実装した（`cmd/vi-imitation-ext-dap` の `panewatches.go`、`panerepl.go`、`exceptions.go`）。
+区画の中のキーと見た目は、nvim-dap-view（コミット b4486a6e83c45db4712849c09a76ef95b41a2133）の `lua/dap-view/watches/`、`lua/dap-view/exceptions/`、`lua/dap-view/listeners.lua` と、nvim-dap（コミット cfa2d58f4537aca6ca83e2de1a0d9f1491121264）の `lua/dap/repl.lua` と `lua/dap/session.lua` を読んで決めた。
+拡張機能 API の版は上げていない（使う部品と request は 0.23.0 までにある）。
+上の表に無い点は、次のとおりに決めた（どれも仮）。
+
+- **ウォッチ式の評価**: 止まるたびとフレームを選び直したとき（スコープの区画と同じ変わり目の印）に、選んでいるフレームで式を 1 つずつ `evaluate`（`context` は `watch`）する。結果は、変数の参照と同じくセッションと世代ごとに持ち、同じ止まった状態の間は評価し直さない（式を足したときは、その式だけを評価する）。構造を持つ結果の子は、スコープの区画と同じ部品（`varTree`。100 個ずつの読み込みと `more` の項目を含む）で読む。結果は nvim-dap-view の `add_watch_expr` と同じく既定で開く。ウォッチ式の区画は、スコープの区画と同じく、見えている間だけ評価し、止まった位置を出し終えるまで評価しない。動いている間は評価せず、前の木を残して先頭に「動いている」の行を足す。評価の誤りは、式の行に `式 = 誤りの文` を誤りの色で出す（nvim-dap-view の `WatchError`）
+- **式の持ち方**: 式は拡張機能のプロセスが動いている間（本体を終えるまで）持ち、ファイルには書かない（上の「セッションと状態の分離」の「拡張機能に 1 つ」）。デバッグの前にも足せ、そのときは式だけを出す（nvim-dap-view は止まっていないと足せない。`guard.expect_stopped`）。同じ式は足さず、カーソルをその式に置く（nvim-dap-view は式を鍵にして持つ）
+- **`i` と `e`**: `i` は、カーソルの項目の式（子の変数なら、その式）の前に差し込む（基本設計の表のとおり。nvim-dap-view の `insert_expression` は先頭に足す）。`e` は、式の位置を保って書き換える（nvim-dap-view の `edit_expr` は消して末尾に足し直す）。`e` と `d` は式の行でだけ効き、子の変数の行では知らせる（nvim-dap-view の `remove_watch_expr` と同じ）
+- **`s`**: 式の行は、`evaluate` の結果に `evaluateName` が無いので、式を `setExpression` で書き換え、アダプターが `supportsSetExpression` を持たなければ聞かずに知らせる（FR-309。nvim-dap-view の `set_expr` と同じく、式の行には `setVariable` を使わない）。子の変数はスコープの区画と同じ規則にする。書き換えたら、スコープとウォッチ式の両方の区画を読み直す（nvim-dap-view の `listeners.lua` も、`setExpression` と `setVariable` の後にウォッチ式を評価し直す）
+- **`c`（値のヤンク）**: 本体の拡張機能 API に、拡張機能がレジスターへ値を入れる口が無い（`editor/execute` は一覧で選んだキーとコマンドに限る）。このため、値（`supportsClipboardContext` があり、項目に式か `evaluateName` があれば `context` を `clipboard` にした `evaluate` の結果、無ければ表示している値の切る前のもの）を中央のポップアップのテキストに出し、利用者がその中で `y` でヤンクする。レジスターへ直に入れる振る舞いは FR-311 に分けた
+- **REPL**: 出力は `server.NewConsoleLog` の写しを拡張機能に 1 つ持ち、セッションをまたいで残す（nvim-dap の REPL のバッファと同じ）。入力の行の `<CR>`（`view/select`）で、`> 式` の行を書き足してから評価する。評価は打った順に 1 つずつ、ペインの処理とは別の goroutine で行う。空の入力は前の式を評価し直す（nvim-dap の `execute`）。デバッグしていなければ `デバッグしていない` を書く（nvim-dap の `No active debug session`）。止まっていなければ `frameId` を付けずに評価する（FR-293）。止まっている間に送った評価の応答が、世代が進んだ後に届いたら、結果を出さずにそのことを書く（FR-305）。入力の履歴は、本体と同じ規則（`ext.AppendConsoleHistory`）で拡張機能も積み、ペインを開き直すときに `history` で渡す
+- **REPL の構造を持つ結果**: 上の表は「子の展開はしない」としたが、nvim-dap の REPL の `evaluate_handler` が子を先に読んで木で出すのに合わせ、子を 1 段だけ（100 個まで）読んで `  名前: 型 = 値` の行で書き足し、残りの数を添える。REPL はテキストなので開閉はできず、深く見るときはウォッチ式に足す
+- **REPL とデバッグ対象の出力**: nvim-dap は `output` の event を REPL に書き足し、nvim-dap-view はデバッグ対象の端末（`runInTerminal`）を `console` の区画に出す。この拡張機能は `runInTerminal` を作らず（FR-288）、出力の区画が `output` の event を受け持つ（FR-291）ので、REPL には評価だけを書く
+- **例外のフィルター**: アダプターの種類（設定の `adapters` の名前。子のセッションも親と同じ）ごとに、利用者が切り替えた有効と無効を持ち、覚えていないフィルターは `default` に従う（nvim-dap-view の `listeners.lua` の `initialize` の listener と同じ）。開始の流れの 9 のとおり、ブレークポイントの後、`configurationDone` の前に `setExceptionBreakpoints` を送り、2 回目の `initialized` の後にも送り直す。区画で選ぶと、そのアダプターの動いているすべてのセッションへすぐ送る（nvim-dap-view の `update_exception_breakpoints_filters`）。デバッグしていない間は、最後に `initialize` の応答を受けたアダプターのフィルターを「次のデバッグの開始で送る」と添えて出し、切り替えられるようにする（nvim-dap-view は `No active session` と出す）。フィルターの `description` があれば、`label` の後に添える
+- **例外で止まったとき**: `stopped` の `reason` が `exception` なら、止まった位置を出し終えた後に、アダプターが `supportsExceptionInfoRequest` を持てば止まったスレッドの `exceptionInfo` を読み、`例外で止まった（例外の ID、breakMode: 説明）` をメッセージの行に、型の名前とメッセージとスタックトレースと内側の例外（5 段まで）を REPL に書き足す。持たなければ request を送らず、`stopped` の `text` か `description` を出す。nvim-dap の `_show_exception_info` は、同じ中身を止まった行の診断にするが、この拡張機能の診断は LSP の診断と同じ一覧に並ぶ（6.7 の `diagnostic/set`）ので、REPL にした
 
 ### 6.5 ACP
 

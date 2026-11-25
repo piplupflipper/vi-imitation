@@ -347,7 +347,7 @@ func (s *session) run() {
 		// 開始が成り立った（launch か attach の応答を受けた）。止まらずに動き続けるセッション（ブレークポイントを置かずに始めた、
 		// 動いているサーバーへ attach した）でも、繋がったことと、そのスレッドを区画に出す（PR #423 の再レビューの必須 1）。
 		// スレッドの一覧は、ここで 1 回読み、その後は thread の event で足し引きする（動いている間に request を送らない）。
-		s.d.pane.markDirty(secThreads, secScopes)
+		s.d.pane.markDirty(secThreads, secScopes, secWatches)
 	}
 	switch {
 	case err != nil && s.stopping.Load():
@@ -438,6 +438,7 @@ func (s *session) start() error {
 		return err
 	}
 	s.caps.Store(&caps)
+	s.d.noteExceptionFilters(s.spec.adapter.name, caps.ExceptionBreakpointFilters)
 
 	launchCtx, cancelLaunch := context.WithTimeout(context.Background(), t.launch)
 	defer cancelLaunch()
@@ -468,6 +469,10 @@ func (s *session) start() error {
 			s.d.logf("setBreakpoints %s: %v", path, err)
 		}
 	}
+	// 有効な例外のフィルター（FR-294）は、ブレークポイントの後、configurationDone の前に送る（DAP の仕様の Launch Sequencing）。
+	if err := s.sendExceptionBreakpoints(launchCtx); err != nil {
+		s.d.logf("setExceptionBreakpoints: %v", err)
+	}
 	if caps.SupportsConfigurationDoneRequest {
 		if err := c.call(launchCtx, "configurationDone", nil, nil); err != nil {
 			return err
@@ -488,6 +493,9 @@ func (s *session) reconfigure() {
 		if err := s.sendBreakpoints(ctx, path); err != nil {
 			s.d.logf("setBreakpoints %s: %v", path, err)
 		}
+	}
+	if err := s.sendExceptionBreakpoints(ctx); err != nil {
+		s.d.logf("setExceptionBreakpoints after restart: %v", err)
 	}
 	if c := s.getConn(); c != nil && s.supports(func(c *capabilities) bool { return c.SupportsConfigurationDoneRequest }) {
 		if err := c.call(ctx, "configurationDone", nil, nil); err != nil {
@@ -607,7 +615,7 @@ func (s *session) resume(ctx context.Context, command string) error {
 	wasHalted := s.halted
 	s.halted = false
 	gen := s.gen.Add(1)
-	s.d.pane.markDirty(secThreads, secScopes)
+	s.d.pane.markDirty(secThreads, secScopes, secWatches)
 	s.d.mu.Unlock()
 	if err := c.call(ctx, command, threadArguments{ThreadID: tid}, nil); err != nil {
 		s.d.mu.Lock()
@@ -628,7 +636,7 @@ func (s *session) pause(ctx context.Context, tid int) error {
 		return errDAPClosed
 	}
 	s.gen.Add(1)
-	s.d.pane.markDirty(secThreads, secScopes)
+	s.d.pane.markDirty(secThreads, secScopes, secWatches)
 	return c.call(ctx, "pause", threadArguments{ThreadID: tid}, nil)
 }
 
@@ -1182,11 +1190,15 @@ func (s *session) stopped(body *stoppedEvent) {
 	}
 	if err != nil || len(st.StackFrames) == 0 || st.StackFrames[0].Source == nil || st.StackFrames[0].Source.Path == "" {
 		s.d.stoppedWithoutSource(s, gen, body.Reason)
-		return
+	} else {
+		f := st.StackFrames[0]
+		line := fromDAPLine(f.Line, linesStartAt1)
+		s.d.showStopped(ctx, s, gen, focus, f.ID, f.Source.Path, line, f.Column, body.Reason)
 	}
-	f := st.StackFrames[0]
-	line := fromDAPLine(f.Line, linesStartAt1)
-	s.d.showStopped(ctx, s, gen, focus, f.ID, f.Source.Path, line, f.Column, body.Reason)
+	if body.Reason == "exception" {
+		// 例外の中身は、止まった位置を出し終えた後に読む（止まった位置の stackTrace を先に送る取り決め。PR #423）。
+		s.showException(ctx, gen, tid, body)
+	}
 }
 
 // dapEvent は、受け取った 1 件の event か、逆向きの request である。

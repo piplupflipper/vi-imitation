@@ -105,6 +105,8 @@ type fakeOptions struct {
 	TopSubtle bool `json:"topSubtle"`
 	// ANSI は、configurationDone の後に、端末の色の並びを含む行を、並びの途中で塊を分けて出す。
 	ANSI bool `json:"ansi"`
+	// EvaluateDelayMs は、最初の evaluate（context が watch）の応答を遅らせる時間（ミリ秒）である。受け取ったら "evaluate requested" を出す。
+	EvaluateDelayMs int `json:"evaluateDelayMs"`
 }
 
 type message struct {
@@ -141,6 +143,8 @@ type adapter struct {
 	delayed bool
 	// varDelayed は、VariablesDelayMs で variables を遅らせ終えたことを表す。stateMu で守る。
 	varDelayed bool
+	// evalDelayed は、EvaluateDelayMs で evaluate を遅らせ終えたことを表す。stateMu で守る。
+	evalDelayed bool
 	// nstop は、止まった回数である。overrides は、setVariable と setExpression で書き換えた値（名前から）で、止まるたびに捨てる。
 	// どちらも stateMu で守る。
 	nstop     int
@@ -170,6 +174,10 @@ type capFlags struct {
 	restartFail   bool
 	noSetVariable bool
 	setExpression bool
+	// noExceptions は、例外のフィルターを示さない。noExceptionInfo は、exceptionInfo に対応しない。clipboard は、evaluate の clipboard に対応する。
+	noExceptions    bool
+	noExceptionInfo bool
+	clipboard       bool
 }
 
 var flagCaps capFlags
@@ -184,6 +192,9 @@ func main() {
 	flag.BoolVar(&flagCaps.restartFail, "restart-fail", false, "fail the restart after acknowledging it (as dlv does on a build error)")
 	flag.BoolVar(&flagCaps.noSetVariable, "no-set-variable", false, "do not support setVariable")
 	flag.BoolVar(&flagCaps.setExpression, "set-expression", false, "support setExpression")
+	flag.BoolVar(&flagCaps.noExceptions, "no-exceptions", false, "do not show exception breakpoint filters")
+	flag.BoolVar(&flagCaps.noExceptionInfo, "no-exception-info", false, "do not support exceptionInfo")
+	flag.BoolVar(&flagCaps.clipboard, "clipboard", false, "support the clipboard context of evaluate")
 	flag.Parse()
 	if *sleep {
 		select {}
@@ -374,11 +385,20 @@ func (a *adapter) handle(m *message) {
 			a.respondError(m, "this fake requires linesStartAt1")
 			return
 		}
-		a.respond(m, map[string]any{
+		caps := map[string]any{
 			"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": a.terminate,
 			"supportsConditionalBreakpoints": !flagCaps.noConditional, "supportsRestartRequest": flagCaps.restart,
 			"supportsSetVariable": !flagCaps.noSetVariable, "supportsSetExpression": flagCaps.setExpression,
-		})
+			"supportsExceptionInfoRequest": !flagCaps.noExceptionInfo, "supportsClipboardContext": flagCaps.clipboard,
+		}
+		if !flagCaps.noExceptions {
+			// dlv 1.27.2 の 2 つのフィルターと同じ形（片方は default が true）。
+			caps["exceptionBreakpointFilters"] = []map[string]any{
+				{"filter": "panic", "label": "Unrecovered Panics", "default": true},
+				{"filter": "all", "label": "All Exceptions", "description": "every throw"},
+			}
+		}
+		a.respond(m, caps)
 		a.output("console", fmt.Sprintf("initialize supportsStartDebuggingRequest=%v\n", args.SupportsStartDebuggingRequest))
 	case "restart":
 		a.output("console", fmt.Sprintf("restart args %s\n", m.Arguments))
@@ -670,6 +690,24 @@ func (a *adapter) handle(m *message) {
 		}
 		a.stateMu.Unlock()
 		a.respond(m, map[string]any{"value": sargs.Value})
+	case "setExceptionBreakpoints":
+		var eargs struct {
+			Filters []string `json:"filters"`
+		}
+		_ = json.Unmarshal(m.Arguments, &eargs)
+		a.output("console", fmt.Sprintf("setExceptionBreakpoints %v\n", eargs.Filters))
+		a.respond(m, map[string]any{})
+	case "exceptionInfo":
+		a.output("console", "exceptionInfo\n")
+		a.respond(m, map[string]any{
+			"exceptionId": "panic", "description": "boom", "breakMode": "unhandled",
+			"details": map[string]any{
+				"typeName": "runtime.Error", "message": "boom", "stackTrace": "main.main()\r\n\tmain.go:6",
+				"innerException": []map[string]any{{"typeName": "inner.Error", "message": "cause"}},
+			},
+		})
+	case "evaluate":
+		a.evaluate(m)
 	case "continue", "next", "stepIn", "stepOut":
 		var targs struct {
 			ThreadID int `json:"threadId"`
@@ -890,6 +928,71 @@ func (a *adapter) variables(ref int) ([]map[string]any, bool) {
 	return nil, false
 }
 
+// evaluate は、evaluate の request に答える。受けたことを "evaluate <context> <式> frame=<frameId か none>" で出す。
+//   - x: 止まった回数（書き換えればその値）。big: 3000 の要素の列（参照 3）。nested: 深い入れ子（参照 20）。
+//   - y: 呼んだ側のフレーム（1002）でだけ 7。ほかのフレームでは誤り（フレームを選び直したときのテスト）。
+//   - multi: 2 行にわたる結果。x = N: x を N に書き換える（REPL の代入）。
+//   - ほかの式は誤り。context が clipboard なら、結果の前に clip: を付ける。
+func (a *adapter) evaluate(m *message) {
+	var args struct {
+		Expression string `json:"expression"`
+		FrameID    *int   `json:"frameId"`
+		Context    string `json:"context"`
+	}
+	_ = json.Unmarshal(m.Arguments, &args)
+	frame := "none"
+	if args.FrameID != nil {
+		frame = strconv.Itoa(*args.FrameID)
+	}
+	a.output("console", fmt.Sprintf("evaluate %s %s frame=%s\n", args.Context, args.Expression, frame))
+	a.stateMu.Lock()
+	var body map[string]any
+	var fail string
+	switch e := args.Expression; {
+	case e == "x":
+		v := strconv.Itoa(a.nstop)
+		if o, ok := a.overrides["x"]; ok {
+			v = o
+		}
+		body = map[string]any{"result": v, "type": "int", "variablesReference": 0}
+	case e == "big":
+		body = map[string]any{"result": "[]int len: 3000", "type": "[]int", "variablesReference": 3, "indexedVariables": 3000}
+	case e == "nested":
+		body = map[string]any{"result": "{...}", "variablesReference": 20}
+	case e == "y" && frame == "1002":
+		body = map[string]any{"result": "7", "variablesReference": 0}
+	case e == "multi":
+		body = map[string]any{"result": "line1\nline2", "variablesReference": 0}
+	case strings.HasPrefix(e, "x = "):
+		if a.overrides == nil {
+			a.overrides = map[string]string{}
+		}
+		a.overrides["x"] = strings.TrimPrefix(e, "x = ")
+		body = map[string]any{"result": a.overrides["x"], "variablesReference": 0}
+	default:
+		fail = "could not evaluate " + e
+	}
+	delay := args.Context == "watch" && a.opts.EvaluateDelayMs > 0 && !a.evalDelayed
+	a.evalDelayed = a.evalDelayed || delay
+	a.stateMu.Unlock()
+	if fail != "" {
+		a.respondError(m, fail)
+		return
+	}
+	if args.Context == "clipboard" {
+		body["result"] = "clip:" + body["result"].(string)
+	}
+	if delay {
+		a.output("console", "evaluate requested\n")
+		go func() {
+			time.Sleep(time.Duration(a.opts.EvaluateDelayMs) * time.Millisecond)
+			a.respond(m, body)
+		}()
+		return
+	}
+	a.respond(m, body)
+}
+
 func (a *adapter) stopped(reason string) {
 	a.stateMu.Lock()
 	a.nstop++
@@ -898,6 +1001,9 @@ func (a *adapter) stopped(reason string) {
 	a.stateMu.Unlock()
 	a.output("console", fmt.Sprintf("stopped %d\n", n))
 	body := map[string]any{"reason": reason, "allThreadsStopped": true}
+	if reason == "exception" {
+		body["text"] = "panic from the stopped event"
+	}
 	if !a.opts.NoThreadID {
 		body["threadId"] = a.threadID()
 	}

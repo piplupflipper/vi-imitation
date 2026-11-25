@@ -10,6 +10,13 @@
     "popupKeys": [
       { "id": "dap.view.next", "keys": "<Tab>", "action": "view.child-next", "description": "DAP のペインの次の区画へ" },
       { "id": "dap.view.prev", "keys": "<S-Tab>", "action": "view.child-prev", "description": "DAP のペインの前の区画へ" },
+      { "id": "dap.watches.parent", "keys": "[[", "children": ["watches"], "description": "親の項目へ移る" },
+      { "id": "dap.watches.append", "keys": "a", "children": ["watches"], "description": "式を末尾に足す" },
+      { "id": "dap.watches.insert", "keys": "i", "children": ["watches"], "description": "式をカーソルの式の前に差し込む" },
+      { "id": "dap.watches.edit", "keys": "e", "children": ["watches"], "description": "式を書き換える" },
+      { "id": "dap.watches.delete", "keys": "d", "children": ["watches"], "description": "式を消す" },
+      { "id": "dap.watches.setValue", "keys": "s", "children": ["watches"], "description": "式か変数の値を書き換える" },
+      { "id": "dap.watches.copyValue", "keys": "c", "children": ["watches"], "description": "値をヤンクできるようポップアップに出す" },
       { "id": "dap.scopes.parent", "keys": "[[", "children": ["scopes"], "description": "親の項目へ移る" },
       { "id": "dap.scopes.setValue", "keys": "s", "children": ["scopes"], "description": "変数の値を書き換える" },
       { "id": "dap.threads.toggleSubtle", "keys": "t", "children": ["threads"], "description": "subtle のフレームを出すかを切り替える" },

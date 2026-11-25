@@ -166,6 +166,13 @@ type debugger struct {
 	outLogs []*session
 	// outputTap は、テストが、セッションの出力の写しに足したテキストを受け取る関数である。nil なら呼ばない。作った後は変えない。
 	outputTap func(text string)
+	// excEnabled は、アダプターの名前ごとの、利用者が例外の区画で切り替えた例外のフィルターの有効と無効である（FR-294。exceptions.go）。
+	// 拡張機能のプロセスが動いている間、次のセッションの開始でも送る。
+	excEnabled map[string]map[string]bool
+	// excFilters は、アダプターの名前ごとの、最後に initialize の応答で受けた例外のフィルターである。excLast は、最後に受けたアダプターの名前で、
+	// セッションが無いときに例外の区画に出す。
+	excFilters map[string][]exceptionFilter
+	excLast    string
 }
 
 // bpResult は、1 つのセッションの、1 つのファイルの setBreakpoints の応答である。gen は、送ったときのブレークポイントの列の世代（debugger.gens）である。
@@ -501,7 +508,7 @@ func (d *debugger) addSessionLocked(s *session) {
 		d.outLogs = nil
 	}
 	d.outLogs = append(d.outLogs, s)
-	d.pane.markDirty(secThreads, secScopes, secConsole)
+	d.pane.markDirty(secThreads, secScopes, secWatches, secExceptions, secConsole)
 	if s.parent != nil {
 		s.parent.children = append(s.parent.children, s)
 	}
@@ -582,7 +589,7 @@ func (d *debugger) choose(s *session, set func()) bool {
 	d.cur = s
 	set()
 	s.gen.Add(1)
-	d.pane.markDirty(secThreads, secScopes)
+	d.pane.markDirty(secThreads, secScopes, secWatches)
 	sel := d.selectionLocked()
 	d.mu.Unlock()
 	d.notifySelect(sel)
@@ -654,7 +661,7 @@ func (d *debugger) continued(s *session) {
 	d.mu.Lock()
 	s.halted = false
 	s.gen.Add(1)
-	d.pane.markDirty(secThreads, secScopes)
+	d.pane.markDirty(secThreads, secScopes, secWatches)
 	d.mu.Unlock()
 	d.clearExecution(s)
 }
@@ -1000,7 +1007,7 @@ func (d *debugger) restartByRequest(s *session, w *waiter) {
 	d.mu.Lock()
 	s.halted = false
 	s.gen.Add(1)
-	d.pane.markDirty(secThreads, secScopes)
+	d.pane.markDirty(secThreads, secScopes, secWatches)
 	d.mu.Unlock()
 	d.clearExecution(s)
 	if err := c.call(ctx, "restart", restartArguments{Arguments: expand.Plain(s.spec.config)}, nil); err != nil {
@@ -1438,7 +1445,7 @@ func (d *debugger) showStopped(ctx context.Context, s *session, gen uint64, focu
 	s.frame, s.hasFrame = frame, true
 	s.stopGen = 0
 	// ペインの区画は、止まった位置への移動（editor/open か再生の応答）を済ませた後に作り直す（markStopped の doc）。
-	defer d.pane.markDirty(secThreads, secScopes)
+	defer d.pane.markDirty(secThreads, secScopes, secWatches)
 	d.publishLocked(path)
 	w := d.takeStopWaiterForLocked(s)
 	buf, opened := d.buffers[path]
@@ -1557,7 +1564,7 @@ func (d *debugger) stoppedWithoutSource(s *session, gen uint64, reason string) {
 		return
 	}
 	s.stopGen = 0
-	defer d.pane.markDirty(secThreads, secScopes)
+	defer d.pane.markDirty(secThreads, secScopes, secWatches)
 	w := d.takeStopWaiterForLocked(s)
 	multi := len(d.sessions) > 1
 	redirected := s.redirected
@@ -1659,7 +1666,7 @@ func (d *debugger) sessionEnded(s *session, abnormal, quiet bool) {
 	if last {
 		d.restartPending = false
 	}
-	d.pane.markDirty(secThreads, secScopes, secConsole)
+	d.pane.markDirty(secThreads, secScopes, secWatches, secExceptions, secConsole)
 	if last && !restart && d.settings.ui.autoClose {
 		// すべてのセッションが終わったら閉じる（FR-277）。debug.restart で始め直すときは閉じない。
 		d.pane.requestClose()

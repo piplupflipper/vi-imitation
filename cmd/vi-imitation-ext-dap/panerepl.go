@@ -1,0 +1,134 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/piplupflipper/vi-imitation/ext"
+)
+
+// この節は、REPL の区画（FR-293）である（pane.go）。
+//
+// 区画は、書き足すテキストと入力の行の組（ext.ViewConsole。FR-274）で、出力の写しは拡張機能に 1 つ（pane.repl）を持ち、
+// セッションをまたいで残す（nvim-dap の REPL のバッファと同じ）。入力の行で <CR> を打つと（view/select）、打った式を
+// 「> 式」の行で書き足し、今のセッションの選んでいるフレームで evaluate（context は repl）した結果を書き足す。
+// 止まっていなければ、フレームを付けずに評価する（FR-293）。評価は打った順に 1 つずつ、ペインの処理とは別の goroutine で行い、
+// 応答を待つ間もペインの区画の作り直しを止めない。
+//
+// デバッグ対象の出力（output の event）は REPL に書かず、出力の区画（FR-291）にだけ書く。nvim-dap-view は、デバッグ対象の端末
+// （runInTerminal）を console の区画に、nvim-dap の REPL（output の event と評価）を repl の区画に出す。この拡張機能は runInTerminal を
+// 作らず（FR-288）、出力の区画がデバッグ対象の出力を受け持つので、REPL は評価だけにした（基本設計 6.4 の「#424 のウォッチ式、REPL、例外」）。
+
+// replPrompt は、REPL の入力の行の前置きである（nvim-dap の REPL の dap> に当たる）。
+const replPrompt = "> "
+
+// maxReplChildren は、構造を持つ結果の子を REPL に書き足す数の上限である（仮。ウォッチ式の区画の 100 個ずつの読み込みと同じ数）。
+const maxReplChildren = pageSize
+
+// replWrite は、REPL の写しに text を書き足す。どの goroutine から呼んでもよい。style は 7.1 の色の名前（空なら色を付けない）である。
+func (p *pane) replWrite(text, style string) {
+	text = strings.ToValidUTF8(normalizeNewlines(text), "�")
+	if err := p.repl.Append(text, style); err != nil {
+		p.d.logf("repl: %v", err)
+	}
+}
+
+// replSubmit は、REPL の入力の行で送った中身 text を評価する（FR-293）。空なら、前に評価した式を評価し直す
+// （nvim-dap の REPL の execute と同じ）。入力の履歴は、本体と同じ規則で拡張機能も積み、開き直したときに渡す。
+// 前の評価が終わるまで待ってから評価する（書き足す順を打った順にする）。run で呼ぶ。
+//
+// req: FR-293
+func (p *pane) replSubmit(text string) {
+	if text == "" {
+		text = p.replLast
+		if text == "" {
+			return
+		}
+	} else {
+		p.replHistory = ext.AppendConsoleHistory(p.replHistory, text)
+		p.replLast = text
+	}
+	prev := p.replDone
+	done := make(chan struct{})
+	p.replDone = done
+	go func() {
+		defer close(done)
+		if prev != nil {
+			<-prev
+		}
+		p.replEval(text)
+	}()
+}
+
+// replEval は、式 text を評価し、式と結果を REPL に書き足す。今のセッションは評価する時点で引く。
+// 結果が構造を持てば（variablesReference が 0 でない）、子を 1 段だけ読んで字下げした行で書き足す（nvim-dap の REPL の
+// evaluate_handler も、子を先に読んでから木で出す。この区画はテキストなので開閉はできない）。
+// 止まっている間に評価を送った後で止まった状態が変わったら（続けた、選び直した）、結果を出さずにそのことを書き足す（FR-305）。
+func (p *pane) replEval(text string) {
+	p.replWrite(replPrompt+text+"\n", "keyword")
+	ss, cur, _ := p.d.snapshot()
+	x, ok := current(ss, cur)
+	if !ok || !x.configured {
+		p.replWrite("デバッグしていない\n", "comment")
+		return
+	}
+	args := evaluateArguments{Expression: text, Context: "repl"}
+	if x.halted && x.hasFrame {
+		f := x.frame
+		args.FrameID = &f
+	}
+	ctx, cancel := p.ctx()
+	defer cancel()
+	var res evaluateResponse
+	var err error
+	if x.halted {
+		err = x.s.callGen(ctx, x.gen, "evaluate", args, &res)
+	} else if c := x.s.getConn(); c != nil {
+		err = c.call(ctx, "evaluate", args, &res)
+	} else {
+		err = errDAPClosed
+	}
+	switch {
+	case errors.Is(err, errStale):
+		p.replWrite("（止まった状態が変わったので、結果を出さない）\n", "comment")
+		return
+	case err != nil:
+		p.replWrite(adapterMessage(err)+"\n", "diagnostic.error")
+		return
+	}
+	p.replWrite(res.Result+"\n", "")
+	if res.VariablesReference <= 0 || !x.halted {
+		return
+	}
+	vargs := variablesArguments{VariablesReference: res.VariablesReference}
+	if res.IndexedVariables > maxReplChildren {
+		// 名前の子を読まず、最初の添字の子だけを読む（大きな列をすべて読まない。PR #423 のレビューの推奨 5）。
+		vargs.Filter, vargs.Count = "indexed", maxReplChildren
+	}
+	var vres variablesResponse
+	err = x.s.callGen(ctx, x.gen, "variables", vargs, &vres)
+	switch {
+	case errors.Is(err, errStale):
+		return
+	case err != nil:
+		p.replWrite("  variables に失敗した: "+adapterMessage(err)+"\n", "diagnostic.error")
+		return
+	}
+	var b strings.Builder
+	for i, v := range vres.Variables {
+		if i == maxReplChildren {
+			break
+		}
+		label, _ := variableLabel(v)
+		b.WriteString("  " + label + "\n")
+	}
+	total := len(vres.Variables)
+	if res.IndexedVariables > maxReplChildren {
+		total = res.IndexedVariables + res.NamedVariables
+	}
+	if rest := total - min(len(vres.Variables), maxReplChildren); rest > 0 {
+		fmt.Fprintf(&b, "  …（ほかに %d 個。ウォッチ式の区画に足すと、開いて読める）\n", rest)
+	}
+	p.replWrite(b.String(), "")
+}

@@ -19,9 +19,8 @@ import (
 //
 // ペインは、7 つの区画を子にした 1 つの切り替えの部品（ext.ViewSwitcher。FR-269）で、pane/open で端末多重化ソフトのペインに出す
 // （外では本体が中央のポップアップに代える。FR-123）。debug.toggleUI（<leader>du）で開け閉めする（FR-277）。
-// この版で中身を作る区画は、スコープと変数（scopes）、スレッドとスタック（threads）、ブレークポイント（breakpoints）、
-// デバッグ対象の出力（console）である。ウォッチ式（watches）、例外（exceptions）、REPL（repl）は、次の issue で作るまで、
-// まだ無いことを書いたテキストの子にしておく。
+// 区画は、ウォッチ式（watches。panewatches.go）、スコープと変数（scopes）、例外（exceptions。exceptions.go）、ブレークポイント（breakpoints）、
+// スレッドとスタック（threads。paneviews.go）、REPL（repl。panerepl.go）、デバッグ対象の出力（console）の 7 つである。
 //
 // ペインの処理は、1 つの goroutine（run）が、積んだ操作を積んだ順に行う。本体の部品の知らせ（ext/server のループ）と、
 // デバッグの goroutine（止まった、続けた、セッションの増減、選び直し、ブレークポイントの変化）は、操作を積むか、作り直しの要る区画の
@@ -66,6 +65,13 @@ const (
 	keyBreakpointsDel = "dap.breakpoints.delete"
 	keyConsoleNext    = "dap.console.nextSession"
 	keyConsolePrev    = "dap.console.prevSession"
+	keyWatchesParent  = "dap.watches.parent"
+	keyWatchesAppend  = "dap.watches.append"
+	keyWatchesInsert  = "dap.watches.insert"
+	keyWatchesEdit    = "dap.watches.edit"
+	keyWatchesDelete  = "dap.watches.delete"
+	keyWatchesSet     = "dap.watches.setValue"
+	keyWatchesCopy    = "dap.watches.copyValue"
 )
 
 // uiSettings は、設定の ui（ペインと区画。FR-108、FR-277、FR-278）である。既定は nvim-dap-view の既定に合わせる（基本設計 6.4）。
@@ -194,14 +200,27 @@ type pane struct {
 	consolePick, lastCur *session
 	threads              threadsView
 	scopes               scopesView
+	watches              watchesView
+	// excAdapter は、例外の区画に最後に出したアダプターの名前である（選んだ項目のフィルターを引く）。
+	excAdapter string
+	// replHistory は、REPL の入力の履歴（本体と同じ規則で積んだもの。開き直したときに渡す）、replLast は最後に評価した式である。
+	// replDone は、最後に始めた評価の goroutine が終わると閉じる（次の評価はそれを待つ）。
+	replHistory []string
+	replLast    string
+	replDone    chan struct{}
+
+	// repl は、REPL の区画の出力の写しである。作った後は変えない。どの goroutine からも書き足せる（server.TextLog）。
+	repl *server.TextLog
 }
 
 func newPane(d *debugger) *pane {
 	p := &pane{d: d, dirty: map[string]bool{}, wake: make(chan struct{}, 1), quit: make(chan struct{})}
 	p.workDir, _ = os.Getwd()
 	p.empty = server.NewTextLog(d.srv)
+	p.repl = server.NewConsoleLog(d.srv, replPrompt)
 	p.threads.expanded = map[string]bool{}
 	p.scopes.expanded = map[string]bool{}
+	p.watches.expanded = map[string]bool{}
 	return p
 }
 
@@ -337,29 +356,32 @@ func (p *pane) closePane() {
 		p.console.Detach()
 		p.console = nil
 	}
+	p.repl.Detach()
 	if err := p.d.srv.CloseView(id); err != nil {
 		p.d.logf("view/close: %v", err)
 	}
 }
 
 // openPane は、区画をすべて作って pane/open で開く（基本設計 6.4 の「開き直した」）。
-// 出力の区画は、出すセッションの写し（server.TextLog）の Open で開き、写しの中身（閉じている間の出力を含む）を出す（FR-273）。
-// 選ぶ区画は、閉じたときに選んでいた区画で、初めては ui.defaultSection である。見えていない区画のうち、スコープの区画は
+// 出力の区画と REPL の区画は、それぞれの写し（server.TextLog）の Open で開き、写しの中身（閉じている間の出力を含む）を出す（FR-273）。
+// 2 つの写しの Open は入れ子にし、内側の open が pane/open を送る（どちらの写しも、開いている間の書き足しを開いた後に送る）。
+// REPL の入力の履歴は、拡張機能が積んだものを渡す（FR-274）。
+// 選ぶ区画は、閉じたときに選んでいた区画で、初めては ui.defaultSection である。見えていない区画のうち、スコープとウォッチ式の区画は
 // 作らずに印を付け、選ばれたとき（view/childSelect）に作る。スレッドの区画は止まった位置の印のため常に作る。
 //
-// req: FR-108, FR-278, FR-291
+// req: FR-108, FR-278, FR-291, FR-293
 func (p *pane) openPane() {
 	ui := p.ui()
 	if !slices.Contains(ui.sections, p.selected) {
 		p.selected = ui.defaultSection
 	}
 	children := make([]ext.ViewChild, len(ui.sections))
-	consoleAt := -1
+	logAt := map[string]int{}
 	for i, sec := range ui.sections {
 		def := sectionDefs[sec]
 		children[i] = ext.ViewChild{ID: sec, Title: def.title, Key: def.key, Component: p.build(sec, sec == p.selected)}
-		if sec == secConsole {
-			consoleAt = i
+		if sec == secConsole || sec == secRepl {
+			logAt[sec] = i
 		}
 	}
 	params := ext.PaneOpenParams{
@@ -368,28 +390,48 @@ func (p *pane) openPane() {
 		Size:      ui.size,
 	}
 	var id ext.ViewID
-	open := func(c ext.ViewComponent) (ext.ViewID, error) {
-		if consoleAt >= 0 {
-			params.Component.Children[consoleAt].Component = c
-		}
+	open := func(ext.ViewComponent) (ext.ViewID, error) {
 		ctx, cancel := p.ctx()
 		defer cancel()
 		res, err := p.d.srv.OpenPane(ctx, params)
 		id = res.View
 		return res.View, err
 	}
-	p.opening.Store(true)
-	var err error
-	var log *server.TextLog
-	if consoleAt >= 0 {
-		log = p.consoleTarget()
-		err = log.Open(open, secConsole)
-	} else {
-		_, err = open(ext.ViewComponent{})
+	// 写しの Open で包む。部品は、包んだ Open が渡す写しの中身にする。
+	var console *server.TextLog
+	if i, ok := logAt[secRepl]; ok {
+		inner := open
+		open = func(ext.ViewComponent) (ext.ViewID, error) {
+			var vid ext.ViewID
+			err := p.repl.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
+				c.History = p.replHistory
+				params.Component.Children[i].Component = c
+				var err error
+				vid, err = inner(c)
+				return vid, err
+			}, secRepl)
+			return vid, err
+		}
 	}
+	if i, ok := logAt[secConsole]; ok {
+		inner := open
+		console = p.consoleTarget()
+		open = func(ext.ViewComponent) (ext.ViewID, error) {
+			var vid ext.ViewID
+			err := console.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
+				params.Component.Children[i].Component = c
+				var err error
+				vid, err = inner(c)
+				return vid, err
+			}, secConsole)
+			return vid, err
+		}
+	}
+	p.opening.Store(true)
+	_, err := open(ext.ViewComponent{})
 	if err == nil {
 		p.view.Store(uint64(id))
-		p.console = log
+		p.console = console
 	}
 	p.opening.Store(false)
 	if err != nil {
@@ -397,10 +439,28 @@ func (p *pane) openPane() {
 	}
 }
 
-// build は、区画 sec の部品を作る。visible が false のスコープの区画は作らずに、作り直しの印を残す。
+// build は、区画 sec の部品を作る。visible が false のスコープとウォッチ式の区画は作らずに、作り直しの印を残す。
 // 作っている間に止まった状態が変わった（errStale）ら、読み直していることを出し、印を残す（変わり目の知らせが印を付け直す）。
+// REPL と出力の区画の中身は写しなので、openPane が写しの Open で入れる（ここでは空の部品を返す）。
 func (p *pane) build(sec string, visible bool) ext.ViewComponent {
 	switch sec {
+	case secWatches:
+		if !visible {
+			p.markDirty(sec)
+			return leafTree("（区画を選ぶと評価します）")
+		}
+		p.takeDirty(sec)
+		c, err := p.buildWatches()
+		if err != nil {
+			p.markDirty(sec)
+			return leafTree("読み直しています")
+		}
+		return c
+	case secExceptions:
+		p.takeDirty(sec)
+		return p.buildExceptions()
+	case secRepl:
+		return ext.ViewComponent{Kind: ext.ViewConsole, Prompt: replPrompt}
 	case secThreads:
 		p.takeDirty(sec)
 		c, err := p.buildThreads()
@@ -424,12 +484,6 @@ func (p *pane) build(sec string, visible bool) ext.ViewComponent {
 	case secBreakpoints:
 		p.takeDirty(sec)
 		return p.buildBreakpoints()
-	case secWatches:
-		return ext.ViewComponent{Kind: ext.ViewText, Text: "ウォッチ式の区画は、まだ作っていない"}
-	case secExceptions:
-		return ext.ViewComponent{Kind: ext.ViewText, Text: "例外の区画は、まだ作っていない"}
-	case secRepl:
-		return ext.ViewComponent{Kind: ext.ViewText, Text: "REPL の区画は、まだ作っていない"}
 	}
 	return ext.ViewComponent{Kind: ext.ViewText}
 }
@@ -439,8 +493,9 @@ func leafTree(label string) ext.ViewComponent {
 	return ext.ViewComponent{Kind: ext.ViewTree, Items: []ext.ViewItem{{ID: "none", Label: label}}}
 }
 
-// refresh は、ペインを開いていれば、作り直しの印の付いた区画のうち、選んでいる区画と、スレッドとブレークポイントの区画を作り直し、
-// 出力の区画に出す写しを今のセッションに合わせる（基本設計 6.4 の「表示の更新」）。見えていないスコープの区画は印を残す。
+// refresh は、ペインを開いていれば、作り直しの印の付いた区画のうち、選んでいる区画と、スレッドとブレークポイントと例外の区画を作り直し、
+// 出力の区画に出す写しを今のセッションに合わせる（基本設計 6.4 の「表示の更新」）。見えていないスコープとウォッチ式の区画は印を残す。
+// スレッド、スコープ、ウォッチ式の区画は、止まった位置を出し終えるまで読まない（PR #423 のレビューの必須 1）。
 func (p *pane) refresh() {
 	view := ext.ViewID(p.view.Load())
 	if view == 0 {
@@ -452,16 +507,17 @@ func (p *pane) refresh() {
 	}
 	for _, sec := range ui.sections {
 		visible := sec == p.selected
-		if sec == secScopes && !visible {
+		reads := sec == secThreads || sec == secScopes || sec == secWatches
+		if (sec == secScopes || sec == secWatches) && !visible {
 			continue
 		}
-		if sec != secThreads && sec != secBreakpoints && sec != secScopes {
+		if !reads && sec != secBreakpoints && sec != secExceptions {
 			continue
 		}
 		if !p.isDirty(sec) {
 			continue
 		}
-		if (sec == secThreads || sec == secScopes) && p.d.stoppingAny() {
+		if reads && p.d.stoppingAny() {
 			// 止まった位置を出し終えるまで待つ。印は残し、出し終えたときの印で作り直す。
 			continue
 		}
@@ -494,9 +550,17 @@ func (p *pane) onEvent(e server.ViewEvent) {
 			p.selectFrameItem(e.Item)
 		case secBreakpoints:
 			p.jumpBreakpoint(e.Item)
+		case secExceptions:
+			p.toggleException(e.Item)
+		case secRepl:
+			p.replSubmit(e.Item)
 		}
 	case server.ViewExpanded:
 		switch e.Child {
+		case secWatches:
+			p.watches.expanded[e.Item] = e.Expanded
+			p.markDirty(secWatches)
+			p.warnRunning(e.Expanded)
 		case secThreads:
 			// 開閉は覗くだけで、セッションとスレッドを選ばない（選ぶのは s。PR #423 のレビューの裁定要 1）。
 			p.threads.expanded[e.Item] = e.Expanded
@@ -504,13 +568,7 @@ func (p *pane) onEvent(e server.ViewEvent) {
 		case secScopes:
 			p.scopes.expanded[e.Item] = e.Expanded
 			p.markDirty(secScopes)
-			// 動いている間は変数を読まない（前の木を出している）ので、開いた項目は閉じ戻る。黙って戻さず、止まったら開くことを知らせる
-			// （PR #423 の再レビューの推奨 4）。開いた状態は覚えておき、止まったときに読む。
-			if ss, cur, _ := p.d.snapshot(); e.Expanded {
-				if x, ok := current(ss, cur); ok && !x.halted {
-					p.d.showInfo("動いている間は変数を読めない。止まったら開く")
-				}
-			}
+			p.warnRunning(e.Expanded)
 		}
 	case server.ViewKey:
 		p.onKey(e)
@@ -518,11 +576,37 @@ func (p *pane) onEvent(e server.ViewEvent) {
 	}
 }
 
+// warnRunning は、動いている間に変数を開いたら、読めないことを知らせる。動いている間は変数を読まない（前の木を出している）ので、
+// 開いた項目は閉じ戻る。黙って戻さず、止まったら開くことを知らせる（PR #423 の再レビューの推奨 4）。開いた状態は覚えておき、止まったときに読む。
+func (p *pane) warnRunning(expanded bool) {
+	if !expanded {
+		return
+	}
+	ss, cur, _ := p.d.snapshot()
+	if x, ok := current(ss, cur); ok && !x.halted {
+		p.d.showInfo("動いている間は変数を読めない。止まったら開く")
+	}
+}
+
 // onKey は、区画の中のキー（contributes.popupKeys）を処理する。
 func (p *pane) onKey(e server.ViewEvent) {
 	switch e.Key {
 	case keyScopesParent:
-		p.scopesParent(e.Item)
+		p.jumpParent(&p.scopes.varTree, secScopes, e.Item)
+	case keyWatchesParent:
+		p.jumpParent(&p.watches.varTree, secWatches, e.Item)
+	case keyWatchesAppend:
+		p.askWatch(e.Item, 'a')
+	case keyWatchesInsert:
+		p.askWatch(e.Item, 'i')
+	case keyWatchesEdit:
+		p.askWatch(e.Item, 'e')
+	case keyWatchesDelete:
+		p.deleteWatch(e.Item)
+	case keyWatchesSet:
+		p.askSetValue(&p.watches.varTree, e.Item)
+	case keyWatchesCopy:
+		p.copyWatchValue(e.Item)
 	case keyScopesSetValue:
 		p.scopesSetValue(e.Item)
 	case keyThreadsSubtle:
