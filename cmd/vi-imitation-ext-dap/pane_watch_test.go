@@ -491,12 +491,32 @@ func TestPaneExceptions(t *testing.T) {
 	h.waitLabel(secExceptions, "[x] Unrecovered Panics")
 	h.waitSigns(bp2, bp5, exec2)
 	h.mustExec(cmdNext, 0)
+	// debug.stepOver は next を送る前に答えるので、アダプターが next を受けて動き出すまで待ってから切り替える
+	// （待たないと、next より先に setExceptionBreakpoints が届いて止まっている間に送れ、知らせが出ない。PR #431 の CI の揺れ）。
+	h.waitOutput("next thread=1")
 	h.notifyView(ext.MethodViewSelect, ext.ViewSelectParams{View: p.id, Item: exceptionItemID("all"), Child: secExceptions})
 	h.waitMessage("動いている間は例外のフィルターを送れなかった（parent）。次に止まったときに送る")
 	all = h.outputsUntil("stopped 2", "setExceptionBreakpoints [panic all]")
 	if strings.Index(all, "setExceptionBreakpoints [panic all]") < strings.Index(all, "stopped 2") {
 		t.Errorf("the filters were sent before the stop: %q", all)
 	}
+	h.stopAndWait()
+
+	// 動いている間に断られ、その応答が届く前に止まったときも、誤りにせずに送り直す（PR #431 の CI の揺れを調べて見つけた）。
+	h = paneHost(t, nil, map[string]any{"stopDelayMs": 5000, "stopOnExceptionRefusal": true}, map[string]any{"defaultSection": "exceptions"})
+	h.toggleUI()
+	p = h.waitPane()
+	h.mustExec(cmdStart, 0)
+	h.waitLabel(secExceptions, "[x] Unrecovered Panics")
+	h.waitSigns(bp2, bp5, exec2)
+	h.mustExec(cmdNext, 0)
+	h.waitOutput("next thread=1")
+	h.notifyView(ext.MethodViewSelect, ext.ViewSelectParams{View: p.id, Item: exceptionItemID("all"), Child: secExceptions})
+	all = h.outputsUntil("stopped 2", "setExceptionBreakpoints [panic all]")
+	if strings.Index(all, "setExceptionBreakpoints [panic all]") < strings.Index(all, "stopped 2") {
+		t.Errorf("the filters were sent before the stop: %q", all)
+	}
+	h.waitMessage("動いている間は例外のフィルターを送れなかった（parent）。次に止まったときに送る")
 	h.stopAndWait()
 
 	h = paneHost(t, []string{"-no-exceptions"}, nil, map[string]any{"defaultSection": "exceptions"})

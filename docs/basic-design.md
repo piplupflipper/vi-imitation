@@ -795,7 +795,7 @@ DAP の REPL（FR-293）も、送信、履歴、フォーカス、出力中の�
 **#427 の入力の行の補完（FR-297）**
 
 #427 で、`console` の部品の入力の行を、拡張機能が返す候補で補う口を作り、拡張機能 API の版を 0.24.0 にした（`ext` の `consolecomplete.go`、`ext/server` の `consolecomplete.go`、`internal/editor` の `consolecomplete.go`、`internal/ui` の `console.go` の `drawConsoleMenu`）。
-DAP の拡張機能が、REPL の入力の行をアダプターの `completions` で補うのに使う（FR-310。別の issue）。
+DAP の拡張機能が、REPL の入力の行をアダプターの `completions` で補うのに使う（FR-310。#430 で作った。6.4 の「#430 の REPL の補完」）。
 #427 の issue は、本体の今のインサートモードの補完（LSP の補完と同じ見た目とキー）で候補を出し、始める契機をその設定に従わせるとした。
 本体にはまだインサートモードの補完とその設定が無い（6.3 と 10 章の未決）ので、一覧の描き方はコマンドラインの補完（7.4）の `ui.CompletionMenu` と `completionMenu.height` を使い、契機とキーは、オーナーの nvim の blink.cmp の設定（`~/.config/nvim/lua/plugins/blink.lua`。preset の `enter`、`preselect` と `auto_insert` を切る、`<Tab>` と `<S-Tab>` で選ぶ）に合わせた。
 オーナーの nvim の REPL の補完のソース（`~/.config/nvim/lua/core/blink_dap.lua`）は、カーソルまでの入力の行をアダプターの `completions` に渡し、`text`（無ければ `label`）を入れ、`type` を種類にしている。
@@ -3517,9 +3517,10 @@ REPL の補完（FR-310）で、アダプターの `completions` の答えを本
 本体の `cursor`、`start`、`end` は入力の行の中の UTF-8 のバイトの位置である。
 DAP の `completions` の `column` と、候補の `start` と `length` は、仕様では UTF-16 の符号単位（`columnsStartAt1` なら 1 始まり）で数える。
 PR #428 のレビューによると、debugpy の `on_completions_request` は `column - 1` を Python の文字列の添字（符号位置）として使い、`length` を `len(qualifier)` で返す。
-このため、BMP の外の文字（絵文字）を含む入力の行で範囲がずれないよう、拡張機能の側でバイトと UTF-16 の符号単位（debugpy では符号位置）を換算する。
-写し方は、`label` を `label`、`text`（無ければ `label`）を `text`、`type` を `kind`、`start` と `length` を `start` と `end` にする（`start` の無い候補はカーソルの位置に挿し、`length` が無ければ 0）。`sortText` は拡張機能が並べ替えて渡す。
+このため、BMP の外の文字（絵文字）を含む入力の行で範囲がずれないよう、拡張機能の側でバイトと UTF-16 の符号単位を換算する。
+写し方は、`label` を `label`、`text`（無ければ `label`）を `text`、`type` を `kind`、`start` と `length` を `start` と `end` にする。`sortText` は拡張機能が並べ替えて渡す。
 `selectionStart`、`selectionLength`（入れた後のカーソル）と `detail` は写せない（本体はカーソルを入れた文字列の後ろに置く）。
+#430 で、`start` の数え方と、`start` と `length` の無い候補の範囲を決め直した（下の「#430 の REPL の補完」）。
 
 **区画（FR-278、FR-289〜FR-295）**
 
@@ -3576,7 +3577,7 @@ nvim-dap-view の `<2-LeftMouse>`（2 回のクリック）と `<C-w><CR>`（`sw
 
 #### #399 の DAP の拡張機能の範囲の外
 
-- 行末の変数の値（FR-296）と REPL の補完（FR-297、FR-310）は第 2 弾（#399 の段 6）。REPL の補完のうち、本体の側（`console` の部品の補完の口。FR-297）は #427 で作った（1.4 の「#427 の入力の行の補完」）。DAP の拡張機能の側（FR-310）は別の issue で作る
+- 行末の変数の値（FR-296）と REPL の補完（FR-297、FR-310）は第 2 弾（#399 の段 6）。REPL の補完のうち、本体の側（`console` の部品の補完の口。FR-297）は #427 で作った（1.4 の「#427 の入力の行の補完」）。DAP の拡張機能の側（FR-310）は #430 で作った（下の「#430 の REPL の補完」）
 - `runInTerminal` は作らない（FR-288）。nvim-dap-view の `console` の区画の端末と、VS Code の `integratedTerminal` には当たるものを持たない
 - `preLaunchTask` と `postDebugTask`（VS Code のタスク）と `compounds` は作らない（FR-281）
 - データのブレークポイント、関数のブレークポイント、ログの出力点（`logMessage`）、ヒットの回数の条件（`hitCondition`）、メモリの表示、逆向きのステップ実行は、#399 の範囲に入れていない
@@ -3781,8 +3782,28 @@ PR #418 のレビュー（推奨 1）で、2 つの問いが続く構成で、1 
 - **REPL**: 出力は `server.NewConsoleLog` の写しを拡張機能に 1 つ持ち、セッションをまたいで残す（nvim-dap の REPL のバッファと同じ）。入力の行の `<CR>`（`view/select`）で、`> 式` の行を書き足してから評価する。評価は打った順に 1 つずつ、ペインの処理とは別の goroutine で行う。空の入力は前の式を評価し直す（nvim-dap の `execute`）。デバッグしていなければ `デバッグしていない` を書く（nvim-dap の `No active debug session`）。止まっていなければ `frameId` を付けずに評価する（FR-293）。止まっている間に送った評価の応答が、世代が進んだ後に届いたら、結果を出さずにそのことを書く（FR-305）。入力の履歴は、本体と同じ規則（`ext.AppendConsoleHistory`）で拡張機能も積み、ペインを開き直すときに `history` で渡す
 - **REPL の構造を持つ結果**: 上の表は「子の展開はしない」としたが、nvim-dap の REPL の `evaluate_handler` が子を先に読んで木で出すのに合わせ、子を 1 段だけ（100 個まで）読んで `  名前: 型 = 値` の行で書き足し、残りの数を添える。REPL はテキストなので開閉はできず、深く見るときはウォッチ式に足す
 - **REPL とデバッグ対象の出力**: nvim-dap は `output` の event を REPL に書き足し、nvim-dap-view はデバッグ対象の端末（`runInTerminal`）を `console` の区画に出す。この拡張機能は `runInTerminal` を作らず（FR-288）、出力の区画が `output` の event を受け持つ（FR-291）ので、REPL には評価だけを書く
-- **例外のフィルター**: アダプターの種類（設定の `adapters` の名前。子のセッションも親と同じ）ごとに、利用者が切り替えた有効と無効を持ち、覚えていないフィルターは `default` に従う（nvim-dap-view の `listeners.lua` の `initialize` の listener と同じ）。開始の流れの 9 のとおり、ブレークポイントの後、`configurationDone` の前に `setExceptionBreakpoints` を送り、2 回目の `initialized` の後にも送り直す。区画で選ぶと、そのアダプターの動いているすべてのセッションへすぐ送る（nvim-dap-view の `update_exception_breakpoints_filters`）。dlv 1.27.2 は、デバッグ対象が動いている間の `setExceptionBreakpoints` を「debuggee is running」で断る（2026-11-25 に実物で確かめた。nvim-dap-view も、delve の止まっていないセッションには送らない）ので、動いている間に断られたら、そのことを知らせ、次に止まって止まった位置を出した後に送り直す。デバッグしていない間は、最後に `initialize` の応答を受けたアダプターのフィルターを「次のデバッグの開始で送る」と添えて出し、切り替えられるようにする（nvim-dap-view は `No active session` と出す）。フィルターの `description` があれば、`label` の後に添える
+- **例外のフィルター**: アダプターの種類（設定の `adapters` の名前。子のセッションも親と同じ）ごとに、利用者が切り替えた有効と無効を持ち、覚えていないフィルターは `default` に従う（nvim-dap-view の `listeners.lua` の `initialize` の listener と同じ）。開始の流れの 9 のとおり、ブレークポイントの後、`configurationDone` の前に `setExceptionBreakpoints` を送り、2 回目の `initialized` の後にも送り直す。区画で選ぶと、そのアダプターの動いているすべてのセッションへすぐ送る（nvim-dap-view の `update_exception_breakpoints_filters`）。dlv 1.27.2 は、デバッグ対象が動いている間の `setExceptionBreakpoints` を「debuggee is running」で断る（2026-11-25 に実物で確かめた。nvim-dap-view も、delve の止まっていないセッションには送らない）ので、動いている間に断られたら、そのことを知らせ、次に止まって止まった位置を出した後に送り直す。動いている間に断られたかは、送る前から応答までの間に一度でも動いていたか（送る前に動いていた、応答の後に動いている、世代が進んだ）で決める。応答の後の状態だけで決めると、動いている間に断られて応答が届く前に止まったとき（dlv のステップ実行は約 12 ms で止まる）に、送り直さずに誤りを出し、切り替えたフィルターが送られないままだった（PR #431 の CI の揺れを調べて見つけた。#430）。デバッグしていない間は、最後に `initialize` の応答を受けたアダプターのフィルターを「次のデバッグの開始で送る」と添えて出し、切り替えられるようにする（nvim-dap-view は `No active session` と出す）。フィルターの `description` があれば、`label` の後に添える
 - **例外で止まったとき**: `stopped` の `reason` が `exception` なら、止まった位置を出し終えた後に、アダプターが `supportsExceptionInfoRequest` を持てば止まったスレッドの `exceptionInfo` を読み、`例外で止まった（例外の ID、breakMode: 説明）` をメッセージの行に、型の名前とメッセージとスタックトレースと内側の例外（5 段まで）を REPL に書き足す。持たなければ request を送らず、`stopped` の `text` か `description` を出す。nvim-dap の `_show_exception_info` は、同じ中身を止まった行の診断にするが、この拡張機能の診断は LSP の診断と同じ一覧に並ぶ（6.7 の `diagnostic/set`）ので、REPL にした
+
+#### #430 の REPL の補完
+
+#430 で、REPL の区画の入力の行の補完（FR-310）を実装した（`cmd/vi-imitation-ext-dap` の `panecomplete.go`）。
+REPL の区画の `console` の部品を、補完を引き受けると宣言して（部品の `complete`。1.4 の「#427 の入力の行の補完」）開き、本体の `console/complete` に、今のセッションの選んでいるフレームに対するアダプターの `completions` の候補で答える。
+`console/complete` は 0.24.0 で足したものなので、拡張機能の `minAPIVersion` を 0.24.0 にした（拡張機能 API の版は上げていない）。
+読んだものは、nvim-dap（コミット cfa2d58f4537aca6ca83e2de1a0d9f1491121264）の `lua/dap/repl.lua` の `omnifunc`、オーナーの nvim の `~/.config/nvim/lua/core/blink_dap.lua`、blink.cmp（コミット 78336bc89ee5365633bcf754d93df01678b5c08f）の `lua/blink/cmp/fuzzy/rust/keyword.rs`、VS Code（コミット b58f330fbc7c7411bc55b4da947166804605ae68）の `src/vs/workbench/contrib/debug/browser/repl.ts` と `src/vs/workbench/contrib/debug/common/replCompletions.ts`、debugpy 1.8.22 の `on_completions_request` と `make_get_completions_message` である。
+上の capabilities の表の後の段落に無い点は、次のとおりに決めた（どれも仮）。
+
+- **送るもの**: `text` はカーソルまでの入力の行、`column` はその末尾（UTF-16 の符号単位で数え、`columnsStartAt1` なので 1 を足す）、`line` は 1（入力の行は 1 行なので最初の行）、`frameId` は選んでいるフレームである。`line` は、VS Code が `position.lineNumber` を送り、vscode-js-debug が `line` が 1 のときだけ `cd ` の後の実行コンテキストの候補を返すので送る（PR #431 のレビューの推奨 2）。nvim-dap の `omnifunc` と `blink_dap.lua` がカーソルまでを送るのに合わせた（VS Code は入力の全体を送る）。`column` が `text` の末尾なので、debugpy が `column - 1` を Python の文字列の添字として使っても、BMP の外の文字の後ろでずれない（添字が文字列の長さを超えても、末尾までを読む）。#430 の実物の確かめで、`"😀" + counter_n` の補完を入れて評価できた
+- **`start` の数え方**: `start` は、`text` の中の 0 から数えた UTF-16 の符号単位の位置として読む。DAP の仕様は `columnsStartAt1` で 0 か 1 かが決まるとするが、VS Code の `getReplCompletionRange` は `model.getPositionAt(item.start)`（0 から数えた位置）で読み、debugpy は `column - 1 - len(qualifier)`（0 から）を返し、nvim-dap も 0 からとして `vim.fn.complete` に渡す。仕様どおりに 1 からとして読むと、debugpy の候補が 1 文字ずれる
+- **置き換える範囲**: 終わりはカーソルである（送った `text` の末尾。VS Code は `start + length` とカーソルの後ろのほうにする）。始まりは、`start` があれば `start`（カーソルより後ろなら、VS Code と同じく候補を捨てる）、無くて `length` があればカーソルから `length` だけ前（VS Code と同じ）にする。どちらも無ければ、カーソルの前の語（文字、0〜9、`_`）の始まりにし、そこから空白の手前まで前へ戻って、その位置からカーソルまでが入れる文字列の先頭と同じなら、最も前のその位置にする（nvim-dap の `get_start` の、候補がカーソルまでの入力の行で始まれば先頭から置き換える形と、blink.cmp の `guess_keyword_range` の、語の前の文字まで候補に含まれれば範囲を延ばす形を合わせた）。blink.cmp の語は `-` を含むが、式では演算子なので含めない
+- **同じ候補**: 入れる文字列と範囲の始まりが前の候補と同じ候補は捨てる。nvim-dap は `vim.fn.complete` の `dup` を 0 にして、入れる文字列の同じ候補を足さない。debugpy 1.8.22 は `obj.` に `__class__` と `__dict__` を 2 つずつ返した（#430 の実物の確かめ）
+- **候補を返さないとき**: ペインの REPL の区画でない問い合わせ、セッションが無い、今のセッションが止まっていない、アダプターが `supportsCompletionsRequest` を示さない、`completions` が失敗した、のどれかなら、`ok` を false にして答える（誤りの応答にしない。失敗はログにだけ書く）。nvim-dap の `omnifunc` は失敗を `notify` で知らせるが、打つたびに問い合わせるので、知らせると打つたびに出る
+- **止まった直後とステップ実行**: 止まった位置を出し終えるまでと、続けて打っている間の待ち（上の「止まってから読み始めるまでの待ち」の `runningHold`）の間は、`completions` を送らずに 10 ms ごとに見直して待つ（区画の読み込みと同じく、止まった位置の `stackTrace` と次のステップ実行より先にアダプターへ積まない）。待つ間に動き出したか、続行かステップ実行を送ったか（`resumedAt` が替わった）、今のセッションが替わったら送らない。見直しの間に動いて止まり直すと止まっているかだけでは気づけず、続けて打つステップ実行の間に送っていた（PR #431 のレビューの必須 1 で足したテストで見つけた）。REPL でキーを打った直後（0〜30 ms 後）にステップ実行を打つと、送ってある `completions` 1 つ分（3000 個の候補で約 40〜50 ms）遅れる（PR #431 のレビューの測り）。この遅れは `docs/usage.md` に制約として書いた
+- **`selectionStart` を持つ候補**: vscode-js-debug は配列の後ろに `[index]`（`selectionStart` が 1、`selectionLength` が 5）を返す。VS Code は選ぶ部分をスニペットの置き場にして入れるが、本体に入れた文字列の一部を選ぶ口が無い。nvim-dap の `completions_to_items` とオーナーの `blink_dap.lua` も `selectionStart` を読まずに文字列のまま入れるので、それに合わせて文字列のまま入れ、利用者が `index` を打ち直す（PR #431 のレビューの推奨 3。`docs/usage.md` に書いた）
+- **一度に 1 つ**: アダプターへ送ってある `completions` は 1 つまでにする。送ってある間に届いた問い合わせは待ち、待つ間に新しい問い合わせが届けば、送らずに `ok` を false で答える。送ってある問い合わせを本体が取り消しても（`$/cancel`）、応答まで次を送らない。打つたびに `completions` をアダプターへ積むと、vscode-js-debug は送ってある request の応答を返してから次に応えるので、その後ろにステップ実行が並ぶためである。応答が届いたときに、送った後に止まった状態が変わっていれば（世代が進んだ）、新しい問い合わせが届いていれば、候補を捨てる
+- **`completionTriggerCharacters`**: 読まない。本体は、カーソルの前が空白でも入力の行の先頭でもなければ問い合わせる（1.4 の「#427 の入力の行の補完」の「問い合わせる契機」）ので、VS Code が既定にする `.` と、語の文字の後ろでは問い合わせる。アダプターが空白などを示しても、その後ろでは問い合わせない（`<C-Space>` で問い合わせる）
+- **並び**: `sortText`（無ければ `label`）の昇順にし、同じものは届いた順にする（nvim-dap の `completions_to_items`）。本体は答えの並びのまま出す
+- **一覧の `label`**: ほかの区画の項目と同じく、改行を空白にし、長すぎるものを切る（`oneLine`）。入れる文字列は切らない
 
 ### 6.5 ACP
 

@@ -159,14 +159,20 @@ func (p *pane) toggleException(item string) {
 	d.mu.Unlock()
 	p.markDirty(secExceptions)
 	for _, s := range targets {
+		d.mu.Lock()
+		wasHalted, gen := s.halted, s.gen.Load()
+		d.mu.Unlock()
 		ctx, cancel := p.ctx()
 		err := s.sendExceptionBreakpoints(ctx)
 		cancel()
 		if err == nil || errors.Is(err, errDAPClosed) {
 			continue
 		}
+		// 送る前から応答までの間に、一度でも動いていたか（送る前に動いていた、今動いている、世代が進んだ）で決める。応答の後の状態だけで
+		// 決めると、動いている間に断られ、応答を受ける前に止まったとき（dlv のステップ実行は約 12 ms で止まる）に、送り直さずに誤りを出していた
+		// （PR #431 の CI の TestPaneExceptions の揺れを調べて見つけた）。
 		d.mu.Lock()
-		running := !s.halted
+		running := !wasHalted || !s.halted || s.gen.Load() != gen
 		d.mu.Unlock()
 		if running {
 			// dlv 1.27.2 は、動いている間の setExceptionBreakpoints を「debuggee is running」で断る（2026-11-25 に実物で確かめた。

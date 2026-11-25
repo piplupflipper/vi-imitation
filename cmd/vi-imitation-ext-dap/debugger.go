@@ -399,6 +399,7 @@ func (d *debugger) newServer() *server.Server {
 		s.ProviderAsync(op, d.asyncProvider(d.noArgs(d.resume)))
 	}
 	s.ProviderAsync(ext.OpDebugToggleUI, d.asyncProvider(d.noArgs(d.toggleUI)))
+	s.ConsoleCompleteAsync(d.onConsoleComplete)
 	s.OnShutdown(func(context.Context, *server.ShutdownEvent) { d.shutdown() })
 	return s
 }
@@ -680,11 +681,11 @@ func (d *debugger) toggleUI(context.Context, *server.Buffer, *ext.ProviderInvoke
 }
 
 // minAPIVersion は、この拡張機能が要る本体の拡張機能 API の版である（基本設計 1.4 の「古い本体での標準の拡張機能」。FR-306）。
-// 値は、使うメッセージのうち最後に足したものの版で、今は切り替えの部品（pane/open の switcher、子を指す view/update、
-// view/childSelect、popupKeys の children と子を切り替える action。API 0.23.0）である。
-// view/append と server.TextLog は 0.20.0、input/ask は 0.21.0、progress/report（resolveCommand の進み具合）は 0.14.0、
+// 値は、使うメッセージのうち最後に足したものの版で、今は REPL の区画の入力の行の補完（部品の complete と console/complete。
+// API 0.24.0。FR-310）である。切り替えの部品（pane/open の switcher、子を指す view/update、view/childSelect、popupKeys の children と
+// 子を切り替える action）は 0.23.0、view/append と server.TextLog は 0.20.0、input/ask は 0.21.0、progress/report（resolveCommand の進み具合）は 0.14.0、
 // pane/open の center と closeOnSelect（構成の候補と ${pickProcess} の一覧）は 0.10.0、editor/state の workDir は 0.9.0 で足した。
-const minAPIVersion = "0.23.0"
+const minAPIVersion = "0.24.0"
 
 // apiSupported は、本体の拡張機能 API の版が minAPIVersion 以上かを返す。
 // 足りなければ、最初の 1 回だけ要る版をメッセージの行に出す。操作は、段階 2 の取り決めだけを使うものも含めてすべて断る（基本設計 1.4）。

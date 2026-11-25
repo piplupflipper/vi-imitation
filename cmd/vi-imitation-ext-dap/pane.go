@@ -214,6 +214,8 @@ type pane struct {
 
 	// repl は、REPL の区画の出力の写しである。作った後は変えない。どの goroutine からも書き足せる（server.TextLog）。
 	repl *server.TextLog
+	// comp は、REPL の入力の行の補完の問い合わせの状態である（panecomplete.go）。どの goroutine からも触れる。
+	comp replCompleter
 }
 
 func newPane(d *debugger) *pane {
@@ -221,6 +223,7 @@ func newPane(d *debugger) *pane {
 	p.workDir, _ = os.Getwd()
 	p.empty = server.NewTextLog(d.srv)
 	p.repl = server.NewConsoleLog(d.srv, replPrompt)
+	p.comp = newReplCompleter()
 	p.threads.expanded = map[string]bool{}
 	p.scopes.expanded = map[string]bool{}
 	p.watches.expanded = map[string]bool{}
@@ -408,6 +411,8 @@ func (p *pane) openPane() {
 			var vid ext.ViewID
 			err := p.repl.Open(func(c ext.ViewComponent) (ext.ViewID, error) {
 				c.History = p.replHistory
+				// 入力の行の補完を引き受ける（FR-310。panecomplete.go）。開くときだけ読まれ、写しの view/update では消えない（FR-297）。
+				c.Complete = true
 				params.Component.Children[i].Component = c
 				var err error
 				vid, err = inner(c)
