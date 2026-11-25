@@ -23,8 +23,9 @@ import (
 // nvim-dap-virtual-text は、tree-sitter の locals のクエリで変数の定義の位置を探し、止まった行を含むスコープの中の、同じ名前の最初の定義の
 // 行に値を出す（lua/nvim-dap-virtual-text/virtual_text.lua の set_virtual_text。only_first_definition が既定の true、all_references が
 // 既定の false）。DAP の拡張機能には構文の情報を得る口が無い（拡張機能 API に、tree-sitter の拡張機能の構文木を問い合わせる口が無い）ので、
-// 名前の一致で通す。止まった行を含む関数の範囲を字下げと関数の見出しの行の形で見積もり（frameRegion）、その中で変数の名前が識別子として
-// 最初に現れる行に出す（firstOccurrences）。中の入れ子の関数の本体は飛ばす。
+// 名前の一致で通す。止まった行を含む関数の範囲を字下げと関数の見出しの行の形で見積もり（frameRegion）、その中で変数の名前が定義の形
+// （関数の見出しの引数、代入の左辺、var や let や for の後ろ。isDefinition）で最初に現れる行に出す（firstOccurrences）。
+// 中の入れ子の関数の本体は飛ばす。
 //
 // 変数の値は、スコープの区画と同じ読み込み（loadScopes と varsOf。セッションと世代ごとの写し）を使い、同じ scopes と variables を 2 回送らない。
 // 区画が見えていなくても、ペインを閉じていても、選んでいるフレームの expensive でないスコープの最上位の変数だけは読む。
@@ -273,7 +274,7 @@ func (p *pane) virtualTextsFor(cfg vtSettings) (want map[ext.BufferID]vtSent, x 
 // スコープの区画と同じ写し（p.scopes）から読み、無ければ読む。同じ名前が複数のスコープにあれば、先のスコープの変数を採るが、
 // 後のスコープが presentationHint が locals のスコープで、先のスコープがそうでなければ、後のものを採る（nvim-dap-virtual-text の
 // variables_from_scopes の「prefer "locals"」）。識別子でない名前（dlv の (x)、debugpy の special variables、vscode-js-debug の
-// [[Prototype]]）と this と、関数やクラスやモジュールの値（vtSkipValue）は除く。読めなかったスコープは飛ばす。世代が進んだら errStale を返す。
+// [[Prototype]]）と this と、モジュールの値（vtSkipValue）は除く。読めなかったスコープは飛ばす。世代が進んだら errStale を返す。
 func (p *pane) frameVariables(x sessionSnap) ([]vtVar, error) {
 	sv := &p.scopes
 	if err := p.loadScopes(x); errors.Is(err, errStale) {
@@ -325,17 +326,9 @@ func appendVTVar(out []vtVar, at map[string]int, nv vtVar) []vtVar {
 	return append(out, nv)
 }
 
-// vtSkipValues は、行末に出さない値の書き出しである。nvim-dap-virtual-text は、既定の filter_references_pattern（'<module'）で
-// モジュールを除き、関数とクラスは定義の位置がスコープの外なので出さない。名前の一致では定義の位置を見ないので、debugpy が関数、
-// クラス、組み込みの関数、メソッドの値を書く形（repr）で除く。
-var vtSkipValues = []string{"<function ", "<class ", "<built-in ", "<bound method "}
-
-// vtSkipValue は、値 v を行末に出さないかを返す。
+// vtSkipValue は、値 v を行末に出さないか（モジュールか）を返す。nvim-dap-virtual-text の既定の filter_references_pattern（'<module'）と同じ。
 func vtSkipValue(v string) bool {
-	if strings.Contains(v, "<module") {
-		return true
-	}
-	return slices.ContainsFunc(vtSkipValues, func(p string) bool { return strings.HasPrefix(v, p) })
+	return strings.Contains(v, "<module")
 }
 
 // isIdentRune は、識別子に使える文字か（文字、数字、_、$）を返す。
@@ -458,7 +451,7 @@ const (
 )
 
 // placeVirtualTexts は、バッファの行 lines の、止まった行 at（選んでいるフレームの行）を含む関数の範囲（frameRegion）で、変数 vars の名前が
-// 識別子として最初に現れる位置に、値の仮想テキストを作る（nvim-dap-virtual-text の set_virtual_text の、名前の一致による代わり）。
+// 定義の形で最初に現れる位置（firstOccurrences）に、値の仮想テキストを作る（nvim-dap-virtual-text の set_virtual_text の、名前の一致による代わり）。
 //
 //   - eol: 文字列は「名前 = 値」。位置はその行の、名前の現れた位置のバイト（本体は同じ行の eol をバイトの順に 1 列ずつ空けて並べる）。
 //     同じ行に複数あれば、最後のもの以外の後ろに , を足す（nvim-dap-virtual-text の separator）
@@ -537,7 +530,8 @@ type occurrence struct {
 	line, start, end int
 }
 
-// firstOccurrences は、止まった行 at を含む関数の範囲（frameRegion）で、names の名前が識別子として最初に現れる位置を返す。
+// firstOccurrences は、止まった行 at を含む関数の範囲（frameRegion）で、names の名前が定義の形（isDefinition）で最初に現れる位置を返す
+// （nvim-dap-virtual-text は、tree-sitter の locals のクエリの定義だけに出す）。
 // 範囲の中の、at を含まない入れ子の関数（見出しの行と本体）は飛ばす（nvim-dap-virtual-text は、止まった行を含まないスコープの中の定義を
 // 出さない）。コメントの行（vtCommentLine）と、直前が . の名前（メンバーの参照）は数えない。
 func firstOccurrences(lines []string, at int, names map[string]bool) map[string]occurrence {
@@ -567,12 +561,104 @@ func firstOccurrences(lines []string, at int, names map[string]bool) map[string]
 			if !names[name] {
 				return
 			}
-			if _, seen := out[name]; !seen {
+			if _, seen := out[name]; !seen && (i == header || isDefinition(line, s, e)) {
 				out[name] = occurrence{line: i, start: s, end: e}
 			}
 		})
 	}
 	return out
+}
+
+// defKeywords は、直後の名前を定義する語である（Go の var、JavaScript の let、const、var、Python の for、as、import、global、nonlocal など）。
+var defKeywords = []string{"var", "let", "const", "for", "as", "import", "global", "nonlocal"}
+
+// isDefinition は、line の s から e までの名前が、定義の形で現れているか（名前の一致のための見積もり。仮）を返す。
+//
+//   - 直前の語が defKeywords のどれか（var x、let x、for i in、import os、as f）
+//   - 行が for で始まり、in、of、;、:=、代入の = のどれよりも左にある（for a, b in …、for i := 0; i < n; …）。右の名前（n）は定義にしない
+//   - 閉じていない ( の中でなく（呼び出しのキーワード引数 f(x=1) を除く）、直後が := か、= の 1 文字の代入（==、=> でない）か、
+//     行の先頭の名前の型の注記（x: int = 1）
+//   - 閉じていない ( の中でなく、行の最初の := か代入の = より左が、名前、空白、カンマ、括弧だけで、その中にある
+//     （a, b = …、x, err := …、const { a, b } = …）
+//
+// 関数の見出しの行の名前（引数）は、呼ぶ側（firstOccurrences）で定義として扱う。
+func isDefinition(line string, s, e int) bool {
+	before := strings.TrimRight(line[:s], " \t")
+	w := len(before)
+	for w > 0 {
+		r, n := utf8.DecodeLastRuneInString(before[:w])
+		if !isIdentRune(r) {
+			break
+		}
+		w -= n
+	}
+	if slices.Contains(defKeywords, before[w:]) {
+		return true
+	}
+	t := strings.TrimLeft(line, " \t")
+	if strings.HasPrefix(t, "for ") || strings.HasPrefix(t, "for(") {
+		end := len(line)
+		for _, stop := range []string{" in ", " of ", ";"} {
+			if i := strings.Index(line, stop); i >= 0 {
+				end = min(end, i)
+			}
+		}
+		if k := assignIndex(line); k >= 0 {
+			end = min(end, k)
+		}
+		return e <= end
+	}
+	if parenDepth(line[:s]) > 0 {
+		// 括弧の中（呼び出しのキーワード引数の f(x=1) など）は定義にしない。
+		return false
+	}
+	after := strings.TrimLeft(line[e:], " \t")
+	switch {
+	case strings.HasPrefix(after, ":="):
+		return true
+	case strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") && !strings.HasPrefix(after, "=>"):
+		return true
+	case strings.HasPrefix(after, ":") && strings.TrimSpace(line[:s]) == "" && strings.Contains(after, "="):
+		return true
+	}
+	k := assignIndex(line)
+	return k > e && onlyNames(line[:k])
+}
+
+// parenDepth は、s の中で閉じていない ( の数を返す。
+func parenDepth(s string) int {
+	return strings.Count(s, "(") - strings.Count(s, ")")
+}
+
+// assignIndex は、line の最初の := か、代入の = （==、=>、<=、>=、!=、+= などでない 1 文字の =）の位置を返す。無ければ -1。
+func assignIndex(line string) int {
+	for i := 0; i < len(line); i++ {
+		if line[i] != '=' {
+			continue
+		}
+		if i+1 < len(line) && (line[i+1] == '=' || line[i+1] == '>') {
+			i++
+			continue
+		}
+		if i > 0 && line[i-1] == ':' {
+			return i - 1
+		}
+		if i > 0 && strings.IndexByte("=!<>+-*/%&|^~", line[i-1]) >= 0 {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+// onlyNames は、s が名前、空白、カンマ、括弧、* と、var、let、const だけからなるか（代入の左辺が名前の並びか）を返す。
+func onlyNames(s string) bool {
+	for _, w := range strings.FieldsFunc(s, func(r rune) bool { return strings.ContainsRune(" \t,()[]{}*", r) }) {
+		if !isIdentifier(w) {
+			return false
+		}
+	}
+	return strings.TrimSpace(s) != ""
 }
 
 // identifiers は、line の識別子ごとに、そのバイトの範囲で f を呼ぶ。数字で始まる並びと、直前が . のもの（メンバーの参照）は飛ばす。

@@ -51,8 +51,8 @@ func vtLines(vts []ext.VirtualText) string {
 	return b.String()
 }
 
-// TestPlaceVirtualTexts は、名前の一致で値を出す行を決める規則（止まった行を含む関数の範囲で、名前が識別子として最初に現れる位置。
-// 入れ子の関数の本体、コメントの行、メンバーの参照は数えない）と、文字列の形（eol と inline、commented、区切りの ,、空白の並びと
+// TestPlaceVirtualTexts は、名前の一致で値を出す行を決める規則（止まった行を含む関数の範囲で、名前が定義の形で最初に現れる位置。
+// 入れ子の関数の本体、コメントの行、メンバーの参照、使うだけの位置は数えない）と、文字列の形（eol と inline、commented、区切りの ,、空白の並びと
 // 改行を空白 1 つにする、長い値を切る、変わった値の色、多バイト文字のバイトの位置）を確かめる。
 //
 // req: FR-296
@@ -123,6 +123,33 @@ class Counter:
 	got = vtLines(placeVirtualTexts(js, 6, []vtVar{{name: "items", value: "Array(2)"}, {name: "sum", value: "3"}, {name: "it", value: "2"}}, eol, "", nil))
 	if want = "1:6:eol:items = Array(2):comment\n2:8:eol:sum = 3:comment\n"; got != want {
 		t.Errorf("javascript =\n%s\nwant\n%s", got, want)
+	}
+
+	// 定義の形の位置だけに出す。矢印の関数の引数（(_, i) => i）、使うだけの名前（new Counter()、scale(…)）、for の右の n、
+	// 呼び出しのキーワード引数（k=2）は定義にしない。代入の左辺の並び（a, b = …、x, err := …、const { p, q } = …）は定義にする。
+	defs := strings.Split(`function main(n) {
+  const big = Array.from({ length: 3 }, (_, i) => i);
+  const c = new Counter();
+  let total = scale(c, k=2);
+  const { p, q } = c;
+  for (let i = 0; i < n; i++) {
+    total += i;
+  }
+}`, "\n")
+	defVars := []vtVar{{name: "i", value: "1"}, {name: "Counter", value: "class"}, {name: "scale", value: "ƒ"}, {name: "k", value: "2"}, {name: "q", value: "4"}, {name: "n", value: "3"}}
+	got = vtLines(placeVirtualTexts(defs, 6, defVars, eol, "", nil))
+	if want = "0:14:eol:n = 3:comment\n4:13:eol:q = 4:comment\n5:11:eol:i = 1:comment\n"; got != want {
+		t.Errorf("definitions in javascript =\n%s\nwant\n%s", got, want)
+	}
+	pyDefs := strings.Split("def f():\n    a, b = g(k=1)\n    for x, y in pairs:\n        print(a, k, y)", "\n")
+	got = vtLines(placeVirtualTexts(pyDefs, 3, []vtVar{{name: "b", value: "2"}, {name: "k", value: "1"}, {name: "y", value: "y"}}, eol, "", nil))
+	if want = "1:7:eol:b = 2:comment\n2:11:eol:y = y:comment\n"; got != want {
+		t.Errorf("definitions in python =\n%s\nwant\n%s", got, want)
+	}
+	goDefs := strings.Split("func f() {\n\tv, err := g()\n\tif err != nil {\n\t\treturn\n\t}\n\tvar w int\n\t_ = v + w\n}", "\n")
+	got = vtLines(placeVirtualTexts(goDefs, 6, []vtVar{{name: "err", value: "nil"}, {name: "w", value: "0"}}, eol, "", nil))
+	if want = "1:4:eol:err = nil:comment\n5:5:eol:w = 0:comment\n"; got != want {
+		t.Errorf("definitions in go =\n%s\nwant\n%s", got, want)
 	}
 }
 
@@ -438,10 +465,8 @@ func TestVirtualTextScopes(t *testing.T) {
 			t.Errorf("isIdentifier(%q) = false", name)
 		}
 	}
-	for _, v := range []string{"<module 'os' from '/usr/lib/python3/os.py'>", "<function bump at 0x7f>", "<class '__main__.A'>"} {
-		if !vtSkipValue(v) {
-			t.Errorf("vtSkipValue(%q) = false", v)
-		}
+	if !vtSkipValue("<module 'os' from '/usr/lib/python3/os.py'>") || vtSkipValue("<function bump at 0x7f>") {
+		t.Error("vtSkipValue: want only modules skipped")
 	}
 
 	// 実物の形: Globals を expensive にしないアダプター（debugpy）では Globals も読み、Locals と同じ名前の x は Locals の値を出す。
