@@ -41,12 +41,20 @@
 // Text は JSON では元の書き方の文字列（${port} を含む）になる（MarshalJSON）。
 // Text を JSON に書いて読み直すと string に戻り、位置を失うので、位置を覚えておくには Expand の結果の値をそのまま持つ。
 //
+// 1 段だけで展開を終えるときも、置き換えた値が ${…} を含めば Text が返る。
+// 後の展開にかけない値は、Plain で値の全体の Text を string に戻してから使う。
+// exec.Cmd の引数と環境変数のように []string と map[string]string が要るときは、Strings と StringMap で戻す（Text も string にする）。
+// 2 段の展開を終えたら、Vars を結果に当てて、置き換えずに残った変数（Unknown: Defer で黙って残ったもの）が無いかを確かめられる。
+// Vars が返すのは残した変数だけで、置き換えた値の中の ${…} は返らない。使い方は Example にある。
+//
 // # JSON の値
 //
 // Expand、Vars、Check は、encoding/json で any に読んだ値（map[string]any、[]any、string、float64、json.Number、bool、nil）と、
 // Expand が返した Text と、Go の数の型を受ける。
 // それ以外の型（[]string、map[string]string、構造体など）は、中の変数を見落とさないよう、経路と型を添えた誤り（*TypeError）にする（仮）。
 // 構造体で持つ設定は、JSON に書いて any に読み直してから渡す。
+// 読み直すときは json.Decoder の UseNumber を勧める。既定の読み方では 2^53 を超える整数が float64 で丸まるが、
+// json.Number で読めば丸まらず、Expand はそのまま通す。
 //
 // オブジェクトの値と配列の要素の文字列を、入れ子をたどって展開する。
 // オブジェクトのキーは展開しない（基本設計の決め。文書は「some key and value strings」で置き換えるとしているが、どのキーかを書いていない）。
@@ -596,4 +604,88 @@ func renderString(fs fragments, acts map[Var]action, values map[Var]string) any 
 		out = append(out, frag{text: lit.String()})
 	}
 	return Text{frags: out}
+}
+
+// Plain は、値の全体（入れ子の表と列を含む）の Text を、String の string に戻した新しい値を返す。
+// 展開を終え、後の展開にかけない値に使う。残した変数は元の書き方（${port}）の文字のままになる。
+// map[string]any と []any は新しく作り、ほかの値はそのまま返す。渡した値は書き換えない。
+func Plain(v any) any {
+	switch x := v.(type) {
+	case Text:
+		return x.String()
+	case []any:
+		if x == nil {
+			return x
+		}
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = Plain(e)
+		}
+		return out
+	case map[string]any:
+		if x == nil {
+			return x
+		}
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = Plain(e)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// plainString は、string と Text を string にする。ほかの型なら偽を返す。
+func plainString(v any) (string, bool) {
+	switch x := v.(type) {
+	case string:
+		return x, true
+	case Text:
+		return x.String(), true
+	default:
+		return "", false
+	}
+}
+
+// Strings は、要素が string か Text の []any を []string にする（exec.Cmd の引数に使う）。nil は nil を返す。
+// []any でない値と、文字列でない要素は誤りにする。
+func Strings(v any) ([]string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	l, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("expand: 文字列の列でない値 %T", v)
+	}
+	out := make([]string, len(l))
+	for i, e := range l {
+		s, ok := plainString(e)
+		if !ok {
+			return nil, fmt.Errorf("expand: 列の [%d] が文字列でない（%T）", i, e)
+		}
+		out[i] = s
+	}
+	return out, nil
+}
+
+// StringMap は、値が string か Text の map[string]any を map[string]string にする（環境変数に使う）。nil は nil を返す。
+// map[string]any でない値と、文字列でない値は誤りにする。
+func StringMap(v any) (map[string]string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("expand: 文字列の表でない値 %T", v)
+	}
+	out := make(map[string]string, len(m))
+	for k, e := range m {
+		s, ok := plainString(e)
+		if !ok {
+			return nil, fmt.Errorf("expand: 表の %q が文字列でない（%T）", k, e)
+		}
+		out[k] = s
+	}
+	return out, nil
 }

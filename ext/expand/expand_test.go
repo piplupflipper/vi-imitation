@@ -451,6 +451,56 @@ func TestVars(t *testing.T) {
 	}
 }
 
+// Plain、Strings、StringMap は、入れ子の Text を string に戻す。1 段だけの展開で /tmp/${x}/a.go を置き換えた値も string になる。
+func TestPlain(t *testing.T) {
+	r := Resolver{Vars: map[string]Entry{
+		"file": {Value: func(string) (string, error) { return "/tmp/${x}/a.go", nil }},
+		"port": {Defer: true},
+	}}
+	got, err := Expand(decode(t, `{"args": ["${file}", "a"], "env": {"A": "${file}", "P": "${port}"}, "n": [[{"x": "${file}"}]], "k": 1}`), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Plain(got)
+	want := map[string]any{
+		"args": []any{"/tmp/${x}/a.go", "a"},
+		"env":  map[string]any{"A": "/tmp/${x}/a.go", "P": "${port}"},
+		"n":    []any{[]any{map[string]any{"x": "/tmp/${x}/a.go"}}},
+		"k":    1.0,
+	}
+	if !reflect.DeepEqual(p, want) {
+		t.Errorf("Plain = %#v", p)
+	}
+	if _, ok := got.(map[string]any)["args"].([]any)[0].(Text); !ok {
+		t.Error("Plain が渡した値を書き換えた")
+	}
+	m := got.(map[string]any)
+	args, err := Strings(m["args"])
+	if err != nil || !reflect.DeepEqual(args, []string{"/tmp/${x}/a.go", "a"}) {
+		t.Errorf("Strings = %q, %v", args, err)
+	}
+	env, err := StringMap(m["env"])
+	if err != nil || !reflect.DeepEqual(env, map[string]string{"A": "/tmp/${x}/a.go", "P": "${port}"}) {
+		t.Errorf("StringMap = %q, %v", env, err)
+	}
+	if s, err := Strings(nil); s != nil || err != nil {
+		t.Errorf("Strings(nil) = %v, %v", s, err)
+	}
+	if s, err := StringMap(nil); s != nil || err != nil {
+		t.Errorf("StringMap(nil) = %v, %v", s, err)
+	}
+	for _, bad := range []any{"x", []any{"a", 1.0}, m["env"]} {
+		if _, err := Strings(bad); err == nil {
+			t.Errorf("Strings(%#v) が通った", bad)
+		}
+	}
+	for _, bad := range []any{"x", map[string]any{"a": true}, m["args"]} {
+		if _, err := StringMap(bad); err == nil {
+			t.Errorf("StringMap(%#v) が通った", bad)
+		}
+	}
+}
+
 // 文字列でない値はそのまま返す。
 func TestExpandNonString(t *testing.T) {
 	for _, in := range []any{nil, 1.5, true, json.Number("1"), []any(nil), map[string]any(nil)} {
