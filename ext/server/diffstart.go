@@ -38,6 +38,10 @@ func (s *Server) DisposeBuffer(ctx context.Context, id ext.BufferID) error {
 // p が ext.DiffStartParams.Validate を通らなければ、送らずにその誤りを返す。
 // 見比べを始められなければ（端末多重化ソフトの外、同じ client の 2 つのタブなど）、本体は誤りで応答する。誤りの文言は画面に出せる日本語である。
 // Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
+//
+// p.Wait（API 0.27.0 から）を付けると、見比べが始まるまで応答が来ない。新しい client が繋ぐのを待つ期限（30 秒）か、
+// herdr app の mod が分割を終えるのを待つ期限（40 秒）まで遅れうるので、それより短い期限の ctx を渡さない。
+// 古い本体（API 0.26.0 まで）は Wait を読まずに捨て、分割を頼んだ時点で応答する（ext.DiffStartParams.Wait の doc）。
 func (s *Server) StartDiff(ctx context.Context, p ext.DiffStartParams) (ext.DiffStartResult, error) {
 	if err := p.Validate(); err != nil {
 		return ext.DiffStartResult{}, err

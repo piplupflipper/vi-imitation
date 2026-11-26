@@ -884,6 +884,10 @@ diff/start の params である。
   続けて見比べるファイルを替える拡張機能は、この応答を待ってから前の版を buffer/dispose で閉じると、
   分割の途中のペインを閉じて端末多重化ソフトの操作を失敗させない。
   false（既定）なら、今までどおり分割を頼んだ時点で応答する。分割しないとき（どちらもタブ）は、指定に依らずその場で応答する。
+  Wait の応答は、新しい client が繋ぐのを待つ期限（30 秒）か、herdr app の mod が分割を終えるのを待つ期限（40 秒）まで遅れうる。
+  送るときは、それより短い期限の ctx を渡さない（ext/server の Server.StartDiff）。ループの外の goroutine から送る。
+  API 0.26.0 までの本体は Wait を読まずに捨て、分割を頼んだ時点で応答する。拡張機能は initialize の apiVersion を
+  VersionLess で 0.27.0 と比べ、古い本体では、版が新しい client のタブになるのを editor/list などで待つ。
 
 #### `DiffStartResult`
 

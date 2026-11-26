@@ -220,6 +220,7 @@ func (e *Editor) Attach(term Terminal, info ClientInfo) error {
 func (e *Editor) attach(req attachRequest) {
 	info := req.info
 	token := takeSplitToken(&info)
+	e.diffDropStale(token)
 	if e.diff.takeCanceled(token) {
 		// diff/start で分割したペインの client だが、繋ぐ前に待ちを捨てた（版を閉じた、期限を過ぎた）。
 		// 空のタブで始めずに断り、ペインを閉じさせる（#446）。

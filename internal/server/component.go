@@ -171,6 +171,10 @@ func herdrHint(err error) error {
 		return fmt.Errorf("herdr app に vi-imitation の mod が入っていないか、herdr app が動いていません"+
 			"（<配布物>/herdr-app-mod を herdr app の mods/vi-imitation に置いてください）: %w", err)
 	}
+	if errors.Is(err, mux.ErrHerdrAppSlow) {
+		// mod は入っていて引き受けたが、herdr app の命令が期限までに終わらなかった（#448 のレビューの推奨 1）。
+		return fmt.Errorf("herdr app の vi-imitation の mod がペインの分割を終えませんでした: %w", err)
+	}
 	return err
 }
 

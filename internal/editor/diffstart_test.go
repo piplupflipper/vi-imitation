@@ -491,3 +491,37 @@ func TestDiffStartDisposedBeforeAttach(t *testing.T) {
 	// 同じ印で 2 度目に繋いだ client（ふつうは無い）は、ふつうの client として繋ぐ（印は 1 回だけ使う）。
 	h.attach(ClientInfo{ID: 3, Pane: "%3", WorkDir: dir, Env: call.env()})
 }
+
+// 新しい client が繋ぐ時点で、待っているバッファが閉じずに別の client のタブになっていた（diffAdopt が待ちを捨てる場合）も、
+// その client を断り、空のタブの client を残さない（#448 のレビューの推奨 3。#446）。
+// 待ちのバッファが別の client のタブになる経路（拡張機能の editor/open など）の代わりに、持ち主を直に入れて真似る。
+//
+// req: FR-318
+func TestDiffStartAdoptStale(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "one\n"})
+	calls := make(chan diffCall, 1)
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t), SplitPane: recordSplit(calls)}, "a.txt")
+	h.e.do(func() { h.e.clients[0].info = ClientInfo{ID: 1, Pane: "%1"} })
+
+	h.keys(":fake.headdiff base<CR>")
+	h.waitMessage("headdiff buf=")
+	call := waitSplit(t, calls)
+	var buf *bufferState
+	h.e.do(func() {
+		buf = h.e.diff.pending.buf
+		buf.owner = h.e.clients[0]
+	})
+	term := &exitTerm{fakeTerm: newFakeTerm()}
+	h.peers = append(h.peers, term.fakeTerm)
+	err := h.e.Attach(term, ClientInfo{ID: 2, Pane: "%2", WorkDir: dir, Env: call.env()})
+	h.e.do(func() { buf.owner = nil })
+	if !errors.Is(err, ErrSplitCanceled) {
+		t.Fatalf("Attach = %v, want ErrSplitCanceled", err)
+	}
+	var n int
+	var pending bool
+	h.e.do(func() { n, pending = len(h.e.clients), h.e.diff.pending != nil })
+	if n != 1 || pending {
+		t.Errorf("client の数 = %d, 待ち = %v; want 1, false（空のタブの client を残さない）", n, pending)
+	}
+}

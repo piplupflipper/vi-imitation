@@ -63,10 +63,12 @@ func (s *Server) splitPane(from, file, dir, token string, left bool) error {
 }
 
 // herdrAppSplitWait は、herdr app の中でペインを分割するときに待つ上限である。テストは短くする。
-var herdrAppSplitWait = mux.HerdrAppWait
+var herdrAppSplitWait = mux.HerdrAppSplitWait
 
 // splitWait は、端末多重化ソフトの層 m でペインを分割するときに待つ上限である。
 // herdr app（#440）は、mod が依頼を探す間隔と、別のマシンの herdr app との往復を待つので herdrAppSplitWait にし、ほかは splitTimeout にする。
+// herdr app の層は、mod が mux.HerdrAppWait の間に引き受けなければ、この期限より前に「mod が入っていない」の誤りを返す。
+// 引き受けた後は、この期限まで結果（入れ替えとフォーカスの移し直しの後）を待つ（#448 のレビューの推奨 1）。
 func splitWait(m mux.Mux) time.Duration {
 	if m.Kind() == mux.KindHerdrApp {
 		return herdrAppSplitWait

@@ -213,6 +213,43 @@ func TestHerdrAppBinFixedAtDetect(t *testing.T) {
 	}
 }
 
+// mod が引き受けた（引き受けの印を付けた）後は、引き受けを待つ上限（HerdrAppWait）を過ぎても「mod が入っていない」にせず、
+// 結果か ctx の期限まで待つ。期限を過ぎたら ErrHerdrAppSlow（ErrHerdrAppNoReply ではない）を返す（#448 のレビューの推奨 1）。
+// 引き受けなければ、引き受けを待つ上限で ErrHerdrAppNoReply を返す。
+//
+// req: FR-316
+func TestHerdrAppSlowModAfterClaim(t *testing.T) {
+	old := herdrAppClaimWait
+	herdrAppClaimWait = 300 * time.Millisecond
+	t.Cleanup(func() { herdrAppClaimWait = old })
+
+	a, hc := newHerdrApp(t)
+	var mu sync.Mutex
+	delay := 900 * time.Millisecond
+	hc.ServeMod(t, func(string, muxtest.Request) muxtest.Reply {
+		mu.Lock()
+		d := delay
+		mu.Unlock()
+		time.Sleep(d)
+		return muxtest.Reply{Terminal: "t9"}
+	})
+	opts := SplitOptions{Target: "t8", Command: Command{Args: []string{"true"}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if pane, err := a.SplitPane(ctx, opts); err != nil || pane != "t9" {
+		t.Fatalf("SplitPane（引き受けの後に遅い mod）= %q, %v; want t9, nil", pane, err)
+	}
+
+	mu.Lock()
+	delay = 3 * time.Second
+	mu.Unlock()
+	short, cancelShort := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancelShort()
+	if _, err := a.SplitPane(short, opts); !errors.Is(err, ErrHerdrAppSlow) || errors.Is(err, ErrHerdrAppNoReply) {
+		t.Errorf("SplitPane（期限を過ぎる遅い mod）= %v, want ErrHerdrAppSlow", err)
+	}
+}
+
 // 待つ間に印のラベルが消えても（mod が別の依頼を片付けて消した）、本体が付け直し、mod が依頼を見つける。
 func TestHerdrAppRemarksPending(t *testing.T) {
 	a, hc := newHerdrApp(t)

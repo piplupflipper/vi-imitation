@@ -190,6 +190,21 @@ func (e *Editor) diffStart(extID string, p ext.DiffStartParams, reply func(error
 	return ext.DiffStartResult{Split: true}, nil
 }
 
+// diffDropStale は、繋ぐ client の印 token が diff/start の待ちのもので、待っているバッファが既に閉じたか別の client のタブなら、
+// 待ちを捨てる（dropPending が印を覚えるので、attach がその client を断る）。attach が client を足す前に呼び、
+// 繋いでいる途中で待ちを捨てる経路でも、空のタブの client を残さない（#448 のレビューの推奨 3。#446）。
+//
+// req: FR-318
+func (e *Editor) diffDropStale(token string) {
+	p := e.diff.pending
+	if p == nil || p.buf == nil || token == "" || token != p.token {
+		return
+	}
+	if p.buf.owner != nil || !slices.Contains(e.bufs, p.buf) {
+		e.dropPending(p)
+	}
+}
+
 // diffAdopt は、繋ぐ client（読み込んでいる client）が、diff/start で分割したペインの client（印 token が待ちのものと同じ）なら、
 // 待っているバッファをその client のタブにする。attach が startClient の前に呼ぶので、名前の無い空のタブは作られない。
 func (e *Editor) diffAdopt(token string) {
