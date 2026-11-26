@@ -342,6 +342,48 @@ func TestSplitPaneHerdrApp(t *testing.T) {
 	}
 }
 
+// herdr app の mod の run("pane.split") が新しいペインと端末を返さなくても（#444）、新しいペインの端末で動く包んだスクリプトが、
+// 自分の端末に依頼の番号のラベルを付けるので、mod はそのラベルから新しい端末を見つけて結果に書ける。左と右のどちらでも同じである。
+// 偽の係は、pane.split の戻り値を使わずに、包んだスクリプトを新しい端末 t9 で動かし（muxtest.HC.RunSplitScript）、
+// ラベルで端末を探す（muxtest.HC.FindSplit）。
+//
+// req: FR-316
+func TestSplitPaneHerdrAppFindsTerminalByLabel(t *testing.T) {
+	for _, left := range []bool{true, false} {
+		name := "right"
+		if left {
+			name = "left"
+		}
+		t.Run(name, func(t *testing.T) {
+			hc := inHerdrApp(t)
+			hc.ServeMod(t, func(_ string, req muxtest.Request) muxtest.Reply {
+				hc.RunSplitScript(t, req.Argv, "t9")
+				found := hc.FindSplit(t, req.ID)
+				if found == "" {
+					return muxtest.Reply{Error: "no terminal with the split label"}
+				}
+				return muxtest.Reply{Terminal: found}
+			})
+			s := &Server{log: slog.New(slog.DiscardHandler)}
+			s.sock.Store(filepath.Join(t.TempDir(), "server.sock"))
+			if err := s.splitPane("t8", "", t.TempDir(), "5", left); err != nil {
+				t.Fatalf("splitPane = %v, want nil（ラベルから新しい端末を見つける）", err)
+			}
+			served := hc.Served()
+			if len(served) != 1 || served[0].Request.Direction != name {
+				t.Fatalf("mod への依頼 = %+v, want %s へ割る依頼 1 つ", served, name)
+			}
+			if got := hc.Labels(t, "t9")["vi-imitation.split"]; got != served[0].Request.ID {
+				t.Errorf("新しい端末 t9 のラベル = %q, want 依頼の番号 %q", got, served[0].Request.ID)
+			}
+			// コマンド（ここでは true）が終わると、包んだスクリプトは自分の端末だけを終わらせる。
+			if killed := hc.Killed(t); !slices.Equal(killed, []string{"t9"}) {
+				t.Errorf("hc kill = %v, want [t9]", killed)
+			}
+		})
+	}
+}
+
 // herdr app に mod が入っていない（結果が届かない）ときは、:diffsplit の誤りに、mod を入れるよう促す文言が出る。
 //
 // req: FR-316

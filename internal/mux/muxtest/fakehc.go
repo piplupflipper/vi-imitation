@@ -16,6 +16,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -189,6 +190,11 @@ func (h *HC) ServeMod(t *testing.T, handle func(terminal string, req Request) Re
 				return
 			case <-tick.C:
 			}
+			// 依頼をロックの下で取り出し、handle はロックの外で呼ぶ（handle の中で偽の hc を動かせるように。#444）。
+			type job struct {
+				terminal, id, raw string
+			}
+			var jobs []job
 			_ = withStore(h.Dir, func(s *store) error {
 				for _, terminal := range slices.Sorted(maps.Keys(s.Labels)) {
 					labels := s.Labels[terminal]
@@ -196,31 +202,83 @@ func (h *HC) ServeMod(t *testing.T, handle func(terminal string, req Request) Re
 						continue
 					}
 					for _, key := range slices.Sorted(maps.Keys(labels)) {
-						id, ok := strings.CutPrefix(key, requestPrefix)
-						if !ok {
-							continue
+						if id, ok := strings.CutPrefix(key, requestPrefix); ok {
+							jobs = append(jobs, job{terminal, id, labels[key]})
+							delete(labels, key)
 						}
-						var req Request
-						rep := Reply{ID: id}
-						if err := json.Unmarshal([]byte(labels[key]), &req); err != nil {
-							rep.Error = err.Error()
-						} else {
-							h.mu.Lock()
-							h.served = append(h.served, Served{Terminal: terminal, Request: req})
-							h.mu.Unlock()
-							rep = handle(terminal, req)
-							rep.ID = id
-						}
-						b, _ := json.Marshal(rep)
-						labels[replyPrefix+id] = string(b)
-						delete(labels, key)
 					}
 					delete(labels, pendingLabel)
 				}
 				return nil
 			})
+			for _, j := range jobs {
+				var req Request
+				rep := Reply{ID: j.id}
+				if err := json.Unmarshal([]byte(j.raw), &req); err != nil {
+					rep.Error = err.Error()
+				} else {
+					h.mu.Lock()
+					h.served = append(h.served, Served{Terminal: j.terminal, Request: req})
+					h.mu.Unlock()
+					rep = handle(j.terminal, req)
+					rep.ID = j.id
+				}
+				b, _ := json.Marshal(rep)
+				_ = withStore(h.Dir, func(s *store) error {
+					s.terminal(j.terminal)[replyPrefix+j.id] = string(b)
+					return nil
+				})
+			}
 		}
 	}()
+}
+
+// splitLabel は、split で開いた新しい端末が自分に付けるラベルの名前である（internal/mux の HerdrAppSplitLabel と同じ。#444）。
+const splitLabel = "vi-imitation.split"
+
+// RunSplitScript は、split の依頼の argv を、新しいペインの端末 terminal の中で動いたものとして sh で動かす（HC_TERMINAL_ID に terminal）。
+// 起動するコマンド（argv の env と環境変数の後ろ）は true に替える。
+// 包んだスクリプトは、偽の hc で自分の端末にラベルを付け、コマンドの後に自分の端末を hc kill する。
+// herdr app の mod が pane.split で開いた端末の中で、本体の包んだスクリプトが動くことを真似る。偽の係の handle から呼ぶ。
+func (h *HC) RunSplitScript(t *testing.T, argv []string, terminal string) {
+	t.Helper()
+	i := slices.Index(argv, "env")
+	if i < 0 {
+		t.Errorf("argv = %q, want env を含む", argv)
+		return
+	}
+	i++
+	for i < len(argv) && strings.Contains(argv[i], "=") {
+		i++
+	}
+	args := append(slices.Clone(argv[:i]), "true")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // テストで包んだスクリプトを動かす
+	cmd.Env = append(os.Environ(), "HC_TERMINAL_ID="+terminal)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("包んだスクリプト: %v\n%s", err, out)
+	}
+}
+
+// FindSplit は、依頼の番号 id のラベル（splitLabel）を付けた端末の番地を返す。無ければ空を返す。
+// mod が hc ls --label vi-imitation.split=<id> で新しい端末を探すのに当たる。
+func (h *HC) FindSplit(t *testing.T, id string) string {
+	t.Helper()
+	var found string
+	err := withStore(h.Dir, func(s *store) error {
+		for _, term := range slices.Sorted(maps.Keys(s.Labels)) {
+			if s.Labels[term][splitLabel] == id {
+				found = term
+				break
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
 }
 
 // store は、偽の hc の状態（ファイル store.json）である。
@@ -328,8 +386,8 @@ func runHC(dir string, args []string, out io.Writer) error {
 			if len(args) < 2 {
 				return errors.New("fake hc kill: want <terminal>")
 			}
+			// ラベルは消さずに残す（終わった端末のラベルを、テストが後から読めるように）。
 			s.Killed = append(s.Killed, args[1])
-			delete(s.Labels, args[1])
 			return nil
 		}
 		return fmt.Errorf("fake hc: unknown command %q", args[0])
