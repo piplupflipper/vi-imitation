@@ -47,8 +47,10 @@ func TestSplitPaneLeftFocusFailsHerdr(t *testing.T) {
 			var resp map[string]any
 			switch req.Method {
 			case "plugin.pane.open":
-				resp = map[string]any{"id": req.ID, "result": map[string]any{"type": "plugin_pane_opened",
-					"plugin_pane": map[string]any{"pane": map[string]any{"pane_id": "wW:p9", "tab_id": "wW:t1"}}}}
+				resp = map[string]any{"id": req.ID, "result": map[string]any{
+					"type":        "plugin_pane_opened",
+					"plugin_pane": map[string]any{"pane": map[string]any{"pane_id": "wW:p9", "tab_id": "wW:t1"}},
+				}}
 			case "pane.focus":
 				resp = map[string]any{"id": req.ID, "error": map[string]any{"code": "pane_not_found", "message": "pane not found"}}
 			default:
