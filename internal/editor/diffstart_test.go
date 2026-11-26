@@ -3,6 +3,7 @@ package editor
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -65,8 +66,8 @@ func TestDiffStartFromExtension(t *testing.T) {
 		t.Fatalf("message = %q", msg)
 	}
 	call := waitSplit(t, calls)
-	// ファイルを渡さずに、ファイルのタブの client のペインを分割する。
-	if want := (diffCall{"%1", "", dir, "1"}); call != want {
+	// ファイルを渡さずに、ファイルのタブの client のペインを分割する。タブでないバッファが B（右の側）なので、右に開く。
+	if want := (diffCall{"%1", "", dir, "1", false}); call != want {
 		t.Errorf("SplitPane = %+v, want %+v", call, want)
 	}
 	readOnly, owner, n := h.createdBuffer("HEAD:x")
@@ -152,6 +153,45 @@ func TestDiffStartFromExtension(t *testing.T) {
 	if _, _, n := h.createdBuffer("HEAD:x"); n != 1 {
 		t.Errorf("HEAD:x が %d 個", n)
 	}
+}
+
+// diff/start で、タブでないバッファが A（見比べの左の側）なら、タブの client のペインの左に新しいペインを開き、
+// そのバッファを左の側にして見比べを始める（#437。git 連携の拡張機能は、比べる元の版を A にする）。
+//
+// req: FR-99
+func TestDiffStartBaseLeft(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "one\ntwo\n"})
+	calls := make(chan diffCall, 1)
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t), SplitPane: recordSplit(calls)}, "a.txt")
+	h.e.do(func() { h.e.clients[0].info = ClientInfo{ID: 1, Pane: "%1"} })
+
+	h.keys(":fake.headdiff base<CR>")
+	h.waitMessage("headdiff buf=")
+	if msg := h.message(); !strings.Contains(msg, "split=true err=<nil>") {
+		t.Fatalf("message = %q", msg)
+	}
+	call := waitSplit(t, calls)
+	if want := (diffCall{"%1", "", dir, "1", true}); call != want {
+		t.Errorf("SplitPane = %+v, want %+v（左に開く）", call, want)
+	}
+	h.attach(ClientInfo{ID: 2, Pane: "%2", WorkDir: dir, Env: call.env()})
+	h.settle()
+	if n := h.diffSessions(); n != 1 {
+		t.Fatalf("見比べの組 = %d, want 1", n)
+	}
+	h.e.do(func() {
+		s := h.e.diff.sessions[0]
+		if s.bs[0].title != "HEAD:x" || s.bs[1].path != filepath.Join(dir, "a.txt") {
+			t.Errorf("組 = %q と %q, want HEAD:x と a.txt", s.bs[0].title, s.bs[1].path)
+		}
+		// フォーカスは右のファイルのペインに残るので、キーを打つ前でも、editor/state はファイルのバッファを返す（PR #438 のレビューの推奨 1）。
+		if got := h.e.editorState().Buffer; got != s.bs[1].id {
+			t.Errorf("左に開いた直後の editor/state の buffer = %d, want a.txt の %d", got, s.bs[1].id)
+		}
+		if h.e.op != s.bs[1].owner {
+			t.Errorf("操作中の client = client %d, want a.txt の client", h.e.op.info.ID)
+		}
+	})
 }
 
 // buffer/create で作った拡張機能は、buffer/update で、編集を禁止したバッファの中身を置き換え、buffer/dispose で閉じられる。
@@ -289,7 +329,7 @@ func TestDiffStartOutsideMux(t *testing.T) {
 // req: FR-64
 func TestDiffStartSplitFails(t *testing.T) {
 	dir := writeFiles(t, map[string]string{"a.txt": "one\n"})
-	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t), SplitPane: func(string, string, string, string) error {
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t), SplitPane: func(string, string, string, string, bool) error {
 		return errors.New("split failed")
 	}}, "a.txt")
 	h.e.do(func() { h.e.clients[0].info = ClientInfo{ID: 1, Pane: "%1"} })

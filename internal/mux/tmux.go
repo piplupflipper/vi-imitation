@@ -80,6 +80,8 @@ func (t *Tmux) SplitPane(ctx context.Context, opts SplitOptions) (string, error)
 		args = append(args, "-h")
 	case Down:
 		args = append(args, "-v")
+	case Left:
+		args = append(args, "-h", "-b")
 	}
 	if !opts.Focus {
 		args = append(args, "-d")

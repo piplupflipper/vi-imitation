@@ -223,6 +223,26 @@ func TestTmuxSplitPaneDownWithFocus(t *testing.T) {
 	}
 }
 
+// TestTmuxSplitPaneLeft は、Left で元のペインの左に開き、Focus のとおり新しいペインがアクティブになることを確かめる（#437）。
+func TestTmuxSplitPaneLeft(t *testing.T) {
+	tt := newTestTmux(t)
+	ctx := testCtx(t)
+	pane, err := tt.SplitPane(ctx, SplitOptions{Target: tt.Pane, Direction: Left, Focus: true, Command: Command{Args: []string{"sleep", "600"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tt.query(t, pane, "#{pane_active}"); got != "1" {
+		t.Errorf("新しいペインの pane_active = %s, want 1", got)
+	}
+	newLeft, _ := strconv.Atoi(tt.query(t, pane, "#{pane_left}"))
+	oldLeft, _ := strconv.Atoi(tt.query(t, tt.Pane, "#{pane_left}"))
+	newTop, _ := strconv.Atoi(tt.query(t, pane, "#{pane_top}"))
+	oldTop, _ := strconv.Atoi(tt.query(t, tt.Pane, "#{pane_top}"))
+	if newLeft != 0 || oldLeft == 0 || newTop != oldTop {
+		t.Errorf("新しいペインの左端 = %d、元のペインの左端 = %d、上端 = %d と %d, want 新しいペインが左に並ぶ", newLeft, oldLeft, newTop, oldTop)
+	}
+}
+
 func TestTmuxFocusPaneInAnotherWindow(t *testing.T) {
 	tt := newTestTmux(t)
 	ctx := testCtx(t)

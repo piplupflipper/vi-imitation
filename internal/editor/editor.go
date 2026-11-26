@@ -200,9 +200,11 @@ type Config struct {
 	// SplitPane は、:diffsplit（基本設計 6.8。FR-99）で、from のペインを分割し、新しいペインで file を開く編集の client を、
 	// このエディタの server に繋ぐ形で起動する関数である（internal/mux の Mux.SplitPane を包んだもの）。dir は起動するディレクトリである。
 	// file が空なら、ファイルを渡さずに起動する（拡張機能の diff/start。diffstart.go）。
+	// left が true なら from のペインの左に、false なら右に開く（diff/start で、タブでないバッファが見比べの左の側 A のとき左。#437）。
+	// フォーカスは右のペインに置く（右に開いたら新しいペインへ移し、左に開いたら from のペインに残す）。
 	// 新しい client は、環境変数 EnvSplit に token を入れて起動する。client はそれを Hello の Env で知らせ、イベントループが待ちと照らし合わせる。
 	// イベントループを止めないよう、別の goroutine で呼ぶ。nil なら :diffsplit は端末多重化ソフトの外として誤りにする。
-	SplitPane func(from, file, dir, token string) error
+	SplitPane func(from, file, dir, token string, left bool) error
 	// FocusPane は、別の編集の client のタブのファイルを開こうとしたときに、from のペインから pane のペインへ
 	// フォーカスを移す関数である（FR-63。internal/mux の Mux.FocusPane を包んだもの）。ペインは ClientInfo.Pane である。
 	// イベントループを止めないよう、別の goroutine で呼ぶ。nil なら移さず、メッセージだけを出す。

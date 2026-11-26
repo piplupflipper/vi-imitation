@@ -74,6 +74,7 @@ type diffPending struct {
 	// 新しい client はファイルを渡さずに起動し、繋いだときに（diffAdopt）このバッファをタブにする（diffstart.go）。
 	buf *bufferState
 	// swap は、見比べの左の側（diff.A）を buf にすることを表す（diff/start の A がタブでなかった）。
+	// このとき新しいペインは from のペインの左に開く（splitForDiff。#437）。
 	swap bool
 	// ext は、diff/start を送った拡張機能の ID である。:diffsplit では空。待ちを捨てるときは、この拡張機能が作った buf だけを閉じる。
 	ext string
@@ -336,6 +337,12 @@ func (e *Editor) diffAttached(c *clientView, token string) {
 	}
 	if p.swap {
 		e.startDiff(other, p.from)
+		// 左に開いたペインの client では、フォーカスは元のペインに残る（splitForDiff）。attach がこの client を操作中にしたままだと、
+		// 利用者がキーを打つまで editor/state が左の版のバッファを返し、拡張機能がカーソルの位置を取り違える（PR #438 のレビューの推奨 1）。
+		// このため操作中の client を元のタブの client に戻す。
+		if o := p.from.owner; o.attached() {
+			e.useClient(o)
+		}
 	} else {
 		e.startDiff(p.from, other)
 	}
@@ -397,6 +404,8 @@ func (e *Editor) diffSplit(bs *bufferState, file string) error {
 
 // splitForDiff は、client c のペインを端末多重化ソフトの層（Config.SplitPane）で分割し、そこでこの server に繋ぐ編集の client を
 // 起動するよう頼んで、p を相手の client を待つ見比べにする。file は新しい client に渡すファイルで、空ならファイルを渡さない（diff/start）。
+// 新しいペインは、新しい client のタブが見比べの左の側（p.swap）なら c のペインの左に、そうでなければ右に開く（#437）。
+// 見比べの左右と、ペインの左右を揃えるためである。:diffsplit は常に右に開く（#437 で変えないと決めた）。
 // 端末多重化ソフトの外（ペインを知らない、SplitPane が無い）なら errOutsideMux を、前の待ちがあれば errDiffPending を返す。
 // 分割の誤りは、別の goroutine で知り、イベントループで待ちを捨てて（dropPending）、c のメッセージの行に出す。
 // diffPendingTimeout を過ぎても新しい client が繋がなければ、待ちを捨てる。
@@ -411,7 +420,7 @@ func (e *Editor) splitForDiff(c *clientView, file string, p *diffPending) error 
 	e.diff.seq++
 	p.token = strconv.FormatUint(e.diff.seq, 10)
 	e.diff.pending = p
-	split, abs, token := e.cfg.SplitPane, file, p.token
+	split, abs, token, left := e.cfg.SplitPane, file, p.token, p.swap
 	var dir string
 	e.withView(c, func() { dir = e.workDir() })
 	// later は、f をイベントループで動かす。
@@ -430,7 +439,7 @@ func (e *Editor) splitForDiff(c *clientView, file string, p *diffPending) error 
 	})
 	go func() {
 		defer e.recoverPanic()
-		err := split(pane, abs, dir, token)
+		err := split(pane, abs, dir, token, left)
 		if err == nil {
 			return
 		}

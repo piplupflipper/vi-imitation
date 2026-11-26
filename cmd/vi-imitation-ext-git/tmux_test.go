@@ -107,7 +107,8 @@ func testEnv(t *testing.T) []string {
 
 // TestDiffHeadInTmux は、tmux（tmux -L の別のサーバー）の中で、配布物と同じ並びの本体と git の拡張機能を起動し、
 // 一時の git のリポジトリのファイルで <Leader>gd（git.diffHead）を打つと、HEAD の版が、編集を禁止したファイルでないバッファとして
-// 右に分割したペインの新しい編集の client のタブに開き、ファイルのタブと見比べられることを確かめる（FR-104）。
+// 左に分割したペインの新しい編集の client のタブに開き、ファイルのタブと見比べられることと、フォーカスが右のファイルのペインに
+// 残ることを確かめる（FR-104。#437 で diffview.nvim と同じ並びにした）。
 //
 // req: FR-104
 func TestDiffHeadInTmux(t *testing.T) {
@@ -139,6 +140,8 @@ func TestDiffHeadInTmux(t *testing.T) {
 	p0 := ts.run("new-session", "-d", "-s", "t", "-x", "200", "-y", "30", "-c", repo, "-P", "-F", "#{pane_id}", "sleep 600")
 	p1 := ts.run("split-window", "-d", "-h", "-t", p0, "-c", repo, "-P", "-F", "#{pane_id}", fmt.Sprintf("'%s' a.txt", editor))
 	ts.waitPane(p1, "a.txt を開いた画面", func(s string) bool { return strings.Contains(s, "TWO") && strings.Contains(s, "a.txt") })
+	// 利用者と同じく、ファイルのペインにフォーカスを置いて打つ。
+	ts.run("select-pane", "-t", p1)
 
 	// 続けて 2 回打つ。2 回目は、1 回目のペインの client を待っている間なので断られ、ペインもバッファも増えない（PR #247 のレビューの必須 1）。
 	ts.run("send-keys", "-t", p1, "-l", " gd gd")
@@ -174,6 +177,7 @@ func TestDiffHeadInTmux(t *testing.T) {
 	if n := len(ts.panes()); n != 3 {
 		t.Errorf("ペイン = %d, want 3（待つだけのもの、ファイル、HEAD の版）", n)
 	}
+	ts.checkBaseLeft(p2, p1)
 	ts.run("send-keys", "-t", p1, "Enter")
 
 	// 2 行目で、HEAD の版へは dp で送れず（E21）、do で HEAD の内容を取り込める（基本設計 6.8）。
@@ -241,10 +245,10 @@ func TestDiffHeadOutsideMuxInTmux(t *testing.T) {
 }
 
 // TestChangesInTmux は、tmux の中で <Leader>gV（git.changes）を打つと、既定のブランチ（main）との merge-base と作業ツリーで
-// 違うファイルの一覧がファインダーに出て、選んだファイルが元のペインのタブに開き、merge-base の版が右に分割したペインで見比べられることを確かめる。
-// 選んだ後はフォーカスが右のペインへ移るので、次の一覧は利用者と同じくフォーカスのあるペインで開く。そこから次のファイルを選んでも
-// （左のペインのタブに無いファイルでも）、前の見比べのペインは閉じてから新しいペインが開き、ペインは増えない。足したファイルは空の版と見比べ、
-// 消したファイルは merge-base の版だけを開く。tmux に繋いだ端末が無いので、中央のポップアップはエディタの画面の中に出る（FR-123 の代わりの描き方）。
+// 違うファイルの一覧がファインダーに出て、選んだファイルが元のペインのタブに開き、merge-base の版が左に分割したペインで見比べられることを確かめる
+// （#437 で diffview.nvim と同じ並びにした）。選んだ後もフォーカスは右のファイルのペインに残るので、次の一覧は利用者と同じくフォーカスのあるペインで開く。
+// 右のファイルのペインから次のファイルを選んでも（ファイルのペインのタブに無いファイルでも）、左の版のペインから選んでも、前の見比べのペインは
+// 閉じてから新しいペインが開き、ペインは左右の 2 つのままである。足したファイルは空の版と見比べ、消したファイルは merge-base の版だけを開く。tmux に繋いだ端末が無いので、中央のポップアップはエディタの画面の中に出る（FR-123 の代わりの描き方）。
 //
 // req: FR-250, FR-251
 func TestChangesInTmux(t *testing.T) {
@@ -271,7 +275,9 @@ func TestChangesInTmux(t *testing.T) {
 		_ = k.Run()
 	})
 	p0 := ts.run("new-session", "-d", "-s", "t", "-x", "200", "-y", "30", "-c", repo, "-P", "-F", "#{pane_id}", "sleep 600")
-	p1 := ts.run("split-window", "-h", "-t", p0, "-c", repo, "-P", "-F", "#{pane_id}", fmt.Sprintf("'%s' fresh.txt", editor))
+	// エディタのペインは、待つだけのペインの左に置く。tmux は閉じたペインの幅を左隣のペインへ渡すので、エディタの左にペインがあると、
+	// 版のペインを閉じて開き直すたびにファイルのペインが狭くなる（#437 の PR の未確認事項）。ここでは並びの確かめに絞る。
+	p1 := ts.run("split-window", "-h", "-b", "-t", p0, "-c", repo, "-P", "-F", "#{pane_id}", fmt.Sprintf("'%s' fresh.txt", editor))
 	ts.waitPane(p1, "fresh.txt を開いた画面", func(s string) bool { return strings.Contains(s, "fresh line") })
 
 	// pick は、利用者と同じく、いまフォーカスのあるペイン（tmux の active なペイン）で一覧を開き、query で 1 件に絞って選ぶ。
@@ -287,8 +293,8 @@ func TestChangesInTmux(t *testing.T) {
 		ts.waitPane(active, "絞り込んだ一覧", func(s string) bool { return strings.Contains(s, "1/4") })
 		ts.run("send-keys", "-t", active, "Enter")
 	}
-	// rightPane は、待つだけのペインと左のペイン（p1）のほかのペインが 1 つだけになり、その画面が cond を満たすまで待って、その ID を返す。
-	rightPane := func(what string, cond func(string) bool) string {
+	// basePane は、待つだけのペインとファイルのペイン（p1）のほかのペインが 1 つだけになり、その画面が cond を満たすまで待って、その ID を返す。
+	basePane := func(what string, cond func(string) bool) string {
 		t.Helper()
 		deadline := time.Now().Add(15 * time.Second)
 		for {
@@ -310,42 +316,47 @@ func TestChangesInTmux(t *testing.T) {
 					s, _ := ts.tryCapture(p)
 					fmt.Fprintf(&screens, "== %s\n%s\n", p, s)
 				}
-				t.Fatalf("右のペインが %s にならない: %v\n%s", what, ts.panes(), screens.String())
+				t.Fatalf("版のペインが %s にならない: %v\n%s", what, ts.panes(), screens.String())
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
 
-	// 左のペインから a.txt を選ぶ。
+	// ファイルのペインから a.txt を選ぶ。版は左に開き、フォーカスは右のファイルのペインに残る。
 	pick("a.t")
-	p2 := rightPane("a.txt の merge-base の版", func(s string) bool {
+	p2 := basePane("a.txt の merge-base の版", func(s string) bool {
 		return strings.Contains(s, "main...HEAD:a.txt") && strings.Contains(s, "[RO]") && strings.Contains(s, "two") && strings.Contains(s, "（client 1）を")
 	})
 	if s := ts.run("capture-pane", "-p", "-t", p2); strings.Contains(s, "TWO") {
 		t.Errorf("merge-base の版のペインに作業ツリーの行が出た:\n%s", s)
 	}
 	ts.waitPane(p1, "a.txt のタブ", func(s string) bool { return strings.Contains(s, "TWO") })
+	ts.checkBaseLeft(p2, p1)
 
-	// 選んだ後はフォーカスが右のペインへ移る。そのまま、どのタブでもない b.txt を選んでも、右のペインが入れ替わるだけで、
-	// b.txt は左のペインに開く（PR #382 のレビューの必須 1）。
+	// そのまま右のファイルのペインから、どのタブでもない b.txt を選んでも、左の版のペインが入れ替わるだけで、
+	// b.txt は右のファイルのペインに開く（PR #382 のレビューの必須 1）。
 	pick("b.t")
-	p3 := rightPane("b.txt の merge-base の版", func(s string) bool {
+	p3 := basePane("b.txt の merge-base の版", func(s string) bool {
 		return strings.Contains(s, "main...HEAD:b.txt") && strings.Contains(s, "bee") && strings.Contains(s, "（client 1）を")
 	})
 	if p3 == p2 {
-		t.Errorf("右のペインが入れ替わらない: %s", p3)
+		t.Errorf("版のペインが入れ替わらない: %s", p3)
 	}
 	ts.waitPane(p1, "b.txt のタブ", func(s string) bool { return strings.Contains(s, "BEE") })
+	ts.checkBaseLeft(p3, p1)
 
-	// 足したファイル（左のペインのタブにある fresh.txt）を、右のペインから選ぶ。空の版と見比べる。
+	// 足したファイル（ファイルのペインのタブにある fresh.txt）を、左の版のペインから選ぶ。版のペインは閉じてから開き直り、
+	// fresh.txt は右のファイルのペインに開く。空の版と見比べる。
 	// 空の版は、空の行 1 つを変えた行として描き、1 行のファイルに対する詰め物は 0 行になる（基本設計 6.8。Vim 9.1 と同じ）。
+	ts.run("select-pane", "-t", p3)
 	pick("fresh")
-	rightPane("fresh.txt の比べる元の版", func(s string) bool {
+	p4 := basePane("fresh.txt の比べる元の版", func(s string) bool {
 		return strings.Contains(s, "main...HEAD:fresh.txt") && strings.Contains(s, "[RO]") && !strings.Contains(s, "fresh line") && strings.Contains(s, "（client 1）を")
 	})
 	ts.waitPane(p1, "fresh.txt のタブ", func(s string) bool { return strings.Contains(s, "fresh line") })
+	ts.checkBaseLeft(p4, p1)
 
-	// 消したファイルを右のペインから選ぶと、見比べのペインを閉じ、merge-base の版だけを左のペインのタブに開く。
+	// 消したファイルを右のファイルのペインから選ぶと、見比べのペインを閉じ、merge-base の版だけをファイルのペインのタブに開く。
 	pick("gone")
 	ts.waitPane(p1, "消したファイルの版", func(s string) bool {
 		return strings.Contains(s, "gone line") && strings.Contains(s, "main...HEAD:gone.txt") && strings.Contains(s, "作業ツリーに無いので")
@@ -355,7 +366,7 @@ func TestChangesInTmux(t *testing.T) {
 	ts.waitPanes(1)
 }
 
-// TestChangesLastClientInTmux は、見比べの左のペインを未保存のまま閉じ、比べる元の版のペインしか残っていないときに一覧から選んでも、
+// TestChangesLastClientInTmux は、見比べのファイルのペインを未保存のまま閉じ、比べる元の版のペインしか残っていないときに一覧から選んでも、
 // エディタが終わらず（本体は最後の窓を名前の無い空のバッファに替える）、未保存の変更が残ることを確かめる（PR #382 の再レビューの必須）。
 //
 // req: FR-251
@@ -405,14 +416,14 @@ func TestChangesLastClientInTmux(t *testing.T) {
 		return strings.Contains(s, "main...HEAD:a.txt") && strings.Contains(s, "（client 1）を")
 	})
 
-	// 左のペインで保存せずに変え、ペインごと閉じる。
+	// ファイルのペインで保存せずに変え、ペインごと閉じる。
 	ts.run("send-keys", "-t", p1, "-l", "Ounsaved")
 	ts.run("send-keys", "-t", p1, "Escape")
 	ts.waitPane(p1, "変えた画面", func(s string) bool { return strings.Contains(s, "unsaved") })
 	ts.run("kill-pane", "-t", p1)
 	ts.waitPanes(2)
 
-	// 残った比べる元の版のペインから b.txt を選ぶ。エディタは終わらず、b.txt がこのペインに開き、その右に比べる元の版が開く。
+	// 残った比べる元の版のペインから b.txt を選ぶ。エディタは終わらず、b.txt がこのペインに開き、その左に比べる元の版が開く。
 	ts.run("send-keys", "-t", p2, "-l", " gV")
 	ts.waitPane(p2, "差分の一覧", func(s string) bool { return strings.Contains(s, "git の差分 main...HEAD  2/2") })
 	ts.run("send-keys", "-t", p2, "-l", "b.t")
@@ -420,7 +431,7 @@ func TestChangesLastClientInTmux(t *testing.T) {
 	ts.run("send-keys", "-t", p2, "Enter")
 	ts.waitPane(p2, "b.txt のタブ", func(s string) bool { return strings.Contains(s, "BBB") })
 	ts.waitPanes(3)
-	// 右に開くペインの client が繋ぐ（見比べを始めた知らせが届く）前に :ls を打ってもよい。本体は、hit-enter の問いで待っている
+	// 左に開くペインの client が繋ぐ（見比べを始めた知らせが届く）前に :ls を打ってもよい。本体は、hit-enter の問いで待っている
 	// :ls の一覧を、後から届いた知らせで上書きしない（#381 の続き。main の CI で、知らせが一覧を消して揺れた）。
 	ts.run("send-keys", "-t", p2, ":ls", "Enter")
 	ls := ts.waitPane(p2, ":ls の一覧", func(s string) bool { return strings.Contains(s, `"a.txt"`) })
@@ -548,6 +559,24 @@ func TestChangesWorktreeInTmux(t *testing.T) {
 	}
 	ts.run("send-keys", "-t", p1, ":q!", "Enter")
 	ts.waitPanes(1)
+}
+
+// checkBaseLeft は、比べる元の版のペイン base が、ファイルのペイン file のすぐ左に同じ高さで並び、
+// フォーカス（tmux の active なペイン）が file にあることを確かめる（#437。diffview.nvim と同じ並び）。
+func (ts *testTmux) checkBaseLeft(base, file string) {
+	ts.t.Helper()
+	geo := func(p string) (left, width, top int) {
+		_, _ = fmt.Sscanf(ts.run("display-message", "-p", "-t", p, "#{pane_left} #{pane_width} #{pane_top}"), "%d %d %d", &left, &width, &top)
+		return left, width, top
+	}
+	bl, bw, bt := geo(base)
+	fl, _, ft := geo(file)
+	if bl+bw+1 != fl || bt != ft {
+		ts.t.Errorf("版のペイン（左端 %d、幅 %d、上端 %d）がファイルのペイン（左端 %d、上端 %d）のすぐ左にない", bl, bw, bt, fl, ft)
+	}
+	if active := ts.run("display-message", "-p", "-t", "t", "#{pane_id}"); active != file {
+		ts.t.Errorf("フォーカスのあるペイン = %s, want ファイルのペイン %s", active, file)
+	}
 }
 
 // tryCapture は、ペインの画面を返す。ペインが無くなっていれば false を返す（テストを落とさない）。
