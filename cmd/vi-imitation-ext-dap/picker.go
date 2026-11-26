@@ -36,8 +36,10 @@ type pickers struct {
 // ペインを開いている最中（pane/open の応答の前）の知らせは、ペインのものかもしれないので、ペインの列にも積む（ペインは ID で見分ける）。
 func (d *debugger) onView(_ context.Context, e *server.ViewEvent) {
 	if d.pane.owns(e) {
+		// 再生中の c（view/keySync）は、応答をペインの処理の後に回す（ViewEvent.Defer は受けたポインターに対して呼ぶ）。
+		reply := e.Defer()
 		ev := *e
-		d.pane.post(func() { d.pane.onEvent(ev) })
+		d.pane.post(func() { d.pane.onEvent(ev, reply) })
 		if !d.pane.opening.Load() {
 			return
 		}

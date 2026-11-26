@@ -177,6 +177,11 @@ type Contribution struct {
 	// 省いた項目は、今までどおりその拡張機能のどの部品でも効く。同じキーを子ごとに別の項目にできる（DAP の区画ごとの d と s）。
 	// 古い本体は読まずに捨て、どの部品でも効かせる。ほかの種類の操作では読まない。
 	Children []string `json:"children,omitempty"`
+	// Sync は、Contributes.PopupKeys の項目で、マクロとドットリピートの再生中にこのキーを打ったとき、本体が view/key の代わりに
+	// view/keySync を送り、応答を待ってから次のキーへ進むことを表す（FR-19、FR-315。API 0.25.0 で足した）。
+	// レジスターへ入れるキー（DAP のウォッチ式の c）に書く。再生中でなければ、今までどおり view/key を送る。
+	// Action を書いた項目では読まない。古い本体は読まずに捨て、再生中も view/key を送る。ほかの種類の操作では読まない。
+	Sync bool `json:"sync,omitempty"`
 }
 
 // PopupKeyAction は、contributes.popupKeys のキーで、view/key の代わりに本体がする操作の名前である。

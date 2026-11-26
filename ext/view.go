@@ -61,6 +61,13 @@ const (
 	MethodInputChange = "input/change"
 	// MethodViewKey は、本体から拡張機能への通知である。params は ViewKeyParams。
 	MethodViewKey = "view/key"
+	// MethodViewKeySync は、本体から拡張機能へのリクエストである。params は ViewKeyParams、result は ViewKeyResult。
+	// 宣言ファイルの contributes.popupKeys の項目に Sync を書いたキーを、マクロとドットリピートの再生中に打ったとき、本体は view/key の
+	// 代わりにこれを送り、応答を待ってから再生の次のキーへ進む（FR-19、FR-315。API 0.25.0 で足した）。再生中でなければ view/key を送る。
+	// 本体は応答を待つ間、再生の次のキーを処理しないので、拡張機能はそのキーの結果（レジスターへ入れる中身）を、register/set でなく
+	// 応答の ViewKeyResult に入れて返す。本体は応答を受けてから書き、再生を続ける。
+	// 期限（本体の再生の期限）までに応答が無いか、誤りで応答したら、本体はその位置で再生を止める。
+	MethodViewKeySync = "view/keySync"
 	// MethodViewExpand は、本体から拡張機能への通知である。params は ViewExpandParams。
 	MethodViewExpand = "view/expand"
 	// MethodViewTabChange は、本体から拡張機能への通知である。params は ViewTabChangeParams。
@@ -835,4 +842,20 @@ type ViewKeyParams struct {
 	// Child は、切り替えの部品（ViewSwitcher）の中の知らせなら、キーを打ったときに出していた子の ID である。
 	// ほかの部品では省く（FR-271。API 0.23.0 で足した）。
 	Child string `json:"child,omitempty"`
+	// Register は、利用者がキーの前に付けたレジスターの名前（"ac の "a"）である。付けなければ省く（FR-315。API 0.25.0 で足した）。
+	// 本体は、ノーマルモードで回数を付けずに " と名前だけを打った後のキーにだけ付ける。名前は FR-50 で使えるもの（a〜z、A〜Z、_）に限り、
+	// 使えない名前を付けたキーは、本体が E354 をメッセージの行に出して view/key を送らない。
+	// 拡張機能は、レジスターへ入れるキー（DAP のウォッチ式の c）では、これを register/set の Register に入れる（register.go）。
+	Register string `json:"register,omitempty"`
+	// Origin は、本体がキーを打つたびに付ける番号である（API 0.25.0 で足した）。拡張機能は、このキーの結果として送る register/set の
+	// Origin に入れて返す。本体は、メッセージとホストのクリップボードを、このキーを打った client へ送る（FR-315）。
+	Origin uint64 `json:"origin,omitempty"`
+}
+
+// ViewKeyResult は、view/keySync の result である（API 0.25.0 で足した）。
+type ViewKeyResult struct {
+	// Register は、そのキーの結果としてレジスターへ入れる中身である。省けば何も入れない。
+	// 本体は register/set と同じく書く（register.go。Origin は読まず、キーを打った client へ送る）。
+	// 使えない名前なら、本体は E354 を出してその位置で再生を止める。
+	Register *RegisterSetParams `json:"register,omitempty"`
 }

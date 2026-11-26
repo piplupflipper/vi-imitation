@@ -203,10 +203,14 @@ func (e *Editor) consoleOutputKey(f *floatState, k editcmd.Key, insert bool) (bo
 	if insert {
 		return false, nil
 	}
+	st := f.con.out.state
 	if f.ext != "" {
-		if done, held := e.popupKey(f, k); done || len(held) > 0 {
+		if done, held := e.popupKey(f, k, st); done || len(held) > 0 {
 			return done, held
 		}
+	}
+	if _, ok := st.PendingRegister(); ok {
+		return false, nil // "a の後の <Esc> は、通常のキーとして " と名前を捨てる（FR-315）
 	}
 	if k == editcmd.Esc && !f.pane {
 		e.closeFloat(true)

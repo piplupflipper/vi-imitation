@@ -68,6 +68,8 @@ const codeRequestCancelled = -32800
 //   - buffer/willSave: BufferWillSave で登録したハンドラーを呼ぶ。登録していなければ、編集無しを応答する
 //   - buffer/didSave: OnBufferDidSave で登録したフックを呼ぶ
 //   - console/complete: ConsoleComplete で登録したハンドラーを呼ぶ。登録していなければ、OK を false にした結果を応答する
+//   - view/keySync: OnView で登録したフックに、Sync を真にした ViewKey の ViewEvent を渡す。フックが ViewEvent.Defer を呼ばなければ、
+//     空の結果を応答する（register.go）
 //   - window/change: OnWindowChange で登録したフックを呼ぶ
 //   - shutdown: OnShutdown で登録したフックを呼び、送信の列を書き出してから接続を閉じ、Serve から nil を返す
 //
@@ -124,6 +126,8 @@ type Server struct {
 	willSave map[string]entry[ext.BufferWillSaveParams, ext.BufferWillSaveResult]
 	// consoleComplete は、console/complete のハンドラーである（consolecomplete.go）。nil なら登録していない。
 	consoleComplete AsyncConsoleCompleteHandler
+	// registers は、本体へ送る register/set の列である（register.go の SetRegisterAsync）。どの goroutine からも触る。
+	registers registerQueue
 
 	started atomic.Bool
 	conn    atomic.Pointer[rpc.Conn]
@@ -375,6 +379,8 @@ func (s *Server) handleRequest(ctx context.Context, req *rpc.Request, reply rpc.
 		})
 	case ext.MethodConsoleComplete:
 		s.consoleCompleteRequest(ctx, req, reply)
+	case ext.MethodViewKeySync:
+		s.viewKeySync(ctx, req, reply)
 	default:
 		s.reply(req.Method, reply, nil, &rpc.Error{Code: rpc.CodeMethodNotFound, Message: "method not found: " + req.Method})
 	}

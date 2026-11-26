@@ -459,6 +459,33 @@ view/key の params である。
 - `input`（`string`、省ける）: ViewFinder（finder） の入力の行の中身である。他の部品では省く。
 - `child`（`string`、省ける）: 切り替えの部品（ViewSwitcher（switcher））の中の知らせなら、キーを打ったときに出していた子の ID である。
   ほかの部品では省く（API 0.23.0 で足した）。
+- `register`（`string`、省ける）: 利用者がキーの前に付けたレジスターの名前（"ac の "a"）である。付けなければ省く（API 0.25.0 で足した）。
+  本体は、ノーマルモードで回数を付けずに " と名前だけを打った後のキーにだけ付ける。名前は FR-50 で使えるもの（a〜z、A〜Z、_）に限り、
+  使えない名前を付けたキーは、本体が E354 をメッセージの行に出して view/key を送らない。
+  拡張機能は、レジスターへ入れるキー（DAP のウォッチ式の c）では、これを register/set の Register に入れる。
+- `origin`（`uint64`、省ける）: 本体がキーを打つたびに付ける番号である（API 0.25.0 で足した）。拡張機能は、このキーの結果として送る register/set の
+  Origin に入れて返す。本体は、メッセージとホストのクリップボードを、このキーを打った client へ送る。
+
+#### `ViewKeyResult`
+
+view/keySync の result である（API 0.25.0 で足した）。
+
+- `register`（`*RegisterSetParams`、省ける）: そのキーの結果としてレジスターへ入れる中身である。省けば何も入れない。
+  本体は register/set と同じく書く（Origin は読まず、キーを打った client へ送る）。
+  使えない名前なら、本体は E354 を出してその位置で再生を止める。
+
+#### `RegisterSetParams`
+
+register/set の params である。
+
+- `register`（`string`、省ける）: 入れる先のレジスターの名前（1 文字）である。省く（空）と無名のレジスターに入れる。
+  view/key の Register（利用者が指定した名前）をそのまま入れてよい。使えない名前は、本体が E354 で断る。
+- `text`（`string`）: 入れるテキストである。改行は "\n" で書く。空でもよい（空のテキストが入る。本体の空の行の yl と同じ）。
+- `linewise`（`bool`、省ける）: 行単位のテキストとして入れるかである。省く（false）と文字単位である。
+  行単位では、Text の "\n" で区切った各部分を 1 行とする。最後の行の後の改行は書いても書かなくてもよい（書けば 1 つだけ取り除く）。
+- `origin`（`uint64`、省ける）: このテキストを入れるきっかけになった view/key の Origin（ViewKeyParams.Origin）である。省ける。
+  本体は、メッセージとホストのクリップボードを、そのキーを打った client（ペインの部品の client なら、その元の編集の client）へ送る。
+  省いたときと、本体が覚えていない番号（古いキー）のときは、操作中の client へ送る。
 
 #### `ViewSelectParams`
 
@@ -1389,6 +1416,12 @@ progress/report の種類である（LSP の WorkDoneProgressBegin、WorkDonePro
 - `"begin"`（ProgressBegin）: 進み具合を始める。Title を読む。
 - `"report"`（ProgressReport）: 続いている進み具合の本文か百分率を変える。
 - `"end"`（ProgressEnd）: 進み具合を終える。本体は終わった印を付けて、設定 progress.doneMs のミリ秒の後に消す。
+
+#### `RegisterSetResult`
+
+register/set の result である。中身は無いが、後から項目を足せるように構造体にしている。
+
+項目は無い（`{}`）。
 
 #### `SignSetParams`
 

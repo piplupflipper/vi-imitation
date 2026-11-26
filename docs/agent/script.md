@@ -49,10 +49,17 @@ func main() {
 <!-- generated:server-api:begin -->
 #### 関数と変数
 
+- `func CheckRegisterSet(p ext.RegisterSetParams) error`: p が ext.RegisterSetParams.Validate を通り、JSON にした大きさが MaxRegisterSetBytes 以下かを確かめる。
+  大きすぎれば、JSON にした大きさを添えて ErrRegisterTooLarge を包んだ誤りを返す。
+  SetRegister、SetRegisterAsync、ViewEvent.Defer の応答は、これで確かめてから送る。
 - `func InheritedSocket() (ln net.Listener, conns []net.Conn, err error)`: 本体が起動の契機 socket（ext.ActivationSocket（socket））で引き継いだ、待ち受けているソケットと、
   本体が受け付けて渡した接続を返す。
 - `func IsReadOnly(err error) bool`: err が、編集を禁止したバッファへの buffer/edit を本体が断った誤りの応答（code が ext.ErrorCodeReadOnly（-32001））かを返す。
   Edit が返した誤りに使う。
+- `MaxRegisterSetBytes`: register/set の params（と、view/keySync の result）を JSON にした後の大きさの上限（バイト）である。
+  本体は、拡張機能から届く 1 件のメッセージの本文を rpc.DefaultMaxMessageSize（64 MiB）までしか読まず、超えたら接続を切って
+  拡張機能を止める。JSON-RPC の封筒（jsonrpc、id、method）の分として 4 KiB を引いた。
+  大きさは、送るときと同じ encoding/json で数える（"<" は 6 バイトの "<" になる）。
 - `ErrBufferClosed`: WaitBuffer で待っている間か、待ち始める前に、そのバッファの buffer/close が届いた（その後に buffer/open が届いていない）ことを表す。
   本体は、不正な UTF-8 を含むバッファを拡張機能へ送らず、editor/open で開いたときは buffer/open の代わりに buffer/close を送る（ext.BufferCloseParams）。
 - `ErrChildUnsupported`: API 0.20.0 から 0.22.0 の間、切り替えの部品の子（空でない child）へ Rebind したことを表した。
@@ -69,6 +76,7 @@ func main() {
   WaitBuffer がバッファの複製を待たなかったことを表す。待っても buffer/open は届かず、ctx の期限まで戻らなくなるためである。
 - `ErrNotRunning`: Serve の前か後に、本体へメッセージを送ろうとしたことを表す。
 - `ErrOpening`: TextLog が開き直している最中（Open の open を呼んでいる間）に、Open か Rebind を呼んだことを表す。
+- `ErrRegisterTooLarge`: register/set の params が MaxRegisterSetBytes を超えたので送らなかったことを表す。errors.Is で見分ける。
 
 #### `server.AsyncBufferWillSaveHandler`
 
@@ -362,6 +370,14 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
   値は利用者が :set で変えた値には勝たない。表に無い名前や範囲の外の値があれば、本体はどの値も入れずに誤りで応答する。
   p が ext.OptionSetParams.Validate を通らなければ、送らずにその誤りを返す。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す（buffer/open のフックからは goroutine を起こして呼ぶ）。
+- `func (s *Server) SetRegister(ctx context.Context, p ext.RegisterSetParams) error`: SetRegisterAsync と同じく列に積み、その応答を待つ。順は SetRegisterAsync と同じく呼んだ順である。
+  ctx が先に終われば ctx の誤りを返すが、積んだものは送る。
+  Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す（積まない）。フックの中からは SetRegisterAsync を使う。
+- `func (s *Server) SetRegisterAsync(p ext.RegisterSetParams, done func(error)) error`: 本体へ送る register/set（API 0.25.0 から）を列に積み、応答を待たずに戻る。
+  積んだ順に 1 件ずつ送り、前の応答を待ってから次を送るので、本体は呼んだ順に書く（"ac の後の "Ac が入れ替わらない）。順は、この関数を呼んだ順である。続けて入れるものは、同じ goroutine（OnView のフックか、拡張機能が持つ 1 本の
+  goroutine）から順に呼ぶ。別々の goroutine を起こしてから呼ぶと、呼ぶ順が決まらない。
+  ループの上（フックの中）からも呼べる。done は、応答か誤りを受けたときに、送る goroutine から呼ぶ（nil でよい）。
+  p が CheckRegisterSet を通らなければ、積まずにその誤りを返す（done は呼ばない）。
 - `func (s *Server) SetSigns(p ext.SignSetParams) error`: 本体へ sign/set を送る。応答は待たない。どこから呼んでもよい。
 - `func (s *Server) SetStatusLine(part, text, style string) error`: 本体へ statusline/set を送り、宣言ファイルの contributes.statusline で足した部品 part の中身を text にする
   。style は部品の色の名前で、空なら利用者の設定の statusline.ext の色で描く。text が空なら部品を出さない。
@@ -446,6 +462,15 @@ view/tabChange）を受け取ったことを表す。
 - `Buffer ext.BufferID`: ViewTabChanged のときの、替わった後のタブのバッファの番号である。
 - `Child string`: 切り替えの部品（ext.ViewSwitcher（switcher））の中の知らせ（ViewSelected、ViewInputChanged、ViewKey、ViewExpanded）なら、
   その子の ID である。ViewChildSelected では選んだ子の ID である。ほかでは空である（API 0.23.0 で足した）。
+- `Register string`: ViewKey のときの、利用者がキーの前に付けたレジスターの名前（"ac の "a"）である。付けなければ空である
+  （ext.ViewKeyParams.Register。API 0.25.0 で足した）。レジスターへ入れるキーは、これを SetRegisterAsync の Register に入れる。
+- `Origin uint64`: ViewKey のときの、本体がそのキーに付けた番号である（ext.ViewKeyParams.Origin。API 0.25.0 で足した）。
+  そのキーの結果として入れる register/set の Origin に入れると、本体はキーを打った client へメッセージとクリップボードを送る。
+- `Sync bool`: 本体がマクロとドットリピートの再生中に view/keySync で送り、応答を待っている ViewKey であることを表す
+  （宣言ファイルの popupKeys の Sync。API 0.25.0 で足した）。フックは Defer で応答を後に回し、結果を応答で返す。
+- `func (e *ViewEvent) Defer() ViewKeyReply`: Sync の ViewKey（view/keySync）の応答を後に回し、応答する関数を返す。フックの中で呼ぶ。
+  Sync でない知らせでは nil を返す（拡張機能は、そのときは SetRegisterAsync で入れる）。
+  返した関数は必ず 1 回呼ぶ。呼ばないと、本体は再生の期限まで待ち、その位置で再生を止める。
 
 #### `server.ViewEventKind`
 
@@ -462,6 +487,14 @@ ViewEvent の種類である。
   Buffer にそのタブのバッファの番号が、Item にそのファイルの絶対パス（ファイルでなければ空）が入る（ext.ViewTabChangeParams）。
 - `ViewChildSelected`: view/childSelect である（API 0.23.0 で足した）。利用者が切り替えの部品の子を切り替えた。
   Child に選んだ子の ID が入る（ext.ViewChildSelectParams）。
+
+#### `server.ViewKeyReply`
+
+view/keySync に応答する関数である（ViewEvent.Defer）。1 回だけ呼ぶ。どの goroutine から呼んでもよい。
+res.Register が CheckRegisterSet を通らなければ、Register を省いた結果で応答し（本体は再生を続ける）、その誤りを返す。
+
+`type ViewKeyReply func(res ext.ViewKeyResult) error`
+
 
 #### `server.WindowChangeEvent`
 

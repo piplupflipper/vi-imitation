@@ -46,9 +46,20 @@ func TestMessageJSON(t *testing.T) {
 
 	t.Run("initialize", func(t *testing.T) {
 		roundTrip(t, InitializeParams{APIVersion: APIVersion, Settings: json.RawMessage(`{"a":1}`)},
-			`{"apiVersion":"0.24.0","settings":{"a":1}}`)
-		roundTrip(t, InitializeParams{APIVersion: APIVersion}, `{"apiVersion":"0.24.0"}`)
-		roundTrip(t, InitializeResult{APIVersion: APIVersion}, `{"apiVersion":"0.24.0"}`)
+			`{"apiVersion":"0.25.0","settings":{"a":1}}`)
+		roundTrip(t, InitializeParams{APIVersion: APIVersion}, `{"apiVersion":"0.25.0"}`)
+		roundTrip(t, InitializeResult{APIVersion: APIVersion}, `{"apiVersion":"0.25.0"}`)
+	})
+	t.Run("register/set", func(t *testing.T) {
+		roundTrip(t, RegisterSetParams{Text: ""}, `{"text":""}`)
+		roundTrip(t, RegisterSetParams{Register: "a", Text: "x\ny", Linewise: true}, `{"register":"a","text":"x\ny","linewise":true}`)
+		roundTrip(t, ViewKeyParams{View: 2, ID: "k", Register: "A"}, `{"view":2,"id":"k","register":"A"}`)
+		if err := (RegisterSetParams{Register: "あ"}).Validate(); err != nil {
+			t.Errorf("1 文字の名前: %v", err)
+		}
+		if err := (RegisterSetParams{Register: "ab"}).Validate(); err == nil {
+			t.Errorf("2 文字の名前を通した")
+		}
 	})
 	t.Run("provider/invoke", func(t *testing.T) {
 		rg := testRange

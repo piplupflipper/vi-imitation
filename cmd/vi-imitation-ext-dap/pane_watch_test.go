@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -307,18 +308,20 @@ func TestPaneWatchesStale(t *testing.T) {
 }
 
 // TestPaneWatchesSetCopy は、ウォッチ式の区画の s で、式を setExpression で書き換え（対応しないアダプターでは request を送らずに知らせる）、
-// c で、clipboard の context の評価の結果（対応しなければ表示している値）を、ヤンクできるようポップアップに出すことを確かめる。
+// c で、clipboard の context の評価の結果（対応しなければ表示している値）を、register/set で、利用者が指定したレジスター（無ければ
+// 無名のレジスター）へ入れることを確かめる（FR-311）。改行で終わる値は行単位にし、評価の誤りの行は誤りの全文をポップアップに出す。
 //
-// req: FR-292, FR-309
+// req: FR-292, FR-309, FR-311
 func TestPaneWatchesSetCopy(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		args     []string
 		set      bool
 		copyWant string
+		prefix   string
 	}{
-		{"supported", []string{"-set-expression", "-clipboard"}, true, "clip:42"},
-		{"unsupported", nil, false, "1"},
+		{"supported", []string{"-set-expression", "-clipboard"}, true, "clip:42", "clip:"},
+		{"unsupported", nil, false, "1", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := paneHost(t, tc.args, nil, nil)
@@ -361,18 +364,99 @@ func TestPaneWatchesSetCopy(t *testing.T) {
 				case <-time.After(100 * time.Millisecond):
 				}
 			}
+			// c は、値を無名のレジスターへ文字単位で入れる（FR-311）。
 			h.key(p.id, secWatches, keyWatchesCopy, "w1")
+			h.waitRegister(ext.RegisterSetParams{Text: tc.copyWant})
+			// 利用者がキーの前に付けたレジスター（"ac の a）へ入れる。改行を含む値も文字単位のまま入れる。
+			h.addWatch(p.id, keyWatchesAppend, "w2", "multi")
+			h.waitLabel(secWatches, "multi = line1 line2")
+			h.keyRegister(p.id, secWatches, keyWatchesCopy, "w3", "a")
+			h.waitRegister(ext.RegisterSetParams{Register: "a", Text: tc.prefix + "line1\nline2"})
+			// 改行で終わる値は行単位で入れ、CRLF は LF にそろえる（nvim-dap-view の setreg と同じ）。多バイト文字はそのまま。
+			h.addWatch(p.id, keyWatchesAppend, "w3", "crlf")
+			h.waitLabel(secWatches, "crlf = 値1")
+			h.keyRegister(p.id, secWatches, keyWatchesCopy, "w4", "B")
+			h.waitRegister(ext.RegisterSetParams{Register: "B", Text: tc.prefix + "値1\n値2\n", Linewise: true})
+			// 評価の誤りの行と、項目の無い行では、レジスターへ入れない。
+			h.keyRegister(p.id, secWatches, keyWatchesCopy, "w2", "a")
 			select {
 			case pp := <-h.popups:
-				if pp.Component.Kind != ext.ViewText || pp.Component.Text != tc.copyWant || pp.Placement != ext.PopupCenter ||
-					!strings.Contains(pp.Component.Title, "0y$ で文字単位にヤンク") {
-					t.Errorf("popup/open = %+v", pp)
+				if pp.Component.Text != "could not evaluate bad" {
+					t.Errorf("popup/open for the error = %+v", pp)
 				}
 			case <-time.After(testTimeout):
-				t.Fatal("popup/open did not arrive")
+				t.Fatal("popup/open for the error did not arrive")
+			}
+			h.key(p.id, secWatches, keyWatchesCopy, "none")
+			select {
+			case r := <-h.registers:
+				t.Errorf("register/set %+v was sent", r)
+			case pp := <-h.popups:
+				t.Errorf("popup/open %+v was sent", pp)
+			case <-time.After(100 * time.Millisecond):
+			}
+
+			// 続けて打った c は、打った順に入れる（PR #433 のレビューの必須 1 の再現。"ac、"Ac、"Ac を 50 回）。
+			// キーの番号（Origin）は、そのまま register/set に返す（同じレビューの推奨 2）。
+			for i := range 50 {
+				base := uint64(i*3 + 1)
+				for j, k := range []struct{ item, reg string }{{"w1", "a"}, {"w3", "A"}, {"w1", "A"}} {
+					h.notifyView(ext.MethodViewKey, ext.ViewKeyParams{
+						View: p.id, ID: keyWatchesCopy, Item: k.item, Child: secWatches, Register: k.reg, Origin: base + uint64(j),
+					})
+				}
+				for j, want := range []ext.RegisterSetParams{
+					{Register: "a", Text: tc.copyWant}, {Register: "A", Text: tc.prefix + "line1\nline2"}, {Register: "A", Text: tc.copyWant},
+				} {
+					want.Origin = base + uint64(j)
+					h.waitRegister(want)
+				}
+			}
+
+			// 再生中の c（view/keySync）は、入れる中身を応答で返し、register/set を送らない（FR-19、FR-315）。
+			var res ext.ViewKeyResult
+			ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+			err := h.conn.Call(ctx, ext.MethodViewKeySync, ext.ViewKeyParams{
+				View: p.id, ID: keyWatchesCopy, Item: "w3", Child: secWatches, Register: "c",
+			}, &res)
+			cancel()
+			if err != nil || res.Register == nil || *res.Register != (ext.RegisterSetParams{Register: "c", Text: tc.prefix + "line1\nline2"}) {
+				t.Errorf("view/keySync = %+v, %v", res.Register, err)
+			}
+			// 入れない行（評価の誤り）でも、空の結果で応答する。
+			res = ext.ViewKeyResult{}
+			ctx, cancel = context.WithTimeout(context.Background(), testTimeout)
+			err = h.conn.Call(ctx, ext.MethodViewKeySync, ext.ViewKeyParams{View: p.id, ID: keyWatchesCopy, Item: "w2", Child: secWatches}, &res)
+			cancel()
+			if err != nil || res.Register != nil {
+				t.Errorf("view/keySync on the error line = %+v, %v", res.Register, err)
+			}
+			<-h.popups
+			select {
+			case r := <-h.registers:
+				t.Errorf("register/set %+v was sent during the replay", r)
+			case <-time.After(100 * time.Millisecond):
 			}
 			h.stopAndWait()
 		})
+	}
+}
+
+// keyRegister は、key と同じく popupKeys の id のキーを打ったことを、利用者がキーの前に付けたレジスター register と一緒に知らせる。
+func (h *host) keyRegister(view ext.ViewID, child, id, item, register string) {
+	h.notifyView(ext.MethodViewKey, ext.ViewKeyParams{View: view, ID: id, Item: item, Child: child, Register: register})
+}
+
+// waitRegister は、拡張機能が register/set で want を入れるまで待つ。
+func (h *host) waitRegister(want ext.RegisterSetParams) {
+	h.t.Helper()
+	select {
+	case got := <-h.registers:
+		if got != want {
+			h.t.Errorf("register/set = %+v, want %+v", got, want)
+		}
+	case <-time.After(testTimeout):
+		h.t.Fatalf("register/set %+v did not arrive", want)
 	}
 }
 

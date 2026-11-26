@@ -91,6 +91,26 @@ func (p *Parser) Pending() bool {
 	return p.st != stNormal || len(p.seq) > 0 || p.count > 0 || p.cur > 0 || p.cmd.Register != 0
 }
 
+// PendingRegister は、解釈の途中の入力が、回数の無い " と名前だけ（"a）であれば、その名前と true を返す。
+// 呼び出し側（command.State）は、この間に打ったキーを拡張機能のポップアップのキーに当てるかを決めるのに使う（FR-315）。
+// 名前は検査していない（stRegister と同じく、command が確かめる）。
+func (p *Parser) PendingRegister() (rune, bool) {
+	if p.st != stNormal || len(p.seq) > 0 || p.count > 0 || p.cur > 0 || p.cmd.Register == 0 || p.cmd.Kind != 0 {
+		return 0, false
+	}
+	return p.cmd.Register, true
+}
+
+// TakeRegister は、PendingRegister が true のとき、その名前を返して解釈の途中の状態を捨てる。そうでなければ何もせず 0 を返す。
+func (p *Parser) TakeRegister() rune {
+	r, ok := p.PendingRegister()
+	if !ok {
+		return 0
+	}
+	p.reset()
+	return r
+}
+
 // Feed は、キーを 1 個受け取り、その時点で決まった結果を返す。
 // 解釈の途中なら空のスライスを返す。
 // 短い登録に決めて残りのキーを続けて解釈した場合（Parser の説明を参照）、結果は 2 件以上になりうる。

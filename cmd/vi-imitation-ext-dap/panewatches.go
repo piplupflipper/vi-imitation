@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/piplupflipper/vi-imitation/ext"
+	"github.com/piplupflipper/vi-imitation/ext/server"
 )
 
 // この節は、ウォッチ式の区画（FR-292、FR-309）の中身である（pane.go）。
@@ -460,16 +462,24 @@ func (p *pane) deleteWatch(item string) {
 	p.markDirty(secWatches)
 }
 
-// copyWatchValue は、カーソルの項目の値を、ヤンクできるよう中央のポップアップのテキストに出す（c）。
+// copyWatchValue は、カーソルの項目の値を、本体のレジスターへ入れる（c。FR-311）。
 // アダプターが supportsClipboardContext を示し、項目に式（式そのものか、変数の evaluateName）があれば、evaluate の context を
-// clipboard にした結果を、そうでなければ表示している値（切る前の値）を出す（基本設計 6.4 の capabilities の表）。
-// 本体の拡張機能 API に、拡張機能がレジスターへ値を入れる口が無いので、利用者がポップアップの中でヤンクする
-// （nvim-dap-view は + のレジスターへ直に入れる。FR-311 で、口ができたら直に入れる）。
+// clipboard にした結果を、そうでなければ表示している値（切る前の値）を入れる（基本設計 6.4 の capabilities の表）。
+// 入れる先は、利用者がキーの前に付けたレジスター（"ac の a。register）で、付けなければ無名のレジスターである（register/set。FR-315）。
+// 入れ方は putRegister にある。評価の誤りの行は誤りの全文をポップアップに出し、値が無い行は知らせる（入れない）。
+// reply は、マクロとドットリピートの再生中の c（view/keySync）の応答の関数で、ほかでは nil である。入れない場合も必ず応答する。
 //
-// req: FR-292
-func (p *pane) copyWatchValue(item string) {
+// req: FR-292, FR-311
+func (p *pane) copyWatchValue(e server.ViewEvent, reply server.ViewKeyReply) {
+	if reply != nil {
+		defer func() {
+			if reply != nil {
+				_ = reply(ext.ViewKeyResult{})
+			}
+		}()
+	}
 	w := &p.watches
-	info, ok := w.info[item]
+	info, ok := w.info[e.Item]
 	if !ok {
 		return
 	}
@@ -511,7 +521,41 @@ func (p *pane) copyWatchValue(item string) {
 		p.d.showInfo("コピーする値が無い")
 		return
 	}
-	p.openValuePopup(oneLine(info.v.Name)+" の値", value)
+	r := reply
+	reply = nil // putRegister が応答する
+	p.putRegister(e, value, r)
+}
+
+// putRegister は、値 value を、本体のレジスター（キーの前に付けた e.Register。空なら無名のレジスター）へ入れる（FR-311）。
+// 改行は "\n" にそろえる。nvim-dap-view の c（setreg に値だけを渡す）と同じく、文字単位で入れ、値が改行で終わるときだけ行単位で入れる
+// （Vim の setreg() は、型を指定しなければ、改行で終わる文字列を行単位にする）。
+// 履歴、ホストのクリップボード、知らせは本体が y と同じに扱うので、入れたことはここでは知らせない。
+// 本体が断った（使えない名前の E354 は本体がメッセージの行に出す）ときは、ログに残すだけにする。
+//
+// 再生中（reply が nil でない）は、入れる中身を view/keySync の応答で返す（本体は受けてから書いて再生を続ける）。
+// そうでなければ SetRegisterAsync で積む。ペインの知らせは run の 1 本の goroutine が順に処理するので、続けて打った c は打った順に
+// 届く（PR #433 のレビューの必須 1）。JSON にして本体のメッセージの上限を超える値は、送らずに大きすぎることを知らせる（同じレビューの推奨 1）。
+//
+// req: FR-311
+func (p *pane) putRegister(e server.ViewEvent, value string, reply server.ViewKeyReply) {
+	text := normalizeNewlines(value)
+	params := ext.RegisterSetParams{Register: e.Register, Text: text, Linewise: strings.HasSuffix(text, "\n"), Origin: e.Origin}
+	err := server.CheckRegisterSet(params)
+	switch {
+	case err != nil && reply != nil:
+		_ = reply(ext.ViewKeyResult{})
+	case err != nil:
+	case reply != nil:
+		err = reply(ext.ViewKeyResult{Register: &params})
+	default:
+		err = p.d.srv.SetRegisterAsync(params, nil)
+	}
+	switch {
+	case errors.Is(err, server.ErrRegisterTooLarge):
+		p.d.showError(fmt.Sprintf("値が大きすぎて、レジスターへ入れられない（%d バイト）", len(text)))
+	case err != nil:
+		p.d.logf("register/set %q: %v", e.Register, err)
+	}
 }
 
 // openValuePopup は、text をヤンクできるよう中央のポップアップのテキストに出す。題には、ヤンクのキーを添える。

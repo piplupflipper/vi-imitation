@@ -7,7 +7,7 @@
 拡張機能の標準エラー出力は、本体の記録（`--log` のファイル）に 1 行ずつ残る（`vi-imitation --docs debugging`）。
 
 <!-- generated:api-version:begin -->
-この本体の拡張機能 API の版は `0.24.0` である（`initialize` の `apiVersion`）。
+この本体の拡張機能 API の版は `0.25.0` である（`initialize` の `apiVersion`）。
 <!-- generated:api-version:end -->
 
 Go で書くときは、Go のモジュール `github.com/piplupflipper/vi-imitation` の公開パッケージ `ext`（メッセージの型）と `ext/server`（メッセージのループ、バッファの写し、ハンドラーの登録。`vi-imitation --docs script` に一覧がある）を使える。
@@ -234,6 +234,10 @@ ID と Pattern は使わない。利用者の操作もファイルを開くこ�
   （API 0.23.0 で足した）。並べた項目は、切り替えの部品でその子を出しているときだけ効き、ほかの部品では効かない。
   省いた項目は、今までどおりその拡張機能のどの部品でも効く。同じキーを子ごとに別の項目にできる（DAP の区画ごとの d と s）。
   古い本体は読まずに捨て、どの部品でも効かせる。ほかの種類の操作では読まない。
+- `sync`（`bool`、省ける）: Contributes.PopupKeys の項目で、マクロとドットリピートの再生中にこのキーを打ったとき、本体が view/key の代わりに
+  view/keySync を送り、応答を待ってから次のキーへ進むことを表す（API 0.25.0 で足した）。
+  レジスターへ入れるキー（DAP のウォッチ式の c）に書く。再生中でなければ、今までどおり view/key を送る。
+  Action を書いた項目では読まない。古い本体は読まずに捨て、再生中も view/key を送る。ほかの種類の操作では読まない。
 
 #### `PopupKeyAction`
 
@@ -332,6 +336,7 @@ params と result の型の項目は、`vi-imitation --docs extension-types <型
 - `view/closed`: 通知。params は `ViewClosedParams`。
 - `view/expand`: 通知。params は `ViewExpandParams`。
 - `view/key`: 通知。params は `ViewKeyParams`。
+- `view/keySync`: リクエスト。params は `ViewKeyParams`、result は `ViewKeyResult`。宣言ファイルの contributes.popupKeys の項目に Sync を書いたキーを、マクロとドットリピートの再生中に打ったとき、本体は view/key の代わりにこれを送り、応答を待ってから再生の次のキーへ進む（API 0.25.0 で足した）。再生中でなければ view/key を送る。本体は応答を待つ間、再生の次のキーを処理しないので、拡張機能はそのキーの結果（レジスターへ入れる中身）を、register/set でなく応答の ViewKeyResult に入れて返す。本体は応答を受けてから書き、再生を続ける。期限（本体の再生の期限）までに応答が無いか、誤りで応答したら、本体はその位置で再生を止める。
 - `view/select`: 通知。params は `ViewSelectParams`。
 - `view/tabChange`: 通知。params は `ViewTabChangeParams`。
 - `window/change`: 通知。params は `WindowChangeParams`。窓の見えている行の範囲、カーソルの位置、モード、表示領域の大きさが変わったことを知らせる（Neovim の WinScrolled と CursorMoved に当たる）。本体が送るのは、宣言ファイルの windowEvents が true で、稼働中の拡張機能だけである。起動の契機にはならない（未起動の拡張機能は起動しない）。稼働中になった拡張機能には、その時点のすべての窓の状態を送る。キーを打つたびには送らない。本体は、画面を描いた後に、窓ごとに前に送った中身と比べ、違う窓だけを送る。前に送ってから WindowNotifyIntervalMs（150） のミリ秒が経っていなければ、その間は送らずに、時間が来た時点の最後の中身を 1 回だけ送る（nvim-treesitter-context の throttle_by_id と同じく、続けて変わっても、その時間のうちに 2 回までにする）。このため、拡張機能が受け取る中身は、途中の中身を飛ばすことがある。ext/server は、さらに、フックが前の知らせを処理している間に同じ窓の知らせが続けて届いたら、最後の 1 件だけをフックへ渡す（拡張機能の処理が間隔より遅くても、知らせが溜まって ping の応答が遅れないようにする）。窓が無くなった（client が終わった）ときは、Closed を true にした知らせを 1 回送る。その WindowID は使い回さない。古い本体（0.16.0 まで）は送らない。
@@ -363,6 +368,7 @@ params と result の型の項目は、`vi-imitation --docs extension-types <型
 - `popup/open`: リクエスト。params は `PopupOpenParams`、result は `PopupOpenResult`。
 - `popup/show`: 通知。params は `PopupShowParams`。
 - `progress/report`: 通知。params は `ProgressReportParams`。時間のかかる処理（言語サーバーの読み込み、パーサのビルド、道具の入れ込み）の進み具合を知らせる。中身は LSP 3.17 の WorkDoneProgress の begin、report、end に対応させた。1 つの処理を、拡張機能が決めた識別子（Token）で表し、begin で始め、report で中身を変え、end で終える。本体は、続いている進み具合と、終わってから設定 progress.doneMs のミリ秒が過ぎていないものを、編集の client の画面の右下に重ねて出す（設定 progress.show が false なら出さない）。本体が入れ子の待ち（保存の前の整形の buffer/willSave の応答など）をしている間も、取っておかずにその場で出す。識別子は拡張機能ごとに分けて扱うので、他の拡張機能の識別子と重なってもよい。続いている識別子の begin は、その進み具合を始め直す（表題と本文と百分率を置き換える）。begin の無い（終えた後を含む）識別子の report と end は捨てる。拡張機能が異常で終わるか止まったら、本体はその拡張機能の進み具合をすべて消す（他の表示のデータと同じ）。拡張機能は、終えずに止まる処理（取り消し、失敗）も、Failed を true にした end で終える。失敗の理由は message/show で知らせる。本体は、その拡張機能が後から届けるもの（editor/open、message/show、choice/ask）を出す client と同じ client の画面にだけ出す（その拡張機能へ最後に問い合わせを始めた client。問い合わせていなければ操作中の client）。分割したペインのどの client にも出すと、同じ進み具合が 2 回出るためである。古い本体（0.13.0 まで）は、知らない通知として捨てる（ログに残すだけ）。
+- `register/set`: リクエスト。params は `RegisterSetParams`、result は `RegisterSetResult`。拡張機能が本体のレジスターへテキストを入れる（API 0.25.0 で足した）。拡張機能は、レジスターの名前、テキスト、文字単位か行単位かを渡す。本体は、名前を指定した y と同じくレジスターへ書く。名前を省けば無名のレジスター（履歴の先頭に積む）、a〜z はそのレジスターに書いて履歴にも積み、A〜Z は追記した後の内容を積み、_ には何も書かない。履歴の先頭が変わったら、本体の y と同じく、本体の設定（registers.clipboard）に従ってホストのクリップボードへ送る。知らせも本体の y と同じにする。書いたことは知らせず、履歴の 1 件の上限（registers.maxEntryBytes）を超えて積まなかったことと、クリップボードへ送るには大きすぎたことだけを、メッセージの行に出す。使えない名前（Vim の読み取り専用のレジスター . : % なども含む）は、本体の y と同じく E354 をメッセージの行に出し、何も書かずに、code が CodeInvalidParams の誤りで応答する。メッセージとホストのクリップボードは、Origin のキーを打った client へ送り、Origin が無ければ操作中の client へ送る。本体は届いた順に書くので、続けて入れる（"ac の後の "Ac）ときは、届く順が入れる順になるよう送る（ext/server の SetRegisterAsync は、呼んだ順に 1 つずつ送る）。利用者がレジスターの名前を前に付けて contributes.popupKeys のキーを打ったとき（"ac）は、本体はその名前を view/key のRegister（ViewKeyParams）に入れて知らせる。拡張機能は、それを RegisterSetParams.Register に入れて送れば、利用者の指定どおりに入れられる。マクロとドットリピートの再生中は、Sync を書いた popupKeys のキーに view/keySync を送り、入れる中身を応答（ViewKeyResult）で受ける。古い本体（0.24.0 まで）は register/set に method not found で応答し、view/key の Register を送らない（古い本体では、"a の後のキーは popupKeys に当たらず、本体のキーとして解釈する）。
 - `sign/set`: 通知。params は `SignSetParams`。
 - `statusline/set`: 通知。params は `StatusLineSetParams`。宣言ファイルの contributes.statusline で足した部品の中身を送る。本体は、部品の ID ごとに最後に届いた中身を持ち、利用者が設定の statusline か tabline に並べた部品だけを描く。並べていない部品の中身も持つので、拡張機能は設定を知らずに送ってよい。宣言ファイルで足していない部品の ID と、他の拡張機能が足した部品の ID の通知は捨てる。拡張機能が異常で終わるか止まったら、その拡張機能の部品の中身をすべて消す（他の表示のデータと同じ）。中身はバッファに依らず、どの client のどのバッファのステータス行にも同じものを出す（仮。lualine の mrreview の状態と、本体のメモリの使用量のような、エディタ全体の状態を出す部品を想定した）。
 - `view/append`: 通知。params は `ViewAppendParams`。

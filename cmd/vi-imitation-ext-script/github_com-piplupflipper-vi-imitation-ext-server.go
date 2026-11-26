@@ -4,12 +4,15 @@ package main
 
 import (
 	"github.com/piplupflipper/vi-imitation/ext/server"
+	"go/constant"
+	"go/token"
 	"reflect"
 )
 
 func init() {
 	Symbols["github.com/piplupflipper/vi-imitation/ext/server/server"] = map[string]reflect.Value{
 		// function, constant and variable definitions
+		"CheckRegisterSet":    reflect.ValueOf(server.CheckRegisterSet),
 		"ErrBufferClosed":     reflect.ValueOf(&server.ErrBufferClosed).Elem(),
 		"ErrChildUnsupported": reflect.ValueOf(&server.ErrChildUnsupported).Elem(),
 		"ErrEditInHandler":    reflect.ValueOf(&server.ErrEditInHandler).Elem(),
@@ -19,8 +22,10 @@ func init() {
 		"ErrNoBufferSync":     reflect.ValueOf(&server.ErrNoBufferSync).Elem(),
 		"ErrNotRunning":       reflect.ValueOf(&server.ErrNotRunning).Elem(),
 		"ErrOpening":          reflect.ValueOf(&server.ErrOpening).Elem(),
+		"ErrRegisterTooLarge": reflect.ValueOf(&server.ErrRegisterTooLarge).Elem(),
 		"InheritedSocket":     reflect.ValueOf(server.InheritedSocket),
 		"IsReadOnly":          reflect.ValueOf(server.IsReadOnly),
+		"MaxRegisterSetBytes": reflect.ValueOf(constant.MakeFromLiteral("67104768", token.INT, 0)),
 		"New":                 reflect.ValueOf(server.New),
 		"NewConsoleLog":       reflect.ValueOf(server.NewConsoleLog),
 		"NewTextLog":          reflect.ValueOf(server.NewTextLog),
@@ -58,6 +63,7 @@ func init() {
 		"TextObjectHandler":           reflect.ValueOf((*server.TextObjectHandler)(nil)),
 		"ViewEvent":                   reflect.ValueOf((*server.ViewEvent)(nil)),
 		"ViewEventKind":               reflect.ValueOf((*server.ViewEventKind)(nil)),
+		"ViewKeyReply":                reflect.ValueOf((*server.ViewKeyReply)(nil)),
 		"WindowChangeEvent":           reflect.ValueOf((*server.WindowChangeEvent)(nil)),
 	}
 }

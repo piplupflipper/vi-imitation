@@ -159,7 +159,8 @@ type State struct {
 	Navigator Navigator
 	// Mouse は、マウスの出来事の位置を解く口である（FR-181〜FR-185。mouse.go）。nil なら、マウスの出来事の操作は何もしない。
 	Mouse Mouse
-	// KeyHook は、ノーマルモードでキーの列の途中でないときと、インサートモードのときに、キーを解釈する前に呼ぶ関数である。
+	// KeyHook は、ノーマルモードでキーの列の途中でないとき（回数の無い " と名前の後を含む。PendingRegister）と、
+	// インサートモードのときに、キーを解釈する前に呼ぶ関数である。
 	// done が true のキーは、この State では解釈しない。返した誤りは操作の失敗として結果に入れる（ErrBufferSwitched なら、
 	// マクロの再生の残りは移った先のバッファで続く）。nil なら呼ばない。
 	// 呼び出し側は、キーの列の途中のキーを done で預かってよい。列が当たらなかったら、done を false にして預かったキーを held で返す。
@@ -258,6 +259,10 @@ type KeyParser interface {
 	SetVisual(on bool)
 	// InsertAction は、インサートモードのキー k に割り当てた操作を返す（FR-127）。insertKey が、文字、<CR>、<Tab>、<Esc> の他のキーで呼ぶ。
 	InsertAction(k editcmd.Key) (editcmd.Ref, bool)
+	// PendingRegister は、解釈の途中の入力が回数の無い " と名前だけ（"a）なら、その名前と true を返す（FR-315。State.PendingRegister）。
+	PendingRegister() (rune, bool)
+	// TakeRegister は、PendingRegister が true のとき、その名前を返して解釈の途中の状態を捨てる。そうでなければ 0 を返す。
+	TakeRegister() rune
 }
 
 // New は、バッファ b を編集する State を、ノーマルモード、カーソルは先頭で作る。
@@ -420,7 +425,7 @@ func (s *State) feed(k editcmd.Key) {
 		// スクロールバーのつまみのドラッグの途中でマウスでないキーを受けたら、ドラッグを終える（FR-210。mouse.go の mouseBarMove）。
 		s.mouseBar = nil
 	}
-	if h := s.KeyHook; h != nil && (s.mode == ModeInsert || (s.mode == ModeNormal && !s.parser.Pending())) {
+	if h := s.KeyHook; h != nil && (s.mode == ModeInsert || (s.mode == ModeNormal && (!s.parser.Pending() || s.hasPendingRegister()))) {
 		s.hookRecorded = recorded
 		done, held, err := h(k, s.mode == ModeInsert)
 		s.hookRecorded = false
@@ -437,6 +442,34 @@ func (s *State) feed(k editcmd.Key) {
 		}
 	}
 	s.dispatch(k)
+}
+
+// PendingRegister は、ノーマルモードで、解釈の途中の入力が回数の無い " と名前だけ（"a）であれば、その名前と true を返す。
+// この間も KeyHook を呼ぶ。KeyHook は、受けたキーを拡張機能のポップアップのキー（contributes.popupKeys）に当てるなら、
+// TakeRegister で名前を受け取り、拡張機能へ知らせる（view/key の register。FR-315）。当てないキー（held で返すキーを含む）は、
+// 名前を残したまま通常のキーとして解釈するので、"ayy などは今までどおり動く。名前は検査していない（FR-50 の検査は呼び出し側が行う）。
+//
+// req: FR-315
+func (s *State) PendingRegister() (rune, bool) {
+	if s.mode != ModeNormal {
+		return 0, false
+	}
+	return s.parser.PendingRegister()
+}
+
+// hasPendingRegister は、PendingRegister が true かを返す。
+func (s *State) hasPendingRegister() bool {
+	_, ok := s.PendingRegister()
+	return ok
+}
+
+// TakeRegister は、PendingRegister が true のとき、その名前を返して解釈の途中の " と名前を捨てる。そうでなければ 0 を返す。
+// KeyHook の中から呼ぶ（PendingRegister の doc）。
+func (s *State) TakeRegister() rune {
+	if s.mode != ModeNormal {
+		return 0
+	}
+	return s.parser.TakeRegister()
 }
 
 // dispatch は、キー k をモードに応じて解釈する（feed の KeyHook の後の部分）。
