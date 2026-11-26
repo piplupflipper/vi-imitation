@@ -202,6 +202,7 @@ func TestRunPopupOutsideMux(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("HERDR_ENV", "")
+	t.Setenv("HC_TERMINAL_ID", "")
 	if err := (&Server{}).runPopup("%5", []string{"true"}, "", editor.PopupOptions{}); !errors.Is(err, mux.ErrUnsupported) {
 		t.Errorf("err = %v, want mux.ErrUnsupported", err)
 	}

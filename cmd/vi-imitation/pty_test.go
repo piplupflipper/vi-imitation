@@ -43,11 +43,12 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// muxFreeEnv は、テストを動かす環境から、tmux と herdr の中であることを表す環境変数と VI_IMITATION_SOCKET を除いたものを返す。
-// テストを tmux か herdr の中で動かしても、起動したエディタが端末多重化ソフトの外の構成（FR-60）で動き、
-// 利用者の tmux と herdr に server の単位を問い合わせないようにする。
+// muxFreeEnv は、テストを動かす環境から、tmux、herdr、herdr app の中であることを表す環境変数と VI_IMITATION_SOCKET を除いたものを返す。
+// テストを tmux、herdr、herdr app の中で動かしても、起動したエディタが端末多重化ソフトの外の構成（FR-60）で動き、
+// 利用者の tmux、herdr、herdr app に server の単位を問い合わせず、ラベルも書かないようにする。
 func muxFreeEnv() []string {
-	return withoutEnv(os.Environ(), "TMUX", "TMUX_PANE", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_SOCKET_PATH", envSocket)
+	return withoutEnv(os.Environ(), "TMUX", "TMUX_PANE", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_SOCKET_PATH",
+		"HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", envSocket)
 }
 
 // panicHandler は、拡張機能の標準エラー出力の記録（exthost の "extension stderr"）の行が marker なら panic するロガーである。

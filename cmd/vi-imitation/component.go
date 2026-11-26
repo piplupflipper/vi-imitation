@@ -45,7 +45,8 @@ func component(kind protocol.ClientKind, view uint64, in, out *os.File, logPath,
 	return guard(tm.Restore, func() error {
 		// 部品の client のペイン（tmux の分割したペインには TMUX_PANE が、herdr のプラグインのペインには HERDR_PANE_ID が入る）。
 		// herdr のポップアップの中には入らない（#177 の「参考」）が、ポップアップではフォーカスを戻さないので要らない。
-		pane := cmp.Or(os.Getenv("TMUX_PANE"), os.Getenv("HERDR_PANE_ID"))
+		// herdr app のペインには、その端末の番地が HC_TERMINAL_ID に入る（#440）。
+		pane := cmp.Or(os.Getenv("TMUX_PANE"), os.Getenv("HERDR_PANE_ID"), os.Getenv("HC_TERMINAL_ID"))
 		return clientUntil(ctx, conn, func() error { return client.RunComponent(tm, conn, kind, view, pane, logger) })
 	})
 }

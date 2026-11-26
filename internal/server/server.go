@@ -47,12 +47,14 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/internal/editor"
+	"github.com/piplupflipper/vi-imitation/internal/mux"
 	"github.com/piplupflipper/vi-imitation/internal/protocol"
 	"github.com/piplupflipper/vi-imitation/internal/ui"
 )
@@ -104,28 +106,40 @@ func New(cfg editor.Config) (*Server, error) {
 		logger = slog.Default()
 	}
 	s := &Server{onPanic: cfg.OnPanic, log: logger}
-	if cfg.SplitPane == nil {
-		cfg.SplitPane = s.splitPane
-	}
-	if cfg.OpenPopup == nil {
-		cfg.OpenPopup = s.openPopup
-	}
-	if cfg.PopupScreenWidth == nil {
-		cfg.PopupScreenWidth = s.popupScreenWidth
-	}
-	if cfg.OpenPane == nil {
-		cfg.OpenPane = s.openPane
-	}
-	if cfg.RunPopup == nil {
-		cfg.RunPopup = s.runPopup
-	}
 	s.client = s.newTerm()
-	ed, err := editor.New(s.client, cfg)
+	ed, err := editor.New(s.client, s.withMux(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("server: %w", err)
 	}
 	s.ed = ed
 	return s, nil
+}
+
+// withMux は、cfg の端末多重化ソフトの層を使う関数のうち、空のものに server の関数を入れて返す。
+//
+// herdr app（#440）は中央のポップアップを開けない（mux.HerdrApp.OpenPopup は mux.ErrUnsupported）。
+// 開くたびに誤りを出さないように、ポップアップの関数を入れない。editor は、部品のポップアップを client の画面の中に描き（FR-67）、
+// :terminal.popup を :! と同じく動かす（FR-168 の端末多重化ソフトの外と同じ）。
+//
+// req: FR-316
+func (s *Server) withMux(cfg editor.Config) editor.Config {
+	if cfg.SplitPane == nil {
+		cfg.SplitPane = s.splitPane
+	}
+	popups := mux.Detect(os.Getenv).Kind() != mux.KindHerdrApp
+	if cfg.OpenPopup == nil && popups {
+		cfg.OpenPopup = s.openPopup
+	}
+	if cfg.PopupScreenWidth == nil && popups {
+		cfg.PopupScreenWidth = s.popupScreenWidth
+	}
+	if cfg.OpenPane == nil {
+		cfg.OpenPane = s.openPane
+	}
+	if cfg.RunPopup == nil && popups {
+		cfg.RunPopup = s.runPopup
+	}
+	return cfg
 }
 
 // newTerm は、1 つの client との接続を editor.Terminal の口にするものを作る。

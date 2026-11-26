@@ -33,6 +33,7 @@ LDFLAGS := -X github.com/piplupflipper/vi-imitation/internal/version.version=$(V
 # 実行ファイルに静的にリンクするサードパーティのライセンスの文面は licenses/ に置く。
 # herdr の中でポップアップとペインを開くための同梱のプラグインの宣言ファイルは herdr-plugin/ に置く。
 # 利用者は herdr plugin link <配布物>/herdr-plugin で 1 回登録する（基本設計 1.3）。
+# herdr app の中でペインを割るための mod は herdr-app-mod/ に置く。利用者は herdr app の mods/vi-imitation/ に写す（#440）。
 #
 # req: NFR-01, NFR-06
 DIST_ROOT := dist
@@ -137,9 +138,10 @@ footprint-check: build ## make build の本体の起動時間と RSS を検査�
 .PHONY: dist
 dist: build ## 配布物を dist/ に作る（実行ファイルと宣言ファイルのディレクトリと tar.gz。NFR-01）
 	rm -rf $(DIST_ROOT)
-	mkdir -p $(DIST_DIR)/extensions $(DIST_DIR)/licenses/go $(DIST_DIR)/herdr-plugin
+	mkdir -p $(DIST_DIR)/extensions $(DIST_DIR)/licenses/go $(DIST_DIR)/herdr-plugin $(DIST_DIR)/herdr-app-mod
 	cp $(BINARY) $(MCP_BRIDGE) config.example.jsonc $(DIST_DIR)/
 	cp internal/mux/herdr-plugin/herdr-plugin.toml $(DIST_DIR)/herdr-plugin/
+	cp internal/mux/herdr-app-mod/main.js internal/mux/herdr-app-mod/mod.json $(DIST_DIR)/herdr-app-mod/
 	for e in $(EXTENSIONS) $(CGO_EXTENSIONS); do \
 		if [ -f cmd/$$e/manifest.json ]; then \
 			d=$(DIST_DIR)/extensions/$${e#vi-imitation-ext-}; \

@@ -52,6 +52,7 @@
 実行ファイルを分けないのは、server と client の間の取り決めを同じビルドの中で閉じ、版の食い違いを起こさないためである。
 段階 3 で足す標準の拡張機能（6.9）の実行ファイルの名前は、上の表と同じく `vi-imitation-ext-<名前>` にする（仮）。
 配布物には、herdr のプラグインの宣言ファイル（`herdr-plugin.toml`。1.4）と、diff のライブラリ go-udiff のライセンスの文面（`licenses/`。9.1）を足す。
+#440 で、herdr app の mod（`herdr-app-mod/`。1.3 の「herdr app（#440）」）も足した。
 
 ### 1.2 server と client
 
@@ -345,6 +346,7 @@ tmux と herdr の中ではペインを、外では中央のポップアップ�
 
 端末多重化ソフトを操作する層は server が持つ（FR-66）。
 層は、ペインを分割して開く、ポップアップを開く、ペインとポップアップを閉じる、フォーカスを移すの操作をまとめた口（interface）で、tmux 用と herdr 用の 2 つの実装を持つ。
+#440 で、herdr app 用の 3 つ目の実装を足した（下の「herdr app（#440）」。FR-316）。
 どちらの実装を使うかは、server を起動したときの環境（1.2 のソケットのパスの規則と同じ判定）で決める。
 
 層は `internal/mux` にある（#184）。
@@ -412,6 +414,37 @@ socket API の `pane.split` は起動するコマンドを受け付けないの�
 宣言ファイルに本体の実行ファイルのパスを書いていないので、配布物を入れ替えても登録し直さなくてよい。
 server が自動で登録する形は採らなかった。利用者の herdr の設定を、本体が黙って書き換えることになるためである。
 登録していないと、`plugin.pane.open` は `plugin_not_found` を返す（2026-11-19 に herdr 0.9.0 で確かめた）。server はこの誤りに登録の手順を書き足し、本体は中央のポップアップを元の client の画面に描き、ペインを中央のポップアップに出す（1.2 の「部品の client（#244）」）。
+
+#### herdr app（#440）
+
+herdr app（GUI の herdr）の中のシェルは、herdr app の端末のサーバー herdr-core（コマンドの名前は `hc`）の子として動き、環境変数は `HC_TERMINAL_ID`（その端末の番地。`t10` など）と `HC_TERMINAL_SOCKET` だけが入る。
+herdr app が別のマシンで動き、SSH でこのマシンの `hc connect` につなぐときは、ペインを割る herdr app の命令（`pane.split` など）を、このマシンから呼べない（2026-11-26 にオーナーと確かめた。#440 の「いまの作り」）。
+このため、層の 3 つ目の実装（`internal/mux` の `HerdrApp`）は、herdr app の mod に依頼を受け渡し、mod に herdr app の命令を呼ばせる（#440 の「方式」）。
+
+| 項目 | 内容 |
+|---|---|
+| 判定 | `TMUX` と `HERDR_ENV` が無く、`HC_TERMINAL_ID` と `HC_TERMINAL_SOCKET` があるとき（`mux.Detect`）。tmux と herdr の判定より後に置く。herdr app の端末の中で tmux か herdr を起動しても、中には `HC_TERMINAL_ID` が残るためである |
+| ペインの識別子 | `hc` の端末の番地。herdr app のペインは端末を 1 つずつ持ち、端末を終わらせるとペインも閉じる |
+| server の単位（1.2） | `HC_TERMINAL_SOCKET` と、端末のラベル `herdr.tab`（herdr app が付けるタブの ID。`hc get` で読む）をコロンでつないだもの。ラベルが無い端末では、端末の番地で代える |
+| 依頼の受け渡し | 本体は、依頼を元の端末のラベル `vi-imitation.req.<番号>` に JSON で書き、印のラベル `vi-imitation.pending=1` を付ける（`hc label`）。mod は 500 ms ごとに `hc ls --json --label vi-imitation.pending=1` で依頼のある端末を探し、`hc get` でラベルを読む。処理したら結果をラベル `vi-imitation.res.<番号>` に JSON で書き、依頼のラベルを消す。依頼が残っていなければ印も消す。本体は 100 ms ごとに `hc get` で結果を読み、読んだら結果のラベルを消す。印が消えていれば 1 秒ごとに付け直す（mod が別の依頼を片付けて印を消すのと重なっても、見落とさないため） |
+| 依頼と結果の形 | 依頼は `{id, op, direction, argv, focus, terminal}`。`op` は `split`（ペインを割る）、`focus`（`terminal` の端末のペインへフォーカスを移す）、`focused`（`terminal` の端末のペインにフォーカスがあるかを問う）である。結果は `{id, error, terminal, focus_error, focused}` である |
+| ペインを分割して開く | mod は、`pane.focus {terminal}` で元の端末のペインにフォーカスを移し、`pane.split {direction, argv}` で割る。左は、右に割ってから `pane.swap {pane, direction: "left"}` で元のペインと入れ替える（入れ替えられなければ開いたペインを閉じて誤りにする）。最後に、`focus` なら新しいペインへ、そうでなければ元の端末のペインへ、`pane.focus` でフォーカスを移し直す。移し直せなければ `focus_error` を返し、本体は `ErrFocusAfterSplit` にする。`pane.split` は作業ディレクトリと環境変数を受け付けないので、本体はコマンドを `sh -c` と `env` で包んで渡す。大きさ（`SplitOptions.Size`）は渡さない |
+| フォーカスを移す、フォーカスがあるか | mod に `focus` と `focused` を頼む。`hc` は herdr app のフォーカスを知らないためである。`focused` は、mod が `focused()` の端末の番地と比べる |
+| ペインを閉じる | `hc kill <端末>` |
+| 中央のポップアップ | 持たない（`ErrUnsupported`）。server は herdr app の中では `Config.OpenPopup`、`RunPopup`、`PopupScreenWidth` を入れず、部品のポップアップを client の画面の中に描き（FR-67）、`:terminal.popup` を `:!` と同じく動かす。開くたびに誤りを出さないためである |
+| 待つ上限 | `mux.HerdrAppWait`（10 秒。仮）。server はペインを分割するとき（`splitTimeout` の 2 秒に代えて）とフォーカスを移すときに使う。mod が依頼を探す間隔と、別のマシンの herdr app との往復を待つためである |
+| mod が無いとき | 期限までに結果が無ければ、本体は依頼のラベルを消して `mux.ErrHerdrAppNoReply` を返す。server は、mod を入れるよう促す文言を足して、client のメッセージの行に出す |
+| 別のマシン | mod は、`machines()` のマシンごとに `exec("hc", …, {on})` でそのマシンの `hc` を動かす。herdr app の命令には `<マシン>/<番地>` の形の番地を渡し、ラベルにはそのマシンの番地（前置きなし）を書く |
+| 写しの取り合い | herdr app の画面が複数あると、mod の写しも複数動く。写しは依頼を引き受ける前にラベル `vi-imitation.claim.<番号>` に自分の印を書いて読み直し、自分の印が残っているときだけ処理する |
+
+mod は `internal/mux/herdr-app-mod/`（`main.js` と `mod.json`）に置き、`make dist` が配布物の `herdr-app-mod/` に写す。
+利用者は、herdr app の `mods/vi-imitation/` にこの 2 つのファイルを写して入れる（[使い方](usage.md)）。
+herdr app の `AGENTS.md`（オーナーから受け取った 2026-11-26 の版）には、ビューを持たずに動き続ける mod の形が見当たらなかった（ビューの無い `link.js` は、リンクを押したときに動く）。
+mod の写しは、ブロックがレイアウトにある間は、隠れていても動き続ける（同じ文書の「Mods」）。
+このため mod はビューを持ち、画面の下に 1 行の帯（`mod.json` の `place` が `bottom`）を出して、処理した件数と最後の誤りを出す。
+mod の `init` は、`herdr-app check` の間（`checking()`）は `hc` を呼ばない。
+mod を実物の herdr app で動かす確かめは、オーナーが手元で行う（#440 の「確かめ方の制約」）。
+本体の側は、偽の `hc`（`internal/mux/muxtest`。ラベルをファイルに覚える）と、mod の依頼の処理を真似た偽の係で、`internal/mux` と `internal/server` のテストが確かめる。
 
 拡張機能は、この層を直接触らず、本体へのリクエスト（5.3 で足す `pane/open` と `popup/open`。仮）で頼む（FR-115）。
 本体は、開いたペインかポップアップの中で、表示の部品を描く client（1.4）を起動する。

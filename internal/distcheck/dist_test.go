@@ -43,6 +43,13 @@ func TestDistLayout(t *testing.T) {
 		})
 	}
 
+	// herdr の同梱のプラグインの宣言ファイルと、herdr app の mod（#440）。
+	for _, name := range []string{"herdr-plugin/herdr-plugin.toml", "herdr-app-mod/main.js", "herdr-app-mod/mod.json"} {
+		if fi, err := os.Stat(filepath.Join(dir, name)); err != nil || fi.Size() == 0 {
+			t.Errorf("%s が無いか空: %v", name, err)
+		}
+	}
+
 	manifests, err := filepath.Glob(filepath.Join(dir, "extensions", "*", "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
