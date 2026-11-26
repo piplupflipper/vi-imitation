@@ -53,6 +53,9 @@ type diffState struct {
 	pending *diffPending
 	// seq は、最後に分割したペインの client に渡した印（diffPending.token）の番号である。
 	seq uint64
+	// canceled は、diff/start で分割を頼んだが、新しい client が繋ぐ前に待ちを捨てた印（diffPending.token）である。
+	// その印の client が後から繋いだら、空のタブで始めずに断る（attach。#446）。
+	canceled map[string]bool
 	// done は、goroutine で計算した差分を、イベントループへ送る。
 	done chan diffBuilt
 }
@@ -81,6 +84,40 @@ type diffPending struct {
 	// token は、新しい client を見分ける印である。server は、新しい client を環境変数 EnvSplit にこの値を入れて起動し、
 	// client は Hello の Env でそれを知らせる（ClientInfo.Env。attach が取り出して外す）。
 	token string
+	// reply は、diff/start の Wait（#447）のときに、拡張機能へ応答する関数である。応答したら nil にする。Wait でなければ nil。
+	reply func(error)
+	// splitDone は、端末多重化ソフトの層の分割（Config.SplitPane）が誤り無く戻ったことを表す。
+	// started は、新しい client が繋いで見比べを始めたことを表す。Wait の応答は、両方がそろってから返す（ready）。
+	splitDone, started bool
+}
+
+// finish は、Wait の応答をまだ返していなければ、err で返す（nil なら見比べが始まった）。
+func (p *diffPending) finish(err error) {
+	if p.reply == nil {
+		return
+	}
+	reply := p.reply
+	p.reply = nil
+	reply(err)
+}
+
+// ready は、分割が戻り、見比べが始まっていれば、Wait の応答を返す。
+func (p *diffPending) ready() {
+	if p.splitDone && p.started {
+		p.finish(nil)
+	}
+}
+
+// errDiffDropped は、diff/start の Wait で、新しい client が繋いで見比べが始まる前に、待ちを捨てたことを表す。
+var errDiffDropped = errors.New("見比べが始まりませんでした（分割したペインの client を待つのをやめました）")
+
+// takeCanceled は、印 token が、待ちを捨てた diff/start の印なら、その印を忘れて true を返す。
+func (d *diffState) takeCanceled(token string) bool {
+	if token == "" || !d.canceled[token] {
+		return false
+	}
+	delete(d.canceled, token)
+	return true
 }
 
 // diffSession は、見比べている 2 つのバッファの組である。bs[0] が diff.A の側、bs[1] が diff.B の側である。
@@ -302,11 +339,22 @@ func (e *Editor) diffClosed(bs *bufferState) {
 }
 
 // dropPending は、待ちの見比べ p を捨てる。p が diff/start のもので、待っていたバッファがまだどのタブでもなければ閉じる（FR-64）。
+// diff/start の待ちで、新しい client がまだ繋いでいなければ、その印を覚え、後から繋いだ client を断ってペインを閉じさせる（#446）。
+// Wait の応答をまだ返していなければ、誤りで返す（#447）。
+//
+// req: FR-317, FR-318
 func (e *Editor) dropPending(p *diffPending) {
 	if e.diff.pending == p {
 		e.diff.pending = nil
+		if p.buf != nil && p.token != "" {
+			if e.diff.canceled == nil || len(e.diff.canceled) > 100 {
+				e.diff.canceled = map[string]bool{}
+			}
+			e.diff.canceled[p.token] = true
+		}
 	}
 	e.discardCreated(p.buf, p.ext)
+	p.finish(errDiffDropped)
 }
 
 // diffAttached は、繋いだ client c が、:diffsplit か diff/start で分割したペインの client（印 token が待ちのものと同じ）なら、
@@ -333,6 +381,7 @@ func (e *Editor) diffAttached(c *clientView, token string) {
 	}
 	if other == nil || p.from.owner == nil || p.from.owner == c || !slices.Contains(e.bufs, p.from) {
 		e.discardCreated(p.buf, p.ext)
+		p.finish(errDiffDropped)
 		return
 	}
 	if p.swap {
@@ -346,6 +395,9 @@ func (e *Editor) diffAttached(c *clientView, token string) {
 	} else {
 		e.startDiff(p.from, other)
 	}
+	// diff/start の Wait なら、分割（入れ替えとフォーカスの移し直しを含む）も戻っていれば応答する（#447）。
+	p.started = true
+	p.ready()
 }
 
 // diffCommand は、見比べの Ex コマンド（:diffsplit、:diffthis、:diffoff、:diffupdate）を行う。bs はカーソルのあるタブのバッファである。
@@ -441,11 +493,18 @@ func (e *Editor) splitForDiff(c *clientView, file string, p *diffPending) error 
 		defer e.recoverPanic()
 		err := split(pane, abs, dir, token, left)
 		if err == nil {
+			// diff/start の Wait なら、見比べも始まっていれば応答する（#447）。
+			later(func() {
+				p.splitDone = true
+				p.ready()
+			})
 			return
 		}
 		e.log.Warn("見比べのペインを開けない", "file", abs, "err", err)
 		// 誤りは、イベントループで、分割を頼んだ client に知らせる。
 		later(func() {
+			// Wait の応答には分割の誤りを返す（dropPending の一般の誤りより先に）。
+			p.finish(fmt.Errorf("見比べのペインを開けません: %w", err))
 			if e.diff.pending == p {
 				e.dropPending(p)
 			}

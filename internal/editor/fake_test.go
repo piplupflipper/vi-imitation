@@ -179,6 +179,11 @@ func runFakeExt(mode string) int {
 				var created ext.BufferCreateResult
 				var err error
 				dp := ext.DiffStartParams{A: cur}
+				// "wait" と "wait base" は、Wait を付けて送る（#447）。
+				if rest, ok := strings.CutPrefix(a.Text, "wait"); ok {
+					dp.Wait = true
+					a.Text = strings.TrimSpace(rest)
+				}
 				if n, perr := strconv.ParseUint(a.Text, 10, 64); perr == nil {
 					dp.B = ext.BufferID(n)
 				} else {

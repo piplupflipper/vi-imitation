@@ -342,6 +342,36 @@ func TestSplitPaneHerdrApp(t *testing.T) {
 	}
 }
 
+// herdr app の中のペインの分割（Config.SplitPane。diff/start の Wait はこれが戻るのを待つ。#447）は、mod の結果
+// （入れ替えとフォーカスの移し直しを終えた後に書く結果のラベル）が届いてから戻る。偽の係が結果を書くのを遅らせると、
+// splitPane もその後まで戻らない。
+//
+// req: FR-317
+func TestSplitPaneHerdrAppReturnsAfterModResult(t *testing.T) {
+	hc := inHerdrApp(t)
+	var mu sync.Mutex
+	var replied time.Time
+	hc.ServeMod(t, func(string, muxtest.Request) muxtest.Reply {
+		// mod の pane.split、pane.swap、pane.focus に掛かる時間の代わり。
+		time.Sleep(300 * time.Millisecond)
+		mu.Lock()
+		replied = time.Now()
+		mu.Unlock()
+		return muxtest.Reply{Terminal: "t9"}
+	})
+	s := &Server{log: slog.New(slog.DiscardHandler)}
+	s.sock.Store(filepath.Join(t.TempDir(), "server.sock"))
+	if err := s.splitPane("t8", "", t.TempDir(), "5", true); err != nil {
+		t.Fatalf("splitPane = %v", err)
+	}
+	returned := time.Now()
+	mu.Lock()
+	defer mu.Unlock()
+	if replied.IsZero() || returned.Before(replied) {
+		t.Errorf("splitPane が mod の結果（%v）より前（%v）に戻った", replied, returned)
+	}
+}
+
 // herdr app の mod の run("pane.split") が新しいペインと端末を返さなくても（#444）、新しいペインの端末で動く包んだスクリプトが、
 // 自分の端末に依頼の番号のラベルを付けるので、mod はそのラベルから新しい端末を見つけて結果に書ける。左と右のどちらでも同じである。
 // 偽の係は、pane.split の戻り値を使わずに、包んだスクリプトを新しい端末 t9 で動かし（muxtest.HC.RunSplitScript）、

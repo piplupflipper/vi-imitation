@@ -292,8 +292,12 @@ func (s *Server) attachLoop(a *acceptor) {
 		s.track(t)
 		if err := s.ed.Attach(t, clientInfo(id, j.hello)); err != nil {
 			reason := err.Error()
-			if errors.Is(err, editor.ErrStopped) {
+			switch {
+			case errors.Is(err, editor.ErrStopped):
 				reason = "server が終わった"
+			case errors.Is(err, editor.ErrSplitCanceled):
+				// 見比べの待ちを捨てた後に繋いだ、分割したペインの client。理由を出さずに終わらせ、ペインを閉じさせる（#446）。
+				reason = ""
 			}
 			s.log.Info("編集の client を足せない", "client", id, "err", err)
 			t.end(reason)

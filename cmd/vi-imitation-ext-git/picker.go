@@ -354,7 +354,10 @@ func (x *extension) openChange(ctx context.Context, cmp comparison, c change) {
 	// ファイルのバッファは操作中の client のタブで、比べる元の版はタブでないので、本体はファイルのタブの client のペインを分割する。
 	// diffview.nvim と同じく、比べる元の版を左の側（A）、ファイルを右の側（B）にする（#437）。本体は版のペインを左に開き、
 	// フォーカスを右のファイルのペインに残す。見比べが始まらなければ、本体がまだタブでない比べる元の版を閉じる（ext.DiffStartParams の doc）。
-	if _, err := x.server.StartDiff(ctx, ext.DiffStartParams{A: created.Buffer, B: opened.Buffer}); err != nil {
+	// Wait で、ペインの分割（入れ替えとフォーカスの移し直しを含む）が終わり、版が新しい client のタブになるまで応答を待つ（#447）。
+	// openMu を持ったまま待つので、一覧から続けて選んでも、次の選択は前の版のペインが出来上がってから前の版を閉じる。
+	// 分割の途中のペインを閉じて、端末多重化ソフトの操作（herdr app の mod の pane.swap など）を失敗させない。
+	if _, err := x.server.StartDiff(ctx, ext.DiffStartParams{A: created.Buffer, B: opened.Buffer, Wait: true}); err != nil {
 		_ = x.server.ShowMessage(ext.MessageWarning, remoteMessage(err))
 	}
 }

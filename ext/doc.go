@@ -131,4 +131,7 @@ package ext
 // 0.26.0 で、diff/start で片方だけがタブのときの分割の向きを、タブでないバッファが A（左の側）なら左、B なら右に決めた
 // （DiffStartParams。#437）。0.25.0 までの本体は、どちらでも右に分割する（見比べの左右とペインの左右が逆になる）。
 // 比べる元の版を A にして左のペインに出したい拡張機能は、要る版を VersionLess で apiVersion と比べる。
-const APIVersion = "0.26.0"
+// 0.27.0 で、diff/start に、ペインの分割が終わり、もう片方のバッファが新しい client のタブになって見比べが始まるまで応答を待つ指定
+// （DiffStartParams.Wait）を足した（#447）。古い本体は Wait を読まずに捨て、分割を頼んだ時点で応答する。
+// 使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
+const APIVersion = "0.27.0"

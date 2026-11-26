@@ -174,6 +174,11 @@ type attachRequest struct {
 // ErrStopped は、Run が終わった後に Attach を呼んだことを表す。
 var ErrStopped = errors.New("editor: event loop stopped")
 
+// ErrSplitCanceled は、diff/start で分割したペインの client が繋いだときに、その見比べの待ちを既に捨てていた
+// （まだタブでない版を buffer/dispose で閉じた、期限を過ぎた、分割に失敗した）ことを表す（#446）。
+// Attach はこの誤りを返して client を繋がない。server は理由を付けずに client を終わらせ、ペインを閉じさせる。
+var ErrSplitCanceled = errors.New("editor: the diff this split pane was for has been canceled")
+
 // newClientView は、端末 term の client を作る。キーマップの展開の部品 remap が nil なら作る。
 func (e *Editor) newClientView(term Terminal, remap *remapper) *clientView {
 	if remap == nil {
@@ -213,10 +218,17 @@ func (e *Editor) Attach(term Terminal, info ClientInfo) error {
 
 // attach は、イベントループで、Attach の client を繋ぐ。
 func (e *Editor) attach(req attachRequest) {
+	info := req.info
+	token := takeSplitToken(&info)
+	if e.diff.takeCanceled(token) {
+		// diff/start で分割したペインの client だが、繋ぐ前に待ちを捨てた（版を閉じた、期限を過ぎた）。
+		// 空のタブで始めずに断り、ペインを閉じさせる（#446）。
+		req.done <- ErrSplitCanceled
+		return
+	}
 	c := e.newClientView(req.term, nil)
-	c.info = req.info
+	c.info = info
 	c.info.Stdin = nil // 中身はバッファが持つ。client の情報には残さない
-	token := takeSplitToken(&c.info)
 	e.clients = append(e.clients, c)
 	prev := e.op
 	e.useClient(c)

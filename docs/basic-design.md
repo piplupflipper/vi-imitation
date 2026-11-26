@@ -2401,6 +2401,8 @@ PR #375 のレビューで、メモリの使用量の拡張機能（6.11）が�
 `editor/state` の result に、カーソルのあるタブの client のペインを分割できるか（`canSplit`）を足した。拡張機能は、端末多重化ソフトの外で分割の要る見比べを始める前に、バッファを作らずに断れる。
 
 #437 で、`diff/start` で片方だけがタブのときの分割の向きを、タブでないバッファが `a` なら左、`b` なら右に決め、拡張機能 API の版を 0.26.0 にした（`ext.DiffStartParams` の doc。6.8 の「拡張機能からの見比べ」の行）。params と result の形は変えていない。0.25.0 までの本体は、どちらでも右に開く。
+#447 で、`diff/start` の params に `wait`（`ext.DiffStartParams.Wait`）を足し、拡張機能 API の版を 0.27.0 にした。`wait` を付けて分割するときは、端末多重化ソフトの層の分割（`Config.SplitPane`。入れ替えとフォーカスの移し直しを含み、herdr app では mod の結果）が戻り、かつ新しい client が繋いでもう片方のバッファがそのタブになり見比べが始まってから応答する（`internal/editor` の `diffPending.reply`。FR-317）。分割の誤り、待ちを捨てたとき（版を閉じた、期限を過ぎた）は誤りで応答する。付けなければ今までどおり分割を頼んだ時点で応答する。続けて見比べるファイルを替える拡張機能が、分割の途中のペインを前の版の `buffer/dispose` で閉じて、端末多重化ソフトの操作（herdr app の mod の `pane.swap` と `pane.focus`）を失敗させないためである。git 連携の拡張機能（`git.changes` と `git.diffHead`）は `wait` を付ける。
+#446 で、`diff/start` の分割を頼んだ後、新しい client が繋ぐ前に待ちを捨てたら、その印（`diffPending.token`）を覚え、後から繋いだその client を `editor.ErrSplitCanceled` で断るようにした（FR-318）。server は理由を付けずに client を終わらせるので、ペインが閉じる（中身の無い client のペインを残さない）。`:diffsplit` の待ちは今までどおりで、断らない。
 
 #### #432 のレジスターへ入れる口
 
