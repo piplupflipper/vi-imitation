@@ -243,8 +243,11 @@ func TestCreatedBufferUpdateDispose(t *testing.T) {
 
 // buffer/update に title と fileType を付けると（#449）、作ったバッファの名前とファイルの種類が替わる。
 // 見比べの最中の版のバッファ（別の client のタブ）なら、ペインを割らずに中身と名前とファイルの種類を差し替えられ、
-// 差分を計算し直し、版の client のタブの行とステータス行に新しい名前が出る。新しい種類の契機の拡張機能が起動する（構文の色の付け直し）。
-// 省いたとき（title も fileType も無い）は、今までどおり中身だけを替える。空の title は断る。
+// 版の client のタブの行とステータス行に新しい名前が出る。新しい種類の契機の拡張機能が起動する（構文の色の付け直し）。
+// 名前か種類を差し替えると見比べを終え（前のファイルの側の do で次のファイルの版を入れない）、アンドゥの履歴を捨てる。
+// 続けて diff/start を送ると、ペインを割らずに見比べを付け替える。
+// 省いたとき（title も fileType も無い）は、今までどおり中身だけを替え、見比べを続けて差分を計算し直す。
+// 空の title は exthost が断る（internal/exthost の TestRequestEventInvalidParams）。
 //
 // req: FR-319
 func TestCreatedBufferUpdateTitleFileType(t *testing.T) {
@@ -269,7 +272,20 @@ func TestCreatedBufferUpdateTitleFileType(t *testing.T) {
 		t.Fatalf("ftx: state = %v", st)
 	}
 
-	h.keys(fmt.Sprintf(`:fake.headdiff retitle %d HEAD:b.fakeft fakeft one\ntwo<CR>`, id))
+	// 中身だけの差し替え（今までの buffer/update）は、見比べを続け、差分を計算し直す。
+	h.keys(fmt.Sprintf(`:fake.headdiff update %d one\ntwo<CR>`, id))
+	h.waitMessage("headdiff update")
+	h.eventually("差分の計算し直し", func() bool {
+		if len(h.e.diff.sessions) != 1 {
+			return false
+		}
+		s := h.e.diff.sessions[0]
+		return s.view[1] != nil && s.view[1].Lines[1].Style == ""
+	})
+
+	// 名前とファイルの種類を差し替えると、別のファイルの版に替えたものとして見比べを終える（PR #450 のレビューの必須 1）。
+	// 前のファイル（a.txt）の側で do を打っても、次のファイルの版（THREE）は入らない。
+	h.keys(fmt.Sprintf(`:fake.headdiff retitle %d HEAD:b.fakeft fakeft one\nTHREE<CR>`, id))
 	h.waitMessage("headdiff retitle")
 	if msg := h.message(); !strings.Contains(msg, "err=<nil>") {
 		t.Fatalf("retitle: %q", msg)
@@ -277,24 +293,39 @@ func TestCreatedBufferUpdateTitleFileType(t *testing.T) {
 	h.eventually("ftx の起動", func() bool { return h.state("ftx") == exthost.StateRunning })
 	var title, ft string
 	var sessions, splits int
+	var canUndo bool
 	h.e.do(func() {
 		bs := h.e.findBuffer(id)
 		title, ft = h.e.bufferName(bs), bs.fileType()
 		sessions, splits = len(h.e.diff.sessions), len(calls)
+		canUndo = bs.buf.CanUndo()
 	})
 	if title != "HEAD:b.fakeft" || ft != "fakeft" {
 		t.Errorf("差し替えた後の名前 = %q、ファイルの種類 = %q; want HEAD:b.fakeft、fakeft", title, ft)
 	}
-	if sessions != 1 || splits != 0 {
-		t.Errorf("見比べの組 = %d、分割 = %d 回; want 1、0（ペインを割らずに続ける）", sessions, splits)
+	if sessions != 0 || splits != 0 {
+		t.Errorf("見比べの組 = %d、分割 = %d 回; want 0、0（見比べを終え、ペインは割らない）", sessions, splits)
 	}
-	h.eventually("差分の計算し直し", func() bool {
-		s := h.e.diff.sessions[0]
-		return s.view[1] != nil && s.view[1].Lines[1].Style == ""
-	})
+	// 名前を替えたら、アンドゥの履歴を捨てる（同じレビューの推奨 1。中身の差し替えで積んだ履歴が残らない）。
+	if canUndo {
+		t.Error("名前を替えた後もアンドゥの履歴が残った")
+	}
+	h.keys("jdo")
+	h.settle()
+	if got := h.bufferText("a.txt"); got != "one\ntwo" {
+		t.Errorf("前のファイルの側の do の後の a.txt = %q, want one\\ntwo（次のファイルの版を入れない）", got)
+	}
+	h.keys("<Esc>")
 	h.settle()
 	if s := base.term.screen(); !strings.Contains(s, "HEAD:b.fakeft") {
 		t.Errorf("版の client の画面に新しい名前が無い:\n%s", s)
+	}
+	// 続けて diff/start を送ると、ペインを割らずにその場で見比べを付け替える（両方が別の client のタブ）。
+	h.keys(fmt.Sprintf(":fake.headdiff %d<CR>", id))
+	h.waitMessage("split=false")
+	h.e.do(func() { sessions, splits = len(h.e.diff.sessions), len(calls) })
+	if sessions != 1 || splits != 0 {
+		t.Errorf("付け替えた後の見比べの組 = %d、分割 = %d 回; want 1、0", sessions, splits)
 	}
 
 	// 省くと名前もファイルの種類も変えない（"-" はファイルの種類を省く）。空の title は断る。
@@ -312,9 +343,6 @@ func TestCreatedBufferUpdateTitleFileType(t *testing.T) {
 	h.e.do(func() { title, ft = h.e.bufferName(h.e.findBuffer(id)), h.e.findBuffer(id).fileType() })
 	if title != "HEAD:c" || ft != "fakeft" {
 		t.Errorf("fileType を省いた retitle の後 = %q、%q; want HEAD:c、fakeft", title, ft)
-	}
-	if err := (&ext.BufferUpdateParams{Title: new(string)}).Validate(); err == nil {
-		t.Error("空の title を Validate が通した")
 	}
 }
 
