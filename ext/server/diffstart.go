@@ -22,8 +22,13 @@ func (s *Server) CreateBuffer(ctx context.Context, p ext.BufferCreateParams) (ex
 }
 
 // UpdateBuffer は、本体へ buffer/update を送り、CreateBuffer で作ったバッファの中身を置き換えさせる。応答は置き換えた後のバージョン番号である。
+// p.Title と p.FileType（API 0.28.0 から）を付けると、名前とファイルの種類も差し替えさせる（ext.BufferUpdateParams の doc）。
+// p が ext.BufferUpdateParams.Validate を通らなければ、送らずにその誤りを返す。
 // Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
 func (s *Server) UpdateBuffer(ctx context.Context, p ext.BufferUpdateParams) (ext.BufferUpdateResult, error) {
+	if err := p.Validate(); err != nil {
+		return ext.BufferUpdateResult{}, err
+	}
 	return call[ext.BufferUpdateResult](ctx, s, ext.MethodBufferUpdate, p)
 }
 

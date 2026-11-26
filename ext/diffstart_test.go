@@ -11,6 +11,12 @@ func TestDiffStartMessageJSON(t *testing.T) {
 	roundTrip(t, DiffStartParams{A: 1, B: 3, Wait: true}, `{"a":1,"b":3,"wait":true}`)
 	roundTrip(t, DiffStartResult{Split: true}, `{"split":true}`)
 	roundTrip(t, DiffStartResult{}, `{}`)
+	title, ft, empty := "HEAD:b.go", "go", ""
+	roundTrip(t, BufferUpdateParams{Buffer: 2, Text: "x"}, `{"buffer":2,"text":"x"}`)
+	roundTrip(t, BufferUpdateParams{Buffer: 2, Text: "x", Title: &title, FileType: &ft},
+		`{"buffer":2,"text":"x","title":"HEAD:b.go","fileType":"go"}`)
+	// 空の fileType は省いたのと区別する（種類の無いバッファにする）。
+	roundTrip(t, BufferUpdateParams{Buffer: 2, Text: "", FileType: &empty}, `{"buffer":2,"text":"","fileType":""}`)
 }
 
 func TestDiffStartValidate(t *testing.T) {
@@ -25,5 +31,15 @@ func TestDiffStartValidate(t *testing.T) {
 	}
 	if err := (&DiffStartParams{A: 1, B: 2}).Validate(); err != nil {
 		t.Errorf("Validate = %v", err)
+	}
+	empty, title := "", "t"
+	if err := (&BufferUpdateParams{Title: &empty}).Validate(); err == nil {
+		t.Error("buffer/update の空の title を通した")
+	}
+	if err := (&BufferUpdateParams{Title: &title}).Validate(); err != nil {
+		t.Errorf("Validate = %v", err)
+	}
+	if err := (&BufferUpdateParams{}).Validate(); err != nil {
+		t.Errorf("title を省いた Validate = %v", err)
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
+	"github.com/piplupflipper/vi-imitation/internal/exthost"
 )
 
 // createdBuffer は、タイトルが title のバッファの、編集の禁止、タブの持ち主の client の ID（タブでなければ 0）、その数を返す。
@@ -238,6 +239,83 @@ func TestCreatedBufferUpdateDispose(t *testing.T) {
 	}
 	h.keys(":fake.headdiff dispose 1<CR>")
 	h.waitMessage("not created by this extension")
+}
+
+// buffer/update に title と fileType を付けると（#449）、作ったバッファの名前とファイルの種類が替わる。
+// 見比べの最中の版のバッファ（別の client のタブ）なら、ペインを割らずに中身と名前とファイルの種類を差し替えられ、
+// 差分を計算し直し、版の client のタブの行とステータス行に新しい名前が出る。新しい種類の契機の拡張機能が起動する（構文の色の付け直し）。
+// 省いたとき（title も fileType も無い）は、今までどおり中身だけを替える。空の title は断る。
+//
+// req: FR-319
+func TestCreatedBufferUpdateTitleFileType(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "one\ntwo\n"})
+	calls := make(chan diffCall, 2)
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t), SplitPane: recordSplit(calls)}, "a.txt")
+	h.e.do(func() { h.e.clients[0].info = ClientInfo{ID: 1, Pane: "%1"} })
+	h.keys(":fake.headdiff base<CR>")
+	h.waitMessage("headdiff buf=")
+	call := waitSplit(t, calls)
+	base := h.attach(ClientInfo{ID: 2, Pane: "%2", WorkDir: dir, Env: call.env()})
+	h.settle()
+	var id ext.BufferID
+	h.e.do(func() {
+		s := h.e.diff.sessions[0]
+		id = s.bs[0].id
+		if got := s.view[1].Lines[1].Style; got != "diff.change" {
+			t.Errorf("差し替える前の a.txt の 2 行目 = %q, want diff.change", got)
+		}
+	})
+	if st := h.state("ftx"); st != exthost.StateNotStarted {
+		t.Fatalf("ftx: state = %v", st)
+	}
+
+	h.keys(fmt.Sprintf(`:fake.headdiff retitle %d HEAD:b.fakeft fakeft one\ntwo<CR>`, id))
+	h.waitMessage("headdiff retitle")
+	if msg := h.message(); !strings.Contains(msg, "err=<nil>") {
+		t.Fatalf("retitle: %q", msg)
+	}
+	h.eventually("ftx の起動", func() bool { return h.state("ftx") == exthost.StateRunning })
+	var title, ft string
+	var sessions, splits int
+	h.e.do(func() {
+		bs := h.e.findBuffer(id)
+		title, ft = h.e.bufferName(bs), bs.fileType()
+		sessions, splits = len(h.e.diff.sessions), len(calls)
+	})
+	if title != "HEAD:b.fakeft" || ft != "fakeft" {
+		t.Errorf("差し替えた後の名前 = %q、ファイルの種類 = %q; want HEAD:b.fakeft、fakeft", title, ft)
+	}
+	if sessions != 1 || splits != 0 {
+		t.Errorf("見比べの組 = %d、分割 = %d 回; want 1、0（ペインを割らずに続ける）", sessions, splits)
+	}
+	h.eventually("差分の計算し直し", func() bool {
+		s := h.e.diff.sessions[0]
+		return s.view[1] != nil && s.view[1].Lines[1].Style == ""
+	})
+	h.settle()
+	if s := base.term.screen(); !strings.Contains(s, "HEAD:b.fakeft") {
+		t.Errorf("版の client の画面に新しい名前が無い:\n%s", s)
+	}
+
+	// 省くと名前もファイルの種類も変えない（"-" はファイルの種類を省く）。空の title は断る。
+	h.keys(fmt.Sprintf(`:fake.headdiff update %d one<CR>`, id))
+	h.waitMessage("headdiff update")
+	h.e.do(func() {
+		bs := h.e.findBuffer(id)
+		title, ft = h.e.bufferName(bs), bs.fileType()
+	})
+	if title != "HEAD:b.fakeft" || ft != "fakeft" {
+		t.Errorf("省いた update の後の名前 = %q、ファイルの種類 = %q", title, ft)
+	}
+	h.keys(fmt.Sprintf(`:fake.headdiff retitle %d HEAD:c - one<CR>`, id))
+	h.waitMessage("headdiff retitle")
+	h.e.do(func() { title, ft = h.e.bufferName(h.e.findBuffer(id)), h.e.findBuffer(id).fileType() })
+	if title != "HEAD:c" || ft != "fakeft" {
+		t.Errorf("fileType を省いた retitle の後 = %q、%q; want HEAD:c、fakeft", title, ft)
+	}
+	if err := (&ext.BufferUpdateParams{Title: new(string)}).Validate(); err == nil {
+		t.Error("空の title を Validate が通した")
+	}
 }
 
 // buffer/dispose で閉じるバッファが最後の client の最後のタブなら、名前の無い空のバッファのタブに替え、client も server も終わらない。
