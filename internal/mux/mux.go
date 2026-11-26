@@ -1,15 +1,16 @@
-// Package mux は、端末多重化ソフト（tmux と herdr）を操作する層である（基本設計 1.3。FR-66、FR-67）。
+// Package mux は、端末多重化ソフト（tmux、herdr、herdr app）を操作する層である（基本設計 1.3。FR-66、FR-67、FR-316）。
 //
 // server だけがこの層を使う。拡張機能はこの層を直接使わず、本体へのリクエスト（pane/open、popup/open）で頼む（FR-115）。
 // このパッケージは、どのペインに何を出すかを知らない。呼び出し側が、起動するコマンドと環境変数を渡す。
 //
 // # 実装
 //
-// Detect が環境変数から、tmux 用、herdr 用、どちらでもないときの 3 つの実装のどれかを選ぶ。
-// 判定の順は、server のソケットのパスの規則（基本設計 1.2）と同じく、tmux、herdr、どちらでもない、の順である。
+// Detect が環境変数から、tmux 用、herdr 用、herdr app 用、どれでもないときの 4 つの実装のどれかを選ぶ。
+// 判定の順は、server のソケットのパスの規則（基本設計 1.2）と同じく、tmux、herdr、herdr app、どれでもない、の順である。
 //
 //   - tmux: tmux のコマンドを、環境変数 TMUX の先頭のソケットのパスを -S に渡して起動する（tmux.go）
 //   - herdr: herdr の socket API（protocol 22）へ、改行で区切った JSON のリクエストを送る（herdr.go）
+//   - herdr app: herdr app の mod に、hc のラベルで依頼を受け渡す（herdrapp.go）
 //   - どちらでもない（FR-60）: どの操作も ErrUnsupported を返す
 //
 // # 並行性
@@ -23,6 +24,8 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -37,6 +40,8 @@ const (
 	KindTmux
 	// KindHerdr は、herdr の中である。
 	KindHerdr
+	// KindHerdrApp は、herdr app（GUI の herdr。端末のサーバーは herdr-core）の中である（#440）。
+	KindHerdrApp
 )
 
 // String は、種類の名前を返す。
@@ -48,6 +53,8 @@ func (k Kind) String() string {
 		return "tmux"
 	case KindHerdr:
 		return "herdr"
+	case KindHerdrApp:
+		return "herdr-app"
 	}
 	return "unknown"
 }
@@ -196,7 +203,14 @@ type ScreenWidther interface {
 //
 //   - TMUX と TMUX_PANE があれば tmux（tmux のソケットのパスは TMUX の最初のカンマの前）
 //   - HERDR_ENV が 1 で、HERDR_PANE_ID と HERDR_SOCKET_PATH があれば herdr
+//   - TMUX も HERDR_ENV も無く、HC_TERMINAL_ID と HC_TERMINAL_SOCKET があれば herdr app（#440）
 //   - どれでもなければ、どの操作も ErrUnsupported を返す実装
+//
+// herdr app の判定に TMUX と HERDR_ENV が無いことを求めるのは、herdr app の端末の中で tmux か herdr を起動したとき、
+// 中のプロセスにも HC_TERMINAL_ID が残るためである。tmux か herdr の環境変数がそろわない（herdr のポップアップの中など）ときは、
+// herdr app のペインを割ると外側の端末を割ることになるので、どれでもない扱いにする。
+//
+// req: FR-316
 func Detect(getenv func(string) string) Mux {
 	if tmux, pane := getenv("TMUX"), getenv("TMUX_PANE"); tmux != "" && pane != "" {
 		socket, _, _ := strings.Cut(tmux, ",")
@@ -207,7 +221,29 @@ func Detect(getenv func(string) string) Mux {
 			return &Herdr{Socket: socket, Pane: pane}
 		}
 	}
+	if getenv("TMUX") == "" && getenv("HERDR_ENV") == "" {
+		if terminal, socket := getenv("HC_TERMINAL_ID"), getenv("HC_TERMINAL_SOCKET"); terminal != "" && socket != "" {
+			return &HerdrApp{Bin: lookPath("hc", getenv("PATH")), Socket: socket, Terminal: terminal}
+		}
+	}
 	return None{}
+}
+
+// lookPath は、path（環境変数 PATH の値）のディレクトリから、実行できる name の絶対パスを探す。見つからなければ空を返す。
+// herdr app の層は、hc を Detect のときに決めた絶対パスで呼び、呼ぶたびに PATH を引き直さない。
+// テストが偽の hc を PATH に置いて層を作ったとき、テストが終わって PATH が戻った後に残った待ちが、
+// 打った人の PATH の本物の hc を呼ばないためである（PR #441 のレビューの必須 1）。
+func lookPath(name, path string) string {
+	for _, dir := range filepath.SplitList(path) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+			return p
+		}
+	}
+	return ""
 }
 
 // None は、端末多重化ソフトの外（FR-60）の実装である。Kind を除くどの操作も ErrUnsupported を返す。

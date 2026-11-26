@@ -72,11 +72,11 @@ const focusTimeout = 2 * time.Second
 // clientEnvNames は、編集の client が Hello で server へ知らせる環境変数の名前である（protocol.Hello.Env）。
 // server のプロセスの環境は server を起動した client のものなので、外部のコマンドへは client ごとにこの値で上書きする（#215）。
 // editor.EnvSplit は、server が見比べのために分割したペインの client の印で、server が読んで外す（#245）。
-var clientEnvNames = []string{"TMUX_PANE", "HERDR_PANE_ID", "HERDR_TAB_ID", editor.EnvSplit}
+var clientEnvNames = []string{"TMUX_PANE", "HERDR_PANE_ID", "HERDR_TAB_ID", "HC_TERMINAL_ID", editor.EnvSplit}
 
 // clientHello は、編集の client が server へ送る Hello を作る。files は絶対パスにしたもの、w と h は端末の大きさである。
-// ペイン（FR-63）は、getenv から判定した端末多重化ソフトのペインの ID（tmux の TMUX_PANE、herdr の HERDR_PANE_ID）で、
-// 作業ディレクトリと、clientEnvNames の環境変数も載せる（PR #207 の未確認事項）。
+// ペイン（FR-63）は、getenv から判定した端末多重化ソフトのペインの ID（tmux の TMUX_PANE、herdr の HERDR_PANE_ID、
+// herdr app の端末の番地 HC_TERMINAL_ID。#440）で、作業ディレクトリと、clientEnvNames の環境変数も載せる（PR #207 の未確認事項）。
 func clientHello(getenv func(string) string, files []string, readOnly bool, w, h int) protocol.Hello {
 	hello := protocol.Hello{Kind: protocol.KindEdit, Width: w, Height: h, Files: files, ReadOnly: readOnly}
 	switch mux.Detect(getenv).Kind() {
@@ -84,6 +84,8 @@ func clientHello(getenv func(string) string, files []string, readOnly bool, w, h
 		hello.Pane = getenv("TMUX_PANE")
 	case mux.KindHerdr:
 		hello.Pane = getenv("HERDR_PANE_ID")
+	case mux.KindHerdrApp:
+		hello.Pane = getenv("HC_TERMINAL_ID")
 	case mux.KindNone:
 	}
 	if wd, err := os.Getwd(); err == nil {
@@ -103,13 +105,18 @@ func withFocus(cfg editor.Config, m mux.Mux) editor.Config {
 	if m.Kind() == mux.KindNone {
 		return cfg
 	}
+	// herdr app（#440）は mod に頼んで結果を待つので、待つ上限を mux.HerdrAppWait にする。
+	wait := focusTimeout
+	if m.Kind() == mux.KindHerdrApp {
+		wait = mux.HerdrAppWait
+	}
 	cfg.FocusPane = func(from, pane string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), focusTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), wait)
 		defer cancel()
 		return m.FocusPane(ctx, from, pane)
 	}
 	cfg.PaneFocused = func(pane string) (bool, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), focusTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), wait)
 		defer cancel()
 		return m.PaneFocused(ctx, pane)
 	}
@@ -143,8 +150,12 @@ func connectAuto(ctx context.Context, getenv func(string) string, m mux.Mux, sta
 	cancel()
 	if err != nil {
 		what := "tmux の window"
-		if m.Kind() == mux.KindHerdr {
+		switch m.Kind() {
+		case mux.KindHerdr:
 			what = "herdr のタブ"
+		case mux.KindHerdrApp:
+			what = "herdr app のタブ"
+		case mux.KindNone, mux.KindTmux:
 		}
 		return nil, fmt.Errorf("%sを引けないので 1 つのプロセスで動かす: %w", what, err)
 	}

@@ -152,17 +152,24 @@ func (s *Server) openPane(from string, view uint64, dir string, opts editor.Pane
 	if opts.Down {
 		dirn = mux.Down
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), splitTimeout)
+	ctx, cancel := context.WithTimeout(s.muxContext(), splitWait(m))
 	defer cancel()
 	_, err = m.SplitPane(ctx, mux.SplitOptions{Target: from, Direction: dirn, Size: opts.Size, Command: cmd, Focus: opts.Focus})
 	return herdrHint(err)
 }
 
 // herdrHint は、herdr が同梱のプラグインを知らない（登録していない）ことを表す誤りに、登録の手順を書き足す（基本設計 1.3）。
+// herdr app の mod から結果が届かない誤り（mux.ErrHerdrAppNoReply）には、mod の入れ方を書き足す（#440。FR-316）。
 // 他の誤りはそのまま返す。
+//
+// req: FR-316
 func herdrHint(err error) error {
 	if he, ok := errors.AsType[*mux.HerdrError](err); ok && he.Code == mux.HerdrPluginNotFound {
 		return fmt.Errorf("%w（herdr のプラグインを登録してください: herdr plugin link <配布物>/herdr-plugin）", err)
+	}
+	if errors.Is(err, mux.ErrHerdrAppNoReply) {
+		return fmt.Errorf("herdr app に vi-imitation の mod が入っていないか、herdr app が動いていません"+
+			"（<配布物>/herdr-app-mod を herdr app の mods/vi-imitation に置いてください）: %w", err)
 	}
 	return err
 }

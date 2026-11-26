@@ -45,7 +45,7 @@ func (s *Server) splitPane(from, file, dir, token string, left bool) error {
 	if left {
 		dirn = mux.Left
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), splitTimeout)
+	ctx, cancel := context.WithTimeout(s.muxContext(), splitWait(m))
 	defer cancel()
 	_, err = m.SplitPane(ctx, mux.SplitOptions{
 		Target:    from,
@@ -59,5 +59,17 @@ func (s *Server) splitPane(from, file, dir, token string, left bool) error {
 		s.log.Warn("見比べのペインを開いた後にフォーカスを移せない", "from", from, "err", err)
 		return nil
 	}
-	return err
+	return herdrHint(err)
+}
+
+// herdrAppSplitWait は、herdr app の中でペインを分割するときに待つ上限である。テストは短くする。
+var herdrAppSplitWait = mux.HerdrAppWait
+
+// splitWait は、端末多重化ソフトの層 m でペインを分割するときに待つ上限である。
+// herdr app（#440）は、mod が依頼を探す間隔と、別のマシンの herdr app との往復を待つので herdrAppSplitWait にし、ほかは splitTimeout にする。
+func splitWait(m mux.Mux) time.Duration {
+	if m.Kind() == mux.KindHerdrApp {
+		return herdrAppSplitWait
+	}
+	return splitTimeout
 }

@@ -47,12 +47,14 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/internal/editor"
+	"github.com/piplupflipper/vi-imitation/internal/mux"
 	"github.com/piplupflipper/vi-imitation/internal/protocol"
 	"github.com/piplupflipper/vi-imitation/internal/ui"
 )
@@ -94,6 +96,18 @@ type Server struct {
 	terms []*clientTerm
 	// sock は、Serve が待ち受けるソケットのパス（string）である。:diffsplit で開くペインの client に渡す（diffsplit.go）。
 	sock atomic.Value
+	// muxCtx は、端末多重化ソフトの層の操作（ペインの分割）に渡す ctx の元で、Close で取り消す（muxStop）。
+	// herdr app の mod の結果の待ち（最大 mux.HerdrAppWait）を、server の終わりで打ち切るためである（PR #441 のレビューの必須 1）。
+	muxCtx  context.Context
+	muxStop context.CancelFunc
+}
+
+// muxContext は、端末多重化ソフトの層の操作に渡す ctx の元を返す。New で作っていなければ（テスト）、取り消さない ctx を返す。
+func (s *Server) muxContext() context.Context {
+	if s.muxCtx == nil {
+		return context.Background()
+	}
+	return s.muxCtx
 }
 
 // New は、cfg でイベントループ（editor.Editor）を作り、Server を返す。
@@ -104,28 +118,42 @@ func New(cfg editor.Config) (*Server, error) {
 		logger = slog.Default()
 	}
 	s := &Server{onPanic: cfg.OnPanic, log: logger}
+	s.muxCtx, s.muxStop = context.WithCancel(context.Background())
+	s.client = s.newTerm()
+	ed, err := editor.New(s.client, s.withMux(cfg))
+	if err != nil {
+		s.muxStop()
+		return nil, fmt.Errorf("server: %w", err)
+	}
+	s.ed = ed
+	return s, nil
+}
+
+// withMux は、cfg の端末多重化ソフトの層を使う関数のうち、空のものに server の関数を入れて返す。
+//
+// herdr app（#440）は中央のポップアップを開けない（mux.HerdrApp.OpenPopup は mux.ErrUnsupported）。
+// 開くたびに誤りを出さないように、ポップアップの関数を入れない。editor は、部品のポップアップを client の画面の中に描き（FR-67）、
+// :terminal.popup を :! と同じく動かす（FR-168 の端末多重化ソフトの外と同じ）。
+//
+// req: FR-316
+func (s *Server) withMux(cfg editor.Config) editor.Config {
 	if cfg.SplitPane == nil {
 		cfg.SplitPane = s.splitPane
 	}
-	if cfg.OpenPopup == nil {
+	popups := mux.Detect(os.Getenv).Kind() != mux.KindHerdrApp
+	if cfg.OpenPopup == nil && popups {
 		cfg.OpenPopup = s.openPopup
 	}
-	if cfg.PopupScreenWidth == nil {
+	if cfg.PopupScreenWidth == nil && popups {
 		cfg.PopupScreenWidth = s.popupScreenWidth
 	}
 	if cfg.OpenPane == nil {
 		cfg.OpenPane = s.openPane
 	}
-	if cfg.RunPopup == nil {
+	if cfg.RunPopup == nil && popups {
 		cfg.RunPopup = s.runPopup
 	}
-	s.client = s.newTerm()
-	ed, err := editor.New(s.client, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("server: %w", err)
-	}
-	s.ed = ed
-	return s, nil
+	return cfg
 }
 
 // newTerm は、1 つの client との接続を editor.Terminal の口にするものを作る。
@@ -508,8 +536,12 @@ func (a *acceptor) stop() {
 	_ = a.ln.Close() // 受け付けの goroutine を止める。閉じる誤りは扱えない
 }
 
-// Close は、拡張機能を止める（editor.Editor.Close）。Run が戻り、client が端末を戻した後に呼ぶ。
+// Close は、端末多重化ソフトの層の操作の待ちを打ち切り（muxStop）、拡張機能を止める（editor.Editor.Close）。
+// Run が戻り、client が端末を戻した後に呼ぶ。
 func (s *Server) Close(ctx context.Context) error {
+	if s.muxStop != nil {
+		s.muxStop()
+	}
 	return s.ed.Close(ctx)
 }
 

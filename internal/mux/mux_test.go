@@ -50,6 +50,33 @@ func TestDetect(t *testing.T) {
 			want: None{},
 		},
 		{
+			name: "herdr app",
+			env:  map[string]string{"HC_TERMINAL_ID": "t10", "HC_TERMINAL_SOCKET": "/run/hc.sock"},
+			// PATH に hc が無いので Bin は空（TestHerdrAppBinFixedAtDetect）。
+			want: &HerdrApp{Bin: "", Socket: "/run/hc.sock", Terminal: "t10"},
+		},
+		{
+			name: "herdr app の中の tmux は tmux",
+			env: map[string]string{
+				"TMUX": "/tmp/tmux-1000/default,1234,0", "TMUX_PANE": "%3",
+				"HC_TERMINAL_ID": "t10", "HC_TERMINAL_SOCKET": "/run/hc.sock",
+			},
+			want: &Tmux{Bin: "tmux", Socket: "/tmp/tmux-1000/default", Pane: "%3"},
+		},
+		{
+			name: "herdr app の中の herdr のポップアップは herdr app にしない",
+			env: map[string]string{
+				"HERDR_ENV": "1", "HERDR_SOCKET_PATH": "/run/herdr.sock",
+				"HC_TERMINAL_ID": "t10", "HC_TERMINAL_SOCKET": "/run/hc.sock",
+			},
+			want: None{},
+		},
+		{
+			name: "HC_TERMINAL_SOCKET が無い herdr app は使わない",
+			env:  map[string]string{"HC_TERMINAL_ID": "t10"},
+			want: None{},
+		},
+		{
 			name: "どちらでもない",
 			env:  map[string]string{},
 			want: None{},
@@ -144,7 +171,7 @@ func TestNoneIsUnsupported(t *testing.T) {
 }
 
 func TestKindString(t *testing.T) {
-	for k, want := range map[Kind]string{KindNone: "none", KindTmux: "tmux", KindHerdr: "herdr", Kind(9): "unknown"} {
+	for k, want := range map[Kind]string{KindNone: "none", KindTmux: "tmux", KindHerdr: "herdr", KindHerdrApp: "herdr-app", Kind(9): "unknown"} {
 		if got := k.String(); got != want {
 			t.Errorf("Kind(%d).String() = %q, want %q", int(k), got, want)
 		}

@@ -17,7 +17,7 @@ make dist
 dist/vi-imitation-<コミット>-<OS>-<アーキテクチャ>/vi-imitation main.go
 ```
 
-配布物のディレクトリは、本体、MCP の中継コマンド（`vi-imitation-mcp-bridge`）、スクリプトの拡張機能を動かす実行ファイル（`vi-imitation-ext-script`）と、標準の拡張機能ごとのディレクトリ（`extensions/<ID>/`）と、herdr の同梱のプラグイン（`herdr-plugin/`。[herdr のプラグインを登録する](#herdr-のプラグインを登録する)）からなる。
+配布物のディレクトリは、本体、MCP の中継コマンド（`vi-imitation-mcp-bridge`）、スクリプトの拡張機能を動かす実行ファイル（`vi-imitation-ext-script`）と、標準の拡張機能ごとのディレクトリ（`extensions/<ID>/`）と、herdr の同梱のプラグイン（`herdr-plugin/`。[herdr のプラグインを登録する](#herdr-のプラグインを登録する)）と、herdr app の mod（`herdr-app-mod/`。[herdr app に mod を入れる](#herdr-app-に-mod-を入れる)）からなる。
 本体は、自分の実行ファイルの隣の `extensions/` から宣言ファイルを探す（`internal/config` の `ExtensionDirs`）。
 
 本体と、tree-sitter 以外の標準の拡張機能は静的にリンクした実行ファイルで、C の標準ライブラリの種類と版に依らずに動く。
@@ -2177,6 +2177,34 @@ herdr plugin link dist/vi-imitation-<コミット>-<OS>-<アーキテクチャ>/
 登録していないと、herdr の中でもエディタの画面の中央に描き、メッセージの行に「herdr のプラグインを登録してください」と出す。
 プラグインは、本体が起動を頼んだコマンドを動かすだけで、本体の実行ファイルの場所を持たないので、配布物を入れ替えても登録し直さなくてよい。
 外すときは `herdr plugin unlink vi-imitation` を打つ。
+
+### herdr app に mod を入れる
+
+herdr app（GUI の herdr）の中では、本体がペインを直に割れない。
+見比べ（`:diffsplit`、拡張機能の見比べ）と拡張機能のペインは、配布物の `herdr-app-mod/` にある mod に割らせる。
+mod は、herdr app の設定のディレクトリの `mods/vi-imitation/` に、`main.js` と `mod.json` を写して入れる。
+herdr app が別のマシンで動き、SSH でこのマシンにつなぐときは、herdr app の動くマシンの側に写す。
+
+```sh
+# herdr app の動くマシンで打つ。<host> は vi-imitation の配布物のあるマシン
+mkdir -p ~/.config/herdr-app/mods/vi-imitation
+scp '<host>:<配布物>/herdr-app-mod/*' ~/.config/herdr-app/mods/vi-imitation/
+herdr-app check ~/.config/herdr-app/mods/vi-imitation
+```
+
+入れると、herdr app の画面の下に `vi-imitation: 待機中` の 1 行の帯が出る。
+mod はこの帯の中で動き、ペインを割る依頼を探す（依頼のあった後の 30 秒は 0.5 秒ごと、ほかは 2 秒ごと）。
+帯を隠しても、レイアウトに残っていれば動き続ける。
+帯の無いレイアウトでは mod は動かず、ペインを割れない。
+herdr app は、mod を最初に見えていたレイアウトにだけ自動で置くので、別のレイアウトに替えて使うときは、そのレイアウトにも帯を置く。
+mod は、herdr app の画面 1 つにだけ入れる。
+2 台の PC の herdr app から同じマシンにつなぎ、両方に mod を入れると、同じ依頼を両方が処理して、ペインが 2 つ割れることがある。
+mod は、herdr app につないだマシンで `hc` を動かす。
+そのマシンで `hc` を動かせないと、帯にマシンの名前と `hc ls:` の誤りが出て、そのマシンを 30 秒探さない。
+herdr app の中では、中央のポップアップはエディタの画面の中央に描き、`:terminal.popup` は `:!` と同じく動く。
+
+mod が入っていないと、ペインを割る操作は 10 秒待ってから、メッセージの行に「herdr app に vi-imitation の mod が入っていないか、herdr app が動いていません」と出す。
+外すときは `mods/vi-imitation/` を消す。
 
 ## ヘルプとキーの一覧
 
