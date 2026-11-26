@@ -9,6 +9,8 @@
 //   vi-imitation.req.<番号>       依頼 {id, op, direction, argv, focus, terminal}
 //   vi-imitation.res.<番号>       結果 {id, error, terminal, focus_error, focused}
 //   vi-imitation.claim.<番号>     この mod の写しが依頼を引き受けた印（同じ依頼を 2 つの写しが処理しないため）
+//   vi-imitation.split=<番号>     split で開いた新しい端末に、その中で動く本体の包んだスクリプトが付ける印。
+//                                 run("pane.split") が番地を返さないときに、新しい端末を探すのに使う（#444）
 //
 // 依頼の op:
 //   split    元の端末のペインを direction（right、down、left）に割り、新しいペインで argv を起動する。
@@ -27,6 +29,12 @@ const PENDING = "vi-imitation.pending";
 const REQ = "vi-imitation.req.";
 const RES = "vi-imitation.res.";
 const CLAIM = "vi-imitation.claim.";
+// SPLIT は、新しい端末で動く本体の包んだスクリプトが自分に付けるラベルの名前である（値は依頼の番号。internal/mux の HerdrAppSplitLabel）。
+const SPLIT = "vi-imitation.split";
+// pane.split の後に、SPLIT のラベルの付いた端末とそのペインを探す上限。探しても見つからなかった依頼の端末は、ORPHAN_MS の間、
+// 現れたら hc kill で閉じる。
+const FIND_MS = 5000;
+const ORPHAN_MS = 60000;
 // 探す間隔。依頼があってから IDLE_AFTER_MS の間は POLL_MS ごとに、それより後は IDLE_POLL_MS ごとに探す。
 // 本体は依頼を書いてから 10 秒（internal/mux の HerdrAppWait）待つので、静かな間の 2 秒は待ちに収まる。
 // 別のマシンへの exec は SSH を通るので、依頼の無い間は探す回数を減らす（AGENTS.md の「poll gently」）。
@@ -50,6 +58,7 @@ export default class ViImitation extends View {
     this.lastPoll = 0;
     this.lastActive = 0;
     this.retryAt = new Map();
+    this.orphans = [];
     this.nonce = Math.random().toString(36).slice(2);
     // herdr-app check の間は、hc を呼ばない。
     if (checking()) return;
@@ -65,6 +74,7 @@ export default class ViImitation extends View {
     this.lastPoll = now;
     cx.spawn(async (cx) => {
       const before = this.status;
+      await this.reapOrphans();
       for (const on of machineNames()) {
         if ((this.retryAt.get(on) ?? 0) > Date.now()) continue;
         try {
@@ -80,6 +90,23 @@ export default class ViImitation extends View {
       this.busy = false;
       if (this.status !== before) cx.notify();
     });
+  }
+
+  // reapOrphans は、新しい端末を見つけられずに誤りを返した依頼の端末が後から現れていたら、hc kill で閉じる。
+  // 期限（ORPHAN_MS）を過ぎた依頼は忘れる。
+  async reapOrphans() {
+    const now = Date.now();
+    this.orphans = this.orphans.filter((o) => o.until > now);
+    for (const o of [...this.orphans]) {
+      try {
+        const out = await hcRun(["ls", "--json", "--label", `${SPLIT}=${o.id}`], o.on);
+        const terms = JSON.parse(out).terminals ?? [];
+        for (const t of terms) await hcRun(["kill", t.address], o.on);
+        if (terms.length > 0) this.orphans = this.orphans.filter((x) => x !== o);
+      } catch {
+        // 次の探索で読み直す。
+      }
+    }
   }
 
   // serveMachine は、マシン on（null はこのコンピューター）の、依頼の印のある端末を処理する。
@@ -149,19 +176,36 @@ export default class ViImitation extends View {
         if (!from) return { error: `no pane shows terminal ${qual(address)}` };
         const direction = req.direction === "down" ? "down" : "right";
         const made = await command("pane.split", { direction, pane: from, argv: req.argv });
-        if (!made || !made.pane || !made.terminal) return { error: "pane.split returned no pane" };
-        const reply = { terminal: local(made.terminal) };
+        // run("pane.split") は、作ったペインと端末を返さないことがある（2026-11-26 にオーナーの herdr app で確かめた。#444）。
+        // 返さなければ、新しい端末で動く本体の包んだスクリプトが自分に付けるラベル（SPLIT=<依頼の番号>）で端末を探し、そのペインを引く。
+        let newPane = made && typeof made === "object" ? made.pane : null;
+        let newTerm = made && typeof made === "object" && made.terminal ? local(made.terminal) : null;
+        if (!newPane || !newTerm) {
+          const found = await findSplit(on, req.id);
+          if (!found.terminal) {
+            // 後から端末が現れたら閉じる（待つ人のいないペインを残さない）。
+            this.orphans.push({ on, id: req.id, until: Date.now() + ORPHAN_MS });
+            return { error: `new terminal not found (label ${SPLIT}=${req.id})` };
+          }
+          newTerm = found.terminal;
+          newPane = found.pane;
+          if (!newPane) {
+            await hcRun(["kill", newTerm], on).catch(() => {});
+            return { error: `no pane shows the new terminal ${qual(newTerm)}` };
+          }
+        }
+        const reply = { terminal: newTerm };
         if (req.direction === "left") {
           try {
-            await command("pane.swap", { pane: made.pane, target: from });
+            await command("pane.swap", { pane: newPane, target: from });
           } catch (e) {
             // 向きの違うペインを残さない。
-            await command("pane.close", { pane: made.pane }).catch(() => {});
+            await command("pane.close", { pane: newPane }).catch(() => {});
             return { error: errorText(e) };
           }
         }
         try {
-          await command("pane.focus", { pane: req.focus ? made.pane : from });
+          await command("pane.focus", { pane: req.focus ? newPane : from });
         } catch (e) {
           reply.focus_error = errorText(e);
         }
@@ -210,6 +254,36 @@ async function paneOf(on, address) {
   await command("pane.focus", { terminal: names[0] });
   const f = focused();
   return f?.pane && names.includes(f.terminal) ? f.pane : null;
+}
+
+// findSplit は、マシン on で、ラベル SPLIT=<id> の付いた端末と、その端末を出しているペインを、FIND_MS まで探す。
+// 新しい端末の中のスクリプトがラベルを付けるまでと、herdr app の panes() に新しいペインが出るまでを待つ。
+// 返すのは { terminal, pane } で、見つからなければそれぞれ null である。
+// mod は setTimeout を使えないので、別のマシンでは sleep を挟み、このコンピューターでは読み直す回数を限る。
+async function findSplit(on, id) {
+  const deadline = Date.now() + FIND_MS;
+  let terminal = null;
+  for (let i = 0; i < 50 && Date.now() < deadline; i++) {
+    if (!terminal) {
+      const out = await hcRun(["ls", "--json", "--label", `${SPLIT}=${id}`], on).catch(() => "{}");
+      let terms = [];
+      try {
+        terms = JSON.parse(out).terminals ?? [];
+      } catch {
+        terms = [];
+      }
+      terminal = terms[0]?.address ?? null;
+    }
+    if (terminal) {
+      const pane = await paneOf(on, terminal).catch(() => null);
+      if (pane) {
+        await hcRun(["label", terminal, `${SPLIT}=`], on).catch(() => {});
+        return { terminal, pane };
+      }
+    }
+    if (on) await exec("sleep", ["0.1"], { on, timeout: HC_TIMEOUT_MS }).catch(() => {});
+  }
+  return { terminal, pane: null };
 }
 
 // machineNames は、依頼を探すマシンの名前を返す。null はこのコンピューターである。

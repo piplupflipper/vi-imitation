@@ -109,6 +109,16 @@ type herdrAppReply struct {
 // herdrAppSeq は、依頼の番号の連番である。番号はプロセスの ID と連番を - でつないだものにする。
 var herdrAppSeq atomic.Uint64
 
+// newHerdrAppID は、新しい依頼の番号を返す。
+func newHerdrAppID() string {
+	return strconv.Itoa(os.Getpid()) + "-" + strconv.FormatUint(herdrAppSeq.Add(1), 10)
+}
+
+// HerdrAppSplitLabel は、split で開いた新しい端末が、自分に付けるラベルの名前である。値は依頼の番号である（herdrAppScript）。
+// herdr app の mod の run("pane.split") は、作ったペインと端末を返さないことがある（2026-11-26 にオーナーの herdr app で、
+// 戻り値に番地が無かった。#444）。mod は、このラベルの付いた端末を hc ls --label で探して、新しい端末とペインを見つける。
+const HerdrAppSplitLabel = "vi-imitation.split"
+
 // Kind は KindHerdrApp を返す。
 func (*HerdrApp) Kind() Kind { return KindHerdrApp }
 
@@ -141,7 +151,8 @@ func (a *HerdrApp) SplitPane(ctx context.Context, opts SplitOptions) (string, er
 	if err := checkPercent("size", opts.Size); err != nil {
 		return "", err
 	}
-	req := herdrAppRequest{Op: "split", Argv: herdrAppArgv(opts.Command, a.Bin, opts.Target), Focus: opts.Focus}
+	id := newHerdrAppID()
+	req := herdrAppRequest{ID: id, Op: "split", Argv: herdrAppArgv(opts.Command, a.Bin, opts.Target, id), Focus: opts.Focus}
 	switch opts.Direction {
 	case Right:
 		req.Direction = "right"
@@ -201,7 +212,9 @@ func (a *HerdrApp) PaneFocused(ctx context.Context, pane string) (bool, error) {
 // ctx が終わるまでに結果が無ければ、依頼のラベルを消して ErrHerdrAppNoReply を包んだ誤りを返す。
 // 結果の Error が空でなければ、それを誤りにして返す。
 func (a *HerdrApp) ask(ctx context.Context, target string, req herdrAppRequest) (herdrAppReply, error) {
-	req.ID = strconv.Itoa(os.Getpid()) + "-" + strconv.FormatUint(herdrAppSeq.Add(1), 10)
+	if req.ID == "" {
+		req.ID = newHerdrAppID()
+	}
 	b, err := json.Marshal(req)
 	if err != nil {
 		return herdrAppReply{}, err
@@ -305,20 +318,25 @@ func (a *HerdrApp) run(ctx context.Context, args ...string) (string, error) {
 }
 
 // herdrAppScript は、新しいペインの端末で動かす sh のスクリプトである。引数は、作業ディレクトリ（空なら移らない）、hc の実行ファイル、
-// 依頼した元の端末の番地、起動するコマンドの順である。
+// 依頼した元の端末の番地、依頼の番号、起動するコマンドの順である。
+// 最初に、自分の端末（HC_TERMINAL_ID）が元の端末と違えば、ラベル HerdrAppSplitLabel=<依頼の番号> を付ける。
+// mod は pane.split の戻り値に頼らず、このラベルで新しい端末を見つける（#444）。
 // コマンドを動かし、終わったら、自分の端末（HC_TERMINAL_ID）が元の端末と違うときだけ hc kill で終わらせて、同じ終了コードで終わる。
 // herdr app の pane.split が argv を利用者の対話のシェルの中で動かす（tab.new の argv はそうだと herdr app の AGENTS.md にある）なら、
 // コマンドが終わってもシェルが残ってペインが閉じない。見比べの版のペインは、拡張機能が buffer/dispose で版を閉じると client が終わり
 // （editor の bufferDisposeRequest）、ペインが閉じる前提なので、端末を終わらせてペインを確かに閉じる（PR #441 のレビューの必須 3）。
 // argv がそのまま動く場合も、自分の端末を終わらせるだけなので害は無い。元の端末と同じ番地なら（HC_TERMINAL_ID を引き継いだなど）終わらせない。
-const herdrAppScript = `[ -z "$1" ] || cd -- "$1" || exit; hc=$2; from=$3; shift 3; "$@"; s=$?; ` +
-	`if [ -n "$HC_TERMINAL_ID" ] && [ "$HC_TERMINAL_ID" != "$from" ]; then "$hc" kill "$HC_TERMINAL_ID" >/dev/null 2>&1; fi; exit "$s"`
+const herdrAppScript = `[ -z "$1" ] || cd -- "$1" || exit; hc=$2; from=$3; id=$4; shift 4; ` +
+	`own=; if [ -n "$HC_TERMINAL_ID" ] && [ "$HC_TERMINAL_ID" != "$from" ]; then own=$HC_TERMINAL_ID; fi; ` +
+	`[ -z "$own" ] || "$hc" label "$own" "` + HerdrAppSplitLabel + `=$id" >/dev/null 2>&1; ` +
+	`"$@"; s=$?; [ -z "$own" ] || "$hc" kill "$own" >/dev/null 2>&1; exit "$s"`
 
-// herdrAppArgv は、c を、herdr app の pane.split の argv に渡す形にする。bin は hc の実行ファイル、from は依頼した元の端末の番地である。
+// herdrAppArgv は、c を、herdr app の pane.split の argv に渡す形にする。bin は hc の実行ファイル、from は依頼した元の端末の番地、
+// id は依頼の番号である。
 // pane.split は作業ディレクトリと環境変数を受け付けないので、sh で c.Dir へ移り、env で c.Env を足してから c.Args を起動する（herdrAppScript）。
 // 環境変数は名前の順に並べる（テストで比べられるように）。
-func herdrAppArgv(c Command, bin, from string) []string {
-	argv := []string{"sh", "-c", herdrAppScript, "sh", c.Dir, bin, from, "env"}
+func herdrAppArgv(c Command, bin, from, id string) []string {
+	argv := []string{"sh", "-c", herdrAppScript, "sh", c.Dir, bin, from, id, "env"}
 	names := make([]string, 0, len(c.Env))
 	for name := range c.Env {
 		names = append(names, name)

@@ -69,7 +69,7 @@ func TestHerdrAppSplitPane(t *testing.T) {
 			}
 			want := muxtest.Request{
 				ID: got[0].Request.ID, Op: "split", Direction: tc.want, Focus: tc.focus,
-				Argv: []string{"sh", "-c", herdrAppScript, "sh", "/work", a.Bin, "t8", "env", "A=1", "B=2", "/bin/vi-imitation", "-connect", "/s"},
+				Argv: []string{"sh", "-c", herdrAppScript, "sh", "/work", a.Bin, "t8", got[0].Request.ID, "env", "A=1", "B=2", "/bin/vi-imitation", "-connect", "/s"},
 			}
 			if !reflect.DeepEqual(got[0].Request, want) {
 				t.Errorf("依頼 = %+v, want %+v", got[0].Request, want)
@@ -126,7 +126,8 @@ func TestHerdrAppNoMod(t *testing.T) {
 	}
 }
 
-// 新しいペインのスクリプトは、作業ディレクトリでコマンドを動かし、終わったら自分の端末を hc kill で終わらせて、同じ終了コードで終わる
+// 新しいペインのスクリプトは、自分の端末に依頼の番号のラベルを付け（mod が pane.split の戻り値に頼らずに見つける。#444）、
+// 作業ディレクトリでコマンドを動かし、終わったら自分の端末を hc kill で終わらせて、同じ終了コードで終わる
 // （pane.split の argv が対話のシェルの中で動いても、ペインを残さない。PR #441 のレビューの必須 3）。
 // 自分の端末が依頼した元の端末と同じなら終わらせない。
 //
@@ -143,12 +144,13 @@ func TestHerdrAppArgvClosesOwnTerminal(t *testing.T) {
 		self string
 		want string
 	}{
-		{"t9", "kill t9\n"},
+		// 自分の端末に依頼の番号のラベルを付けてから動かし（#444）、終わったら自分の端末を終わらせる。
+		{"t9", "label t9 " + HerdrAppSplitLabel + "=5-1\nkill t9\n"},
 		{"t8", ""},
 		{"", ""},
 	} {
 		_ = os.Remove(log)
-		argv := herdrAppArgv(Command{Args: []string{"sh", "-c", `pwd > out; echo "$X" >> out; exit 3`}, Env: map[string]string{"X": "x"}, Dir: work}, bin, "t8")
+		argv := herdrAppArgv(Command{Args: []string{"sh", "-c", `pwd > out; echo "$X" >> out; exit 3`}, Env: map[string]string{"X": "x"}, Dir: work}, bin, "t8", "5-1")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // テストで包んだコマンドを動かす
 		cmd.Env = append(os.Environ(), "HC_TERMINAL_ID="+tc.self)
