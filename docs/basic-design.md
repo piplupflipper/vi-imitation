@@ -6387,12 +6387,13 @@ cgo を使う tree-sitter の拡張機能は、glibc に動的にリンクする
 配布物は glibc を含まないので、glibc の文面は同梱しない。
 理由と結果は [measurements/nfr-dist.md](measurements/nfr-dist.md) に書く。
 
-NFR-05 の上限は、`make build` の生成物を測る検査で確かめる。
+NFR-05 の上限（起動の時間と RSS）は、`make build` の生成物を測る検査で確かめる。
+本体の実行ファイルの大きさは、2026-11-26 から要件ではなく努力目標で（要件定義の NFR-05 の注。#442）、検査はログに出すだけにする。
 CI は `make build-check` の後に `make footprint-check` を実行する。
 
 | ターゲット | 検証すること | 要件 |
 |---|---|---|
-| `make build-check` | 本体の実行ファイルが 12 MiB 以下（`internal/distcheck`。2026-11-21 に 10 MiB から上げた。要件定義の NFR-05 の注） | NFR-05 |
+| `make build-check` | 本体の実行ファイルの大きさをログに出す。大きさでは失敗しない（`internal/distcheck` の `TestBuildMainSize`。大きさは努力目標である。要件定義の NFR-05 の注） | なし |
 | `make footprint-check` | 拡張機能なしで 10,000 行のファイルを偽の端末で開き、起動から文字を含む最初の画面までと、その後の本体の `VmRSS` を 20 回測った中央値が、20 ms 以下と 16 MiB 以下（`cmd/vi-imitation`） | NFR-05 |
 
 測り方と、目標値を決めた根拠の実測は [measurements/nfr05-footprint.md](measurements/nfr05-footprint.md) に書く。
