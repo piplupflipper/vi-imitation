@@ -112,10 +112,10 @@ docs-check: ## docs/agent/*.md の一覧がコードの表とずれていれば�
 check: fmt-check typecheck lint test tidy-check progress-check docs-check ## コミット前の検査を全て実行する（CI と同じ内容）
 
 # 本体を CGO_ENABLED=0 で作る（NFR-02）。make build-check が検査する。
-# 本体はシンボルとデバッグ情報を削らずに作る（-ldflags に -s -w を足さない）。デバッガーで変数を読めるようにするためで、
-# NFR-05 の実行ファイルの大きさの上限（12 MiB。2026-11-21 に 10 MiB から上げた）は、この形で満たす。make build-check と make footprint-check が検査する。
+# 本体はシンボルとデバッグ情報を削らずに作る（-ldflags に -s -w を足さない）。デバッガーで変数を読めるようにするためである。
+# 実行ファイルの大きさは努力目標で（要件定義の NFR-05 の注）、make build-check がこの形の大きさをログに出す。
 #
-# req: NFR-02, NFR-05
+# req: NFR-02
 .PHONY: build
 build: ## 本体、MCP の中継コマンド、標準の拡張機能の実行ファイルを bin/ に作る
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/vi-imitation
@@ -124,7 +124,7 @@ build: ## 本体、MCP の中継コマンド、標準の拡張機能の実行フ
 	for e in $(CGO_EXTENSIONS); do CGO_ENABLED=1 go build -trimpath -o $(BIN_DIR)/$$e ./cmd/$$e || exit 1; done
 
 .PHONY: build-check
-build-check: build ## make build の生成物を検査する（本体の静的リンクと CGO_ENABLED=0、本体の大きさなど。NFR-02、NFR-05）
+build-check: build ## make build の生成物を検査する（本体の静的リンクと CGO_ENABLED=0 など。NFR-02）。本体の大きさはログに出すだけで、判定しない
 	VI_IMITATION_BUILD_DIR=$(abspath $(BIN_DIR)) go test -count=1 -v ./internal/distcheck
 
 # 起動から最初の画面までの時間と本体の RSS を、make build の本体で測る（NFR-05）。

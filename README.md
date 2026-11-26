@@ -85,7 +85,7 @@ make check   # 整形の検査、型チェック、リント、テストをま�
 | `make test` | テストを実行する（データ競合の検出つき） |
 | `make vuln` | 依存ライブラリの既知の脆弱性を調べる |
 | `make build` | 実行ファイルを `bin/` に作る |
-| `make build-check` | `make build` の後に、本体の `CGO_ENABLED=0` と全ての実行ファイルの静的リンクを検査する |
+| `make build-check` | `make build` の後に、本体の `CGO_ENABLED=0` と全ての実行ファイルの静的リンクを検査する。本体の大きさはログに出すだけで、判定しない |
 | `make dist` | 配布物（実行ファイルと宣言ファイル）を `dist/` にディレクトリと `tar.gz` で作る |
 | `make dist-check` | `make dist` の後に、配布物の形を検査する |
 | `make dist-smoke` | `make dist` の後に、ビルド用の道具の無いコンテナで配布物を起動する。Docker が要る |

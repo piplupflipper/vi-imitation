@@ -72,7 +72,7 @@ func (e *Editor) collectStatusExtensions() []error {
 // 最初の画面を描く前に子プロセスを起動しないので、本体の起動の速さ（NFR-05）を損なわない（#367）。
 // 起動は非同期で、待たずに戻る（NFR-04）。
 //
-// req: FR-225
+// req: FR-225, NFR-05
 func (e *Editor) startResidentExtensions() {
 	for _, owner := range slices.Sorted(maps.Keys(e.statusExts)) {
 		if err := e.host.Start(owner); err != nil {
