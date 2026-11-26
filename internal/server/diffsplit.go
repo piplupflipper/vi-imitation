@@ -54,5 +54,10 @@ func (s *Server) splitPane(from, file, dir, token string, left bool) error {
 		// フォーカスは右のペインに置く。右に開いたら新しいペインへ移し、左に開いたら元のペインに残す（#437。diffview.nvim と同じ）。
 		Focus: !left,
 	})
+	if errors.Is(err, mux.ErrFocusAfterSplit) {
+		// ペインは開いて client も起動しているので、見比べは続ける。フォーカスの位置だけが違う（PR #438 のレビューの推奨 2）。
+		s.log.Warn("見比べのペインを開いた後にフォーカスを移せない", "from", from, "err", err)
+		return nil
+	}
 	return err
 }

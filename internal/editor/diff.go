@@ -337,6 +337,12 @@ func (e *Editor) diffAttached(c *clientView, token string) {
 	}
 	if p.swap {
 		e.startDiff(other, p.from)
+		// 左に開いたペインの client では、フォーカスは元のペインに残る（splitForDiff）。attach がこの client を操作中にしたままだと、
+		// 利用者がキーを打つまで editor/state が左の版のバッファを返し、拡張機能がカーソルの位置を取り違える（PR #438 のレビューの推奨 1）。
+		// このため操作中の client を元のタブの client に戻す。
+		if o := p.from.owner; o.attached() {
+			e.useClient(o)
+		}
 	} else {
 		e.startDiff(p.from, other)
 	}

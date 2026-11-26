@@ -127,6 +127,9 @@ func (h *Herdr) SplitPane(ctx context.Context, opts SplitOptions) (string, error
 	}
 	if opts.Direction == Left {
 		if err := h.swapLeft(ctx, pane, opts.Target, opts.Focus); err != nil {
+			if errors.Is(err, ErrFocusAfterSplit) {
+				return pane, err
+			}
 			return "", err
 		}
 	}
@@ -138,6 +141,7 @@ func (h *Herdr) SplitPane(ctx context.Context, opts SplitOptions) (string, error
 // 入れ替えた後のフォーカスは、focus を false で開いても左の新しいペインにあった（2026-11-26 に herdr 0.9.0 で確かめた）。
 // このため入れ替えた後に、focus なら pane へ、そうでなければ target へ、pane.focus でフォーカスを移し直す。
 // 入れ替えられなかったら、開いた pane を閉じて誤りを返す（向きの違うペインを残さない）。
+// 入れ替えた後にフォーカスを移せなかったら、pane は残して ErrFocusAfterSplit を包んだ誤りを返す（PR #438 のレビューの推奨 2）。
 func (h *Herdr) swapLeft(ctx context.Context, pane, target string, focus bool) error {
 	err := h.call(ctx, "pane.swap", map[string]any{"source_pane_id": pane, "target_pane_id": target}, nil)
 	if err != nil {
@@ -150,7 +154,10 @@ func (h *Herdr) swapLeft(ctx context.Context, pane, target string, focus bool) e
 	if focus {
 		focused = pane
 	}
-	return h.call(ctx, "pane.focus", map[string]any{"pane_id": focused}, nil)
+	if err := h.call(ctx, "pane.focus", map[string]any{"pane_id": focused}, nil); err != nil {
+		return fmt.Errorf("%w: %w", ErrFocusAfterSplit, err)
+	}
+	return nil
 }
 
 // OpenPopup は、同梱するプラグインの entrypoint を、placement を popup にして plugin.pane.open で開く。

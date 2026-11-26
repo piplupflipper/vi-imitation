@@ -60,6 +60,11 @@ var ErrUnsupported = errors.New("mux: no terminal multiplexer")
 // tmux も herdr も、1 つの画面（tmux の client、herdr の端末）にポップアップを 1 つしか開かない。
 var ErrPopupBusy = errors.New("mux: a popup is already open")
 
+// ErrFocusAfterSplit は、Mux.SplitPane がペインを開いた後に、SplitOptions.Focus のとおりにフォーカスを移せなかったことを表す
+// （herdr の Left。PR #438 のレビューの推奨 2）。このとき SplitPane は新しいペインの識別子も返し、ペインと中のコマンドは動いている。
+// 呼び出し側は、開けなかった扱いにせず、警告に留める。
+var ErrFocusAfterSplit = errors.New("mux: could not move the focus after the split")
+
 // ErrNoTarget は、元の client のペイン（SplitOptions.Target、PopupOptions.Target）が空であることを表す。
 var ErrNoTarget = errors.New("mux: empty target pane")
 
@@ -145,6 +150,7 @@ type Mux interface {
 
 	// SplitPane は、ペインを分割して開き、中でコマンドを起動し、新しいペインの識別子を返す。
 	// コマンドが終わるとペインは閉じる。
+	// 開いた後にフォーカスだけを移せなかったときは、新しいペインの識別子と ErrFocusAfterSplit を包んだ誤りを返す。
 	SplitPane(ctx context.Context, opts SplitOptions) (string, error)
 
 	// OpenPopup は、画面の中央のポップアップを開き、中でコマンドを起動する（FR-67、FR-168）。

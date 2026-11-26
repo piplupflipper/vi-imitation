@@ -278,6 +278,30 @@ func TestHerdrSplitPaneLeftSwapFails(t *testing.T) {
 	}
 }
 
+// TestHerdrSplitPaneLeftFocusFails は、入れ替えた後のフォーカスの移し直しに失敗しても、開いたペインを閉じずに
+// その識別子と ErrFocusAfterSplit を返すことを確かめる（PR #438 のレビューの推奨 2）。
+func TestHerdrSplitPaneLeftFocusFails(t *testing.T) {
+	f := newFakeHerdr(t, func(req herdrRequest) map[string]any {
+		switch req.Method {
+		case "pane.swap":
+			return ok(map[string]any{"type": "ok"})
+		case "pane.focus":
+			return herdrErr("pane_not_found", "nope")
+		}
+		return ok(map[string]any{"plugin_pane": map[string]any{"pane": paneInfo("wW:p2", "wW:t4")}})
+	})
+	h := &Herdr{Socket: f.socket, Pane: "wW:p7"}
+	pane, err := h.SplitPane(testCtx(t), SplitOptions{Target: "wW:p8", Direction: Left, Command: Command{Args: []string{"x"}}})
+	if pane != "wW:p2" || !errors.Is(err, ErrFocusAfterSplit) {
+		t.Fatalf("SplitPane = %q, %v; want wW:p2 と ErrFocusAfterSplit", pane, err)
+	}
+	for _, r := range f.requests() {
+		if r.Method == "pane.close" {
+			t.Errorf("フォーカスの失敗で開いたペインを閉じた: %v", r.Params)
+		}
+	}
+}
+
 // TestHerdrEmptyTarget は、元のペインが空なら、server の環境変数のペインを既定にせず ErrNoTarget を返すことを確かめる。
 func TestHerdrEmptyTarget(t *testing.T) {
 	f := newFakeHerdr(t, func(herdrRequest) map[string]any { return ok(map[string]any{"type": "ok"}) })

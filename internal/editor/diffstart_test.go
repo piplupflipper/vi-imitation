@@ -184,6 +184,13 @@ func TestDiffStartBaseLeft(t *testing.T) {
 		if s.bs[0].title != "HEAD:x" || s.bs[1].path != filepath.Join(dir, "a.txt") {
 			t.Errorf("組 = %q と %q, want HEAD:x と a.txt", s.bs[0].title, s.bs[1].path)
 		}
+		// フォーカスは右のファイルのペインに残るので、キーを打つ前でも、editor/state はファイルのバッファを返す（PR #438 のレビューの推奨 1）。
+		if got := h.e.editorState().Buffer; got != s.bs[1].id {
+			t.Errorf("左に開いた直後の editor/state の buffer = %d, want a.txt の %d", got, s.bs[1].id)
+		}
+		if h.e.op != s.bs[1].owner {
+			t.Errorf("操作中の client = client %d, want a.txt の client", h.e.op.info.ID)
+		}
 	})
 }
 
