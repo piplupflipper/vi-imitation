@@ -633,6 +633,10 @@ func requestEvent(ctx context.Context, id string, req *rpc.Request, reply rpc.Re
 		if err := decodeRequest(req, &p); err != nil {
 			return nil, err
 		}
+		// 空の title（API 0.28.0。#449）は、buffer/create と同じく断る。
+		if err := p.Validate(); err != nil {
+			return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: req.Method + ": " + err.Error()}
+		}
 		return &BufferUpdateRequest{Extension: id, Params: p, replyOnce: ro}, nil
 	case ext.MethodBufferDispose:
 		var p ext.BufferDisposeParams

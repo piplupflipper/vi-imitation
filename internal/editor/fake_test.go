@@ -158,6 +158,24 @@ func runFakeExt(mode string) int {
 				}
 				return err
 			}
+			// "retitle <番号> <名前> <ファイルの種類> <テキスト>" なら、名前とファイルの種類も付けた buffer/update を送る（#449）。
+			// ファイルの種類の "-" は省く（nil）ことを表し、"''" は空の種類を表す。
+			if f := strings.SplitN(a.Text, " ", 5); len(f) == 5 && f[0] == "retitle" {
+				n, _ := strconv.ParseUint(f[1], 10, 64)
+				params := ext.BufferUpdateParams{Buffer: ext.BufferID(n), Text: strings.ReplaceAll(f[4], `\n`, "\n"), Title: &f[2]}
+				switch f[3] {
+				case "-":
+				case "''":
+					params.FileType = new(string)
+				default:
+					params.FileType = &f[3]
+				}
+				go func() {
+					r, err := s.UpdateBuffer(hostCtx, params)
+					_ = s.ShowMessage(ext.MessageInfo, fmt.Sprintf("headdiff retitle version=%d err=%v", r.Version, plain(err)))
+				}()
+				return ext.CommandExecuteResult{OK: true}, nil
+			}
 			if f := strings.SplitN(a.Text, " ", 3); len(f) >= 2 && (f[0] == "update" || f[0] == "dispose") {
 				n, _ := strconv.ParseUint(f[1], 10, 64)
 				go func() {

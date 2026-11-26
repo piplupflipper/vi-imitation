@@ -9,6 +9,7 @@ import (
 	"github.com/piplupflipper/vi-imitation/ext"
 	"github.com/piplupflipper/vi-imitation/internal/buffer"
 	"github.com/piplupflipper/vi-imitation/internal/exthost"
+	"github.com/piplupflipper/vi-imitation/internal/option"
 )
 
 // 拡張機能が作るファイルでないバッファ（buffer/create、buffer/update、buffer/dispose）と、拡張機能から始める見比べ（diff/start）
@@ -73,16 +74,50 @@ func (e *Editor) createdBy(extID string, id ext.BufferID) (*bufferState, error) 
 
 // bufferUpdateRequest は、buffer/update を処理する。作った拡張機能のバッファの中身を、読み直しと同じ入り口（reload）で置き換える。
 // 編集を禁止していても置き換え（基本設計 4.6 の、本体が中身を正当に書き換える場合）、変わった行の差分を buffer/change で送る。
+//
+// Title と FileType（API 0.28.0。#449）があれば、名前とファイルの種類も差し替える。名前はタブの行、ステータス行、:ls に出る
+// bufferState.title で、描き直しで新しい名前が出る。ファイルの種類は、利用者の :set filetype と同じ入り口（optionAccess.Set）で入れ、
+// ファイルの種類ごとの設定を当て直し（FR-163）、拡張機能へ buffer/open を送り直す（FR-134。新しい種類の契機の拡張機能の起動と、
+// 構文の色の付け直し）。ファイルの種類は中身を置き換えた後に入れ、送り直す buffer/open が新しい中身を持つようにする。
+// Title か FileType があれば、別のファイルの版に替えたものとして、そのバッファの見比べを終える（PR #450 のレビューの必須 1）。
+// Title があれば、アンドゥの履歴も捨てる（replaceBuffer。同じレビューの推奨 1）。
+// どちらも無ければ今までどおりで、見比べの最中なら、中身を置き換えたことで差分を計算し直す（reload。バッファのバージョンが変わる）。
+//
+// req: FR-319
 func (e *Editor) bufferUpdateRequest(ev *exthost.BufferUpdateRequest) {
+	// 空の title は、exthost がイベントにする前に断る（ext.BufferUpdateParams.Validate）。
 	bs, err := e.createdBy(ev.Extension, ev.Params.Buffer)
 	if err != nil {
 		_ = ev.ReplyError(err)
 		return
 	}
+	retitle := ev.Params.Title != nil || ev.Params.FileType != nil
+	if retitle {
+		// 名前かファイルの種類を差し替えるのは、別のファイルの版に替えることである。見比べの相手（前のファイル）と見比べたまま残すと、
+		// 相手の側の do で前のファイルに別のファイルの版が入るので、見比べを終える（PR #450 のレビューの必須 1）。
+		// 拡張機能は、続けて diff/start を送って次のファイルと見比べる。中身だけの差し替えでは終えない（今までどおり差分を計算し直す）。
+		e.endDiff(bs, "版を差し替えました")
+	}
 	cursor := bs.state.Cursor()
-	e.reload(bs, buffer.New(ev.Params.Text))
+	if ev.Params.Title != nil {
+		// 名前を替えたら、アンドゥの履歴を捨てる（u で前のファイルの中身に戻り、名前と中身が食い違わないため。PR #450 のレビューの推奨 1）。
+		// 同じ番号のまま中身を置き換え、拡張機能へ buffer/close と buffer/open を送り直す（replaceBuffer）。
+		b := buffer.New(ev.Params.Text)
+		b.SetFixEndOfLine(e.fixEOL)
+		b.SetReadOnly(bs.buf.ReadOnly())
+		e.replaceBuffer(bs, b)
+		bs.title = *ev.Params.Title
+	} else {
+		e.reload(bs, buffer.New(ev.Params.Text))
+	}
 	line := min(cursor.Line, bs.buf.LineCount()-1)
 	bs.state.SetCursor(buffer.Position{Line: line, Byte: min(cursor.Byte, len(bs.buf.Line(line)))})
+	if ft := ev.Params.FileType; ft != nil && *ft != bs.fileType() {
+		d, _ := option.Lookup(option.FileType)
+		if err := (optionAccess{e: e, bs: bs}).Set(d, option.StringValue(*ft)); err != nil {
+			e.log.Error("buffer/update のファイルの種類を入れられない", "buffer", bs.id, "err", err)
+		}
+	}
 	_ = ev.Reply(ext.BufferUpdateResult{Version: ext.Version(bs.buf.Version())})
 }
 

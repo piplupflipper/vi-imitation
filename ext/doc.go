@@ -134,4 +134,7 @@ package ext
 // 0.27.0 で、diff/start に、ペインの分割が終わり、もう片方のバッファが新しい client のタブになって見比べが始まるまで応答を待つ指定
 // （DiffStartParams.Wait）を足した（#447）。古い本体は Wait を読まずに捨て、分割を頼んだ時点で応答する。
 // 使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
-const APIVersion = "0.27.0"
+// 0.28.0 で、buffer/update に、buffer/create で作ったバッファの名前とファイルの種類を差し替える、省ける title と fileType
+// （BufferUpdateParams）を足した（#449。FR-319）。古い本体は title と fileType を読まずに捨て、中身だけを差し替える。
+// 使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
+const APIVersion = "0.28.0"

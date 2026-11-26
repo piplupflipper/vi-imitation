@@ -395,6 +395,8 @@ b が nil になる場合と、結果の Transaction の BaseVersion の扱い�
   同じ id を 2 回登録するか（TextObjectAsync との重複を含む）、Serve の後に呼ぶと panic する。
 - `func (s *Server) TextObjectAsync(id string, h AsyncTextObjectHandler)`: TextObject の非同期版である。
 - `func (s *Server) UpdateBuffer(ctx context.Context, p ext.BufferUpdateParams) (ext.BufferUpdateResult, error)`: 本体へ buffer/update を送り、CreateBuffer で作ったバッファの中身を置き換えさせる。応答は置き換えた後のバージョン番号である。
+  p.Title と p.FileType（API 0.28.0 から）を付けると、名前とファイルの種類も差し替えさせる（ext.`vi-imitation --docs extension-types BufferUpdateParams`）。
+  p が ext.BufferUpdateParams.Validate を通らなければ、送らずにその誤りを返す。
   Edit と同じく、ループの上から呼ぶと ErrEditInHandler を返す。
 - `func (s *Server) UpdateView(p ext.ViewUpdateParams) error`: 本体へ view/update を送り、開いたポップアップの部品の中身を置き換えさせる。応答は待たない。どこから呼んでもよい。
   p が ext.ViewUpdateParams.Validate を通らなければ、送らずにその誤りを返す。

@@ -39,6 +39,28 @@ type BufferUpdateParams struct {
 	Buffer BufferID `json:"buffer"`
 	// Text は、新しい中身である。末尾の改行を含めない。
 	Text string `json:"text"`
+	// Title は、バッファの新しい名前である（API 0.28.0 から。#449）。省けば（nil）名前を変えない。空にはできない。
+	// タブの行、ステータス行、:ls の名前が替わる。名前を替えると、そのバッファのアンドゥの履歴を捨てる
+	// （編集できるバッファで u を打って、前のファイルの中身に戻らないため）。
+	Title *string `json:"title,omitempty"`
+	// FileType は、バッファの新しいファイルの種類である（API 0.28.0 から。#449）。省けば（nil）変えない。空文字列なら種類の無いバッファにする。
+	// 利用者が :set filetype で変えたのと同じく、ファイルの種類ごとの設定を当て直し、拡張機能へ buffer/open を送り直す
+	// （新しい種類の契機の拡張機能を起動し、tree-sitter などの構文の色が新しい種類で付き直る）。
+	//
+	// Title か FileType を付けると、別のファイルの版に替えたものとして、本体はそのバッファの見比べを終える（相手の側の do で、
+	// 前のファイルに別のファイルの版が入らないため）。拡張機能は、続けて次のファイルを開いて diff/start を送り、見比べを付け替える。
+	// どちらも付けない（中身だけの差し替え）なら、今までどおり見比べを続け、差分を計算し直す。
+	// 比べる元の版のペインを閉じずに次のファイルの版へ差し替える（中身、名前、ファイルの種類）のに使う。
+	// API 0.27.0 までの本体は Title と FileType を読まずに捨て、中身だけを差し替える（見比べも終えない）。
+	FileType *string `json:"fileType,omitempty"`
+}
+
+// Validate は、Title が指定されていれば空でないことを検査する。
+func (p *BufferUpdateParams) Validate() error {
+	if p.Title != nil && *p.Title == "" {
+		return errors.New("title が空")
+	}
+	return nil
 }
 
 // BufferUpdateResult は、buffer/update の result である。

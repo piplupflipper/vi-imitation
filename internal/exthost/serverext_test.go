@@ -558,12 +558,20 @@ func TestRequestEventInvalidParams(t *testing.T) {
 		{ext.MethodInputAsk, `{"title":"a\nb"}`, rpc.CodeInvalidParams},
 		{ext.MethodInputAsk, `{"title":"q","default":"x\r\ny"}`, rpc.CodeInvalidParams},
 		{ext.MethodInputAsk, `{"title":1}`, rpc.CodeInvalidParams},
+		// buffer/update の title は、付けるなら空にできない（#449）。
+		{ext.MethodBufferUpdate, `{"buffer":1,"text":"x","title":""}`, rpc.CodeInvalidParams},
 		{"editor/unknown", `{}`, rpc.CodeMethodNotFound},
 	}
 	for _, tt := range tests {
 		ev, err := requestEvent(ctx, "x", &rpc.Request{Method: tt.method, Params: json.RawMessage(tt.params)}, nil)
 		if ev != nil || err == nil || err.Code != tt.code {
 			t.Errorf("%s %s = %v, %v, want code %d", tt.method, tt.params, ev, err, tt.code)
+		}
+	}
+	// title を省いた buffer/update と、空でない title の buffer/update はイベントになる。
+	for _, params := range []string{`{"buffer":1,"text":"x"}`, `{"buffer":1,"text":"x","title":"t","fileType":""}`} {
+		if ev, err := requestEvent(ctx, "x", &rpc.Request{Method: ext.MethodBufferUpdate, Params: json.RawMessage(params)}, nil); err != nil || ev == nil {
+			t.Errorf("buffer/update %s = %v, %v", params, ev, err)
 		}
 	}
 	// editor/state は params が無くてもよい。
