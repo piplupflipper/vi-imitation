@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -24,7 +26,7 @@ func TestMain(m *testing.M) {
 func newHerdrApp(t *testing.T) (*HerdrApp, *muxtest.HC) {
 	t.Helper()
 	hc := muxtest.Install(t)
-	m := Detect(envOf(map[string]string{"HC_TERMINAL_ID": "t7", "HC_TERMINAL_SOCKET": "/run/hc.sock"}))
+	m := Detect(envOf(map[string]string{"HC_TERMINAL_ID": "t7", "HC_TERMINAL_SOCKET": "/run/hc.sock", "PATH": os.Getenv("PATH")}))
 	a, ok := m.(*HerdrApp)
 	if !ok {
 		t.Fatalf("Detect = %#v, want *HerdrApp", m)
@@ -67,7 +69,7 @@ func TestHerdrAppSplitPane(t *testing.T) {
 			}
 			want := muxtest.Request{
 				ID: got[0].Request.ID, Op: "split", Direction: tc.want, Focus: tc.focus,
-				Argv: []string{"sh", "-c", herdrAppScript, "sh", "/work", "env", "A=1", "B=2", "/bin/vi-imitation", "-connect", "/s"},
+				Argv: []string{"sh", "-c", herdrAppScript, "sh", "/work", a.Bin, "t8", "env", "A=1", "B=2", "/bin/vi-imitation", "-connect", "/s"},
 			}
 			if !reflect.DeepEqual(got[0].Request, want) {
 				t.Errorf("依頼 = %+v, want %+v", got[0].Request, want)
@@ -121,6 +123,88 @@ func TestHerdrAppNoMod(t *testing.T) {
 		if strings.HasPrefix(k, HerdrAppRequestPrefix) {
 			t.Errorf("依頼のラベル %s が残った", k)
 		}
+	}
+}
+
+// 新しいペインのスクリプトは、作業ディレクトリでコマンドを動かし、終わったら自分の端末を hc kill で終わらせて、同じ終了コードで終わる
+// （pane.split の argv が対話のシェルの中で動いても、ペインを残さない。PR #441 のレビューの必須 3）。
+// 自分の端末が依頼した元の端末と同じなら終わらせない。
+//
+// req: FR-316
+func TestHerdrAppArgvClosesOwnTerminal(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "hc.log")
+	bin := filepath.Join(dir, "hc")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"$@\" >> '"+log+"'\n"), 0o700); err != nil { //nolint:gosec // テストの偽の hc
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	for _, tc := range []struct {
+		self string
+		want string
+	}{
+		{"t9", "kill t9\n"},
+		{"t8", ""},
+		{"", ""},
+	} {
+		_ = os.Remove(log)
+		argv := herdrAppArgv(Command{Args: []string{"sh", "-c", `pwd > out; echo "$X" >> out; exit 3`}, Env: map[string]string{"X": "x"}, Dir: work}, bin, "t8")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // テストで包んだコマンドを動かす
+		cmd.Env = append(os.Environ(), "HC_TERMINAL_ID="+tc.self)
+		err := cmd.Run()
+		cancel()
+		if ee, ok := errors.AsType[*exec.ExitError](err); !ok || ee.ExitCode() != 3 {
+			t.Errorf("HC_TERMINAL_ID=%q: 終わり = %v, want 終了コード 3", tc.self, err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(work, "out")); string(b) != work+"\nx\n" {
+			t.Errorf("HC_TERMINAL_ID=%q: 出力 = %q, want 作業ディレクトリと環境変数", tc.self, b)
+		}
+		got, _ := os.ReadFile(log)
+		if string(got) != tc.want {
+			t.Errorf("HC_TERMINAL_ID=%q: hc の呼び出し = %q, want %q", tc.self, got, tc.want)
+		}
+	}
+}
+
+// 待ちを打ち切って取り下げるときに、mod が既に結果を書いていれば、開いたペインを hc kill で閉じ、依頼と結果のラベルを消す
+// （PR #441 のレビューの推奨 3）。
+func TestHerdrAppWithdrawClosesLatePane(t *testing.T) {
+	a, hc := newHerdrApp(t)
+	hc.SetLabels(t, "t8", map[string]string{HerdrAppRequestPrefix + "1-1": "{}", HerdrAppReplyPrefix + "1-1": `{"id":"1-1","terminal":"t9"}`, "x": "1"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	a.withdraw(ctx, "t8", HerdrAppRequestPrefix+"1-1", HerdrAppReplyPrefix+"1-1")
+	if killed := hc.Killed(t); !slices.Equal(killed, []string{"t9"}) {
+		t.Errorf("hc kill = %v, want [t9]", killed)
+	}
+	if labels := hc.Labels(t, "t8"); !reflect.DeepEqual(labels, map[string]string{"x": "1"}) {
+		t.Errorf("ラベル = %v, want x だけ", labels)
+	}
+}
+
+// hc は、Detect のときに環境の PATH から決めた絶対パスで呼び、後で PATH が変わっても引き直さない（PR #441 のレビューの必須 1）。
+// PATH に hc が無ければ、どの操作も hc を呼ばずに誤りを返す。
+func TestHerdrAppBinFixedAtDetect(t *testing.T) {
+	a, hc := newHerdrApp(t)
+	if want := filepath.Join(hc.BinDir, "hc"); a.Bin != want {
+		t.Fatalf("Bin = %q, want %q", a.Bin, want)
+	}
+	t.Setenv("PATH", t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.ClosePane(ctx, "t9"); err != nil {
+		t.Fatalf("ClosePane = %v", err)
+	}
+	if killed := hc.Killed(t); !slices.Equal(killed, []string{"t9"}) {
+		t.Errorf("hc kill = %v, want [t9]（Detect の hc で呼ぶ）", killed)
+	}
+	none, ok := Detect(envOf(map[string]string{"HC_TERMINAL_ID": "t7", "HC_TERMINAL_SOCKET": "/s", "PATH": t.TempDir()})).(*HerdrApp)
+	if !ok || none.Bin != "" {
+		t.Fatalf("Detect（PATH に hc なし）= %#v, want Bin が空の HerdrApp", none)
+	}
+	if err := none.ClosePane(ctx, "t9"); err == nil {
+		t.Error("ClosePane（hc なし）= nil, want 誤り")
 	}
 }
 

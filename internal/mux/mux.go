@@ -24,6 +24,8 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -221,10 +223,27 @@ func Detect(getenv func(string) string) Mux {
 	}
 	if getenv("TMUX") == "" && getenv("HERDR_ENV") == "" {
 		if terminal, socket := getenv("HC_TERMINAL_ID"), getenv("HC_TERMINAL_SOCKET"); terminal != "" && socket != "" {
-			return &HerdrApp{Bin: "hc", Socket: socket, Terminal: terminal}
+			return &HerdrApp{Bin: lookPath("hc", getenv("PATH")), Socket: socket, Terminal: terminal}
 		}
 	}
 	return None{}
+}
+
+// lookPath は、path（環境変数 PATH の値）のディレクトリから、実行できる name の絶対パスを探す。見つからなければ空を返す。
+// herdr app の層は、hc を Detect のときに決めた絶対パスで呼び、呼ぶたびに PATH を引き直さない。
+// テストが偽の hc を PATH に置いて層を作ったとき、テストが終わって PATH が戻った後に残った待ちが、
+// 打った人の PATH の本物の hc を呼ばないためである（PR #441 のレビューの必須 1）。
+func lookPath(name, path string) string {
+	for _, dir := range filepath.SplitList(path) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+			return p
+		}
+	}
+	return ""
 }
 
 // None は、端末多重化ソフトの外（FR-60）の実装である。Kind を除くどの操作も ErrUnsupported を返す。

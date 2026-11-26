@@ -52,7 +52,8 @@ func TestDetect(t *testing.T) {
 		{
 			name: "herdr app",
 			env:  map[string]string{"HC_TERMINAL_ID": "t10", "HC_TERMINAL_SOCKET": "/run/hc.sock"},
-			want: &HerdrApp{Bin: "hc", Socket: "/run/hc.sock", Terminal: "t10"},
+			// PATH に hc が無いので Bin は空（TestHerdrAppBinFixedAtDetect）。
+			want: &HerdrApp{Bin: "", Socket: "/run/hc.sock", Terminal: "t10"},
 		},
 		{
 			name: "herdr app の中の tmux は tmux",

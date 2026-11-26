@@ -45,7 +45,7 @@ func (s *Server) splitPane(from, file, dir, token string, left bool) error {
 	if left {
 		dirn = mux.Left
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), splitWait(m))
+	ctx, cancel := context.WithTimeout(s.muxContext(), splitWait(m))
 	defer cancel()
 	_, err = m.SplitPane(ctx, mux.SplitOptions{
 		Target:    from,

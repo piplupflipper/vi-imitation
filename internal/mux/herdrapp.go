@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,7 +43,7 @@ const (
 
 // HerdrAppWait は、herdr app の mod に頼んだ操作の結果を待つ上限の目安である（仮）。
 // server は、herdr app の中でペインを分割するときとフォーカスを移すときに、この長さの期限を ctx に付ける。
-// mod は 500 ミリ秒ごとに依頼を探し（herdr-app-mod/main.js）、herdr app が別のマシンなら、hc の呼び出しは SSH を通る。
+// mod は依頼のあった後の 30 秒は 0.5 秒ごと、ほかは 2 秒ごとに依頼を探し（herdr-app-mod/main.js）、herdr app が別のマシンなら、hc の呼び出しは SSH を通る。
 const HerdrAppWait = 10 * time.Second
 
 // herdrAppPoll は、本体が結果のラベルを読む間隔である。herdrAppMark は、待つ間に印のラベルを付け直す間隔である。
@@ -63,7 +64,8 @@ var ErrHerdrAppNoReply = errors.New("mux: no reply from the vi-imitation mod of 
 // 中央のポップアップ（OpenPopup、ClosePopup）は持たない（ErrUnsupported）。server は、herdr app の中では
 // ポップアップを client の画面の中に描く。
 type HerdrApp struct {
-	// Bin は、hc の実行ファイルである。
+	// Bin は、hc の実行ファイルの絶対パスである（Detect が、渡された環境の PATH から決める）。
+	// 絶対パスでなければ、どの操作も hc を呼ばずに誤りを返す。
 	Bin string
 	// Socket は、herdr-core のソケットのパス（環境変数 HC_TERMINAL_SOCKET）である。Unit で使う。
 	Socket string
@@ -139,7 +141,7 @@ func (a *HerdrApp) SplitPane(ctx context.Context, opts SplitOptions) (string, er
 	if err := checkPercent("size", opts.Size); err != nil {
 		return "", err
 	}
-	req := herdrAppRequest{Op: "split", Argv: herdrAppArgv(opts.Command), Focus: opts.Focus}
+	req := herdrAppRequest{Op: "split", Argv: herdrAppArgv(opts.Command, a.Bin, opts.Target), Focus: opts.Focus}
 	switch opts.Direction {
 	case Right:
 		req.Direction = "right"
@@ -214,10 +216,7 @@ func (a *HerdrApp) ask(ctx context.Context, target string, req herdrAppRequest) 
 	for {
 		select {
 		case <-ctx.Done():
-			// 期限を過ぎた ctx では hc を呼べないので、短い期限で依頼を取り下げる。
-			cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), herdrAppMark)
-			_, _ = a.run(cctx, "label", target, reqKey+"=")
-			cancel()
+			a.withdraw(ctx, target, reqKey, repKey)
 			return herdrAppReply{}, fmt.Errorf("%w (%s %s): %w", ErrHerdrAppNoReply, req.Op, target, ctx.Err())
 		case <-tick.C:
 		}
@@ -249,6 +248,22 @@ func (a *HerdrApp) ask(ctx context.Context, target string, req herdrAppRequest) 
 	}
 }
 
+// withdraw は、待ちを打ち切った依頼を取り下げる。期限を過ぎた ctx では hc を呼べないので、短い期限で呼ぶ。
+// 依頼と結果のラベルを消す。打ち切る直前に mod が処理を終えていて、結果に新しいペインの端末があれば、そのペインを hc kill で閉じる
+// （待つ人のいない新しいペインを残さない。PR #441 のレビューの推奨 3）。
+// mod が処理の途中なら、その後に書く結果とペインは残りうる（mod は pane.split の直前に依頼のラベルを読み直して、この窓を狭める）。
+func (a *HerdrApp) withdraw(ctx context.Context, target, reqKey, repKey string) {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), herdrAppMark)
+	defer cancel()
+	if labels, err := a.labels(cctx, target); err == nil {
+		var rep herdrAppReply
+		if v, ok := labels[repKey]; ok && json.Unmarshal([]byte(v), &rep) == nil && rep.Terminal != "" && rep.Terminal != target {
+			_, _ = a.run(cctx, "kill", rep.Terminal)
+		}
+	}
+	_, _ = a.run(cctx, "label", target, reqKey+"=", repKey+"=")
+}
+
 // labels は、hc get で端末 terminal のラベルを読む。
 func (a *HerdrApp) labels(ctx context.Context, terminal string) (map[string]string, error) {
 	out, err := a.run(ctx, "get", terminal, "--json")
@@ -266,6 +281,10 @@ func (a *HerdrApp) labels(ctx context.Context, terminal string) (map[string]stri
 
 // run は、hc を args で起動し、標準出力を返す。
 func (a *HerdrApp) run(ctx context.Context, args ...string) (string, error) {
+	if !filepath.IsAbs(a.Bin) {
+		// PATH を引き直して別の hc を呼ばない（lookPath）。
+		return "", fmt.Errorf("hc %s: hc not found in PATH", args[0])
+	}
 	cmd := exec.CommandContext(ctx, a.Bin, args...) //nolint:gosec // 実行するのは hc で、引数は本体が組み立てたもの
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -280,14 +299,21 @@ func (a *HerdrApp) run(ctx context.Context, args ...string) (string, error) {
 	return stdout.String(), nil
 }
 
-// herdrAppScript は、最初の引数のディレクトリ（空なら移らない）へ移ってから、残りの引数のコマンドを exec する sh のスクリプトである。
-const herdrAppScript = `[ -z "$1" ] || cd -- "$1" || exit; shift; exec "$@"`
+// herdrAppScript は、新しいペインの端末で動かす sh のスクリプトである。引数は、作業ディレクトリ（空なら移らない）、hc の実行ファイル、
+// 依頼した元の端末の番地、起動するコマンドの順である。
+// コマンドを動かし、終わったら、自分の端末（HC_TERMINAL_ID）が元の端末と違うときだけ hc kill で終わらせて、同じ終了コードで終わる。
+// herdr app の pane.split が argv を利用者の対話のシェルの中で動かす（tab.new の argv はそうだと herdr app の AGENTS.md にある）なら、
+// コマンドが終わってもシェルが残ってペインが閉じない。見比べの版のペインは、拡張機能が buffer/dispose で版を閉じると client が終わり
+// （editor の bufferDisposeRequest）、ペインが閉じる前提なので、端末を終わらせてペインを確かに閉じる（PR #441 のレビューの必須 3）。
+// argv がそのまま動く場合も、自分の端末を終わらせるだけなので害は無い。元の端末と同じ番地なら（HC_TERMINAL_ID を引き継いだなど）終わらせない。
+const herdrAppScript = `[ -z "$1" ] || cd -- "$1" || exit; hc=$2; from=$3; shift 3; "$@"; s=$?; ` +
+	`if [ -n "$HC_TERMINAL_ID" ] && [ "$HC_TERMINAL_ID" != "$from" ]; then "$hc" kill "$HC_TERMINAL_ID" >/dev/null 2>&1; fi; exit "$s"`
 
-// herdrAppArgv は、c を、herdr app の pane.split の argv に渡す形にする。
-// pane.split は作業ディレクトリと環境変数を受け付けないので、sh で c.Dir へ移り、env で c.Env を足してから c.Args を起動する。
+// herdrAppArgv は、c を、herdr app の pane.split の argv に渡す形にする。bin は hc の実行ファイル、from は依頼した元の端末の番地である。
+// pane.split は作業ディレクトリと環境変数を受け付けないので、sh で c.Dir へ移り、env で c.Env を足してから c.Args を起動する（herdrAppScript）。
 // 環境変数は名前の順に並べる（テストで比べられるように）。
-func herdrAppArgv(c Command) []string {
-	argv := []string{"sh", "-c", herdrAppScript, "sh", c.Dir, "env"}
+func herdrAppArgv(c Command, bin, from string) []string {
+	argv := []string{"sh", "-c", herdrAppScript, "sh", c.Dir, bin, from, "env"}
 	names := make([]string, 0, len(c.Env))
 	for name := range c.Env {
 		names = append(names, name)

@@ -426,16 +426,18 @@ herdr app が別のマシンで動き、SSH でこのマシンの `hc connect` �
 | 判定 | `TMUX` と `HERDR_ENV` が無く、`HC_TERMINAL_ID` と `HC_TERMINAL_SOCKET` があるとき（`mux.Detect`）。tmux と herdr の判定より後に置く。herdr app の端末の中で tmux か herdr を起動しても、中には `HC_TERMINAL_ID` が残るためである |
 | ペインの識別子 | `hc` の端末の番地。herdr app のペインは端末を 1 つずつ持ち、端末を終わらせるとペインも閉じる |
 | server の単位（1.2） | `HC_TERMINAL_SOCKET` と、端末のラベル `herdr.tab`（herdr app が付けるタブの ID。`hc get` で読む）をコロンでつないだもの。ラベルが無い端末では、端末の番地で代える |
-| 依頼の受け渡し | 本体は、依頼を元の端末のラベル `vi-imitation.req.<番号>` に JSON で書き、印のラベル `vi-imitation.pending=1` を付ける（`hc label`）。mod は 500 ms ごとに `hc ls --json --label vi-imitation.pending=1` で依頼のある端末を探し、`hc get` でラベルを読む。処理したら結果をラベル `vi-imitation.res.<番号>` に JSON で書き、依頼のラベルを消す。依頼が残っていなければ印も消す。本体は 100 ms ごとに `hc get` で結果を読み、読んだら結果のラベルを消す。印が消えていれば 1 秒ごとに付け直す（mod が別の依頼を片付けて印を消すのと重なっても、見落とさないため） |
+| 依頼の受け渡し | 本体は、依頼を元の端末のラベル `vi-imitation.req.<番号>` に JSON で書き、印のラベル `vi-imitation.pending=1` を付ける（`hc label`）。mod は、依頼のあった後の 30 秒は 500 ms ごと、ほかは 2 秒ごとに `hc ls --json --label vi-imitation.pending=1` で依頼のある端末を探し（`hc` を動かせなかったマシンは 30 秒探さない）、`hc get` でラベルを読む。処理したら結果をラベル `vi-imitation.res.<番号>` に JSON で書き、依頼のラベルを消す。依頼が残っていなければ印も消す。本体は 100 ms ごとに `hc get` で結果を読み、読んだら結果のラベルを消す。印が消えていれば 1 秒ごとに付け直す（mod が別の依頼を片付けて印を消すのと重なっても、見落とさないため） |
 | 依頼と結果の形 | 依頼は `{id, op, direction, argv, focus, terminal}`。`op` は `split`（ペインを割る）、`focus`（`terminal` の端末のペインへフォーカスを移す）、`focused`（`terminal` の端末のペインにフォーカスがあるかを問う）である。結果は `{id, error, terminal, focus_error, focused}` である |
-| ペインを分割して開く | mod は、`pane.focus {terminal}` で元の端末のペインにフォーカスを移し、`pane.split {direction, argv}` で割る。左は、右に割ってから `pane.swap {pane, direction: "left"}` で元のペインと入れ替える（入れ替えられなければ開いたペインを閉じて誤りにする）。最後に、`focus` なら新しいペインへ、そうでなければ元の端末のペインへ、`pane.focus` でフォーカスを移し直す。移し直せなければ `focus_error` を返し、本体は `ErrFocusAfterSplit` にする。`pane.split` は作業ディレクトリと環境変数を受け付けないので、本体はコマンドを `sh -c` と `env` で包んで渡す。大きさ（`SplitOptions.Size`）は渡さない |
+| ペインを分割して開く | mod は、元の端末を出しているペインを `panes()` から引き、引けなければ `pane.focus {terminal}` の後の `focused()` の端末がその番地のときだけそのペインを使う。見つからなければ割らずに誤りを返す（利用者の別のペインを割らない）。そのペインを `pane.split {direction, pane, argv}` で割る。左は、右に割ってから `pane.swap {pane: 新しいペイン, target: 元のペイン}` で入れ替える（入れ替えられなければ開いたペインを閉じて誤りにする）。最後に、`focus` なら新しいペインへ、そうでなければ元のペインへ、`pane.focus {pane}` でフォーカスを移し直す。移し直せなければ `focus_error` を返し、本体は `ErrFocusAfterSplit` にする。`pane.split` は作業ディレクトリと環境変数を受け付けないので、本体はコマンドを `sh -c` と `env` で包んで渡す。大きさ（`SplitOptions.Size`）は渡さない |
+| 新しいペインを閉じる | 包んだ sh のスクリプト（`herdrAppScript`）は、コマンドを `exec` せずに動かし、終わったら自分の端末（`HC_TERMINAL_ID`）を `hc kill` で終わらせる（元の端末と同じ番地なら終わらせない）。見比べの版のペインは、拡張機能が `buffer/dispose` で版を閉じると client が終わり（editor の `bufferDisposeRequest`）、ペインが閉じる前提である。`pane.split` の `argv` が利用者の対話のシェルの中で動く（`tab.new` の `argv` はそうだと herdr app の `AGENTS.md` にある）なら、コマンドが終わってもシェルが残り、ファイルを替えるたびに版のペインが増えるので、端末を終わらせてペインを確かに閉じる |
+| `hc` の実行ファイル | `Detect` が、渡された環境の `PATH` から `hc` の絶対パスを決め、層はその絶対パスだけで呼ぶ（無ければどの操作も誤り）。テストが偽の `hc` で層を作ったとき、テストの後に残った待ちが打った人の本物の `hc` を呼ばないためである（PR #441 のレビューの必須 1）。server は、待ちを `Close` で打ち切る |
 | フォーカスを移す、フォーカスがあるか | mod に `focus` と `focused` を頼む。`hc` は herdr app のフォーカスを知らないためである。`focused` は、mod が `focused()` の端末の番地と比べる |
 | ペインを閉じる | `hc kill <端末>` |
 | 中央のポップアップ | 持たない（`ErrUnsupported`）。server は herdr app の中では `Config.OpenPopup`、`RunPopup`、`PopupScreenWidth` を入れず、部品のポップアップを client の画面の中に描き（FR-67）、`:terminal.popup` を `:!` と同じく動かす。開くたびに誤りを出さないためである |
 | 待つ上限 | `mux.HerdrAppWait`（10 秒。仮）。server はペインを分割するとき（`splitTimeout` の 2 秒に代えて）とフォーカスを移すときに使う。mod が依頼を探す間隔と、別のマシンの herdr app との往復を待つためである |
-| mod が無いとき | 期限までに結果が無ければ、本体は依頼のラベルを消して `mux.ErrHerdrAppNoReply` を返す。server は、mod を入れるよう促す文言を足して、client のメッセージの行に出す |
+| mod が無いとき | 期限までに結果が無ければ、本体は依頼と結果のラベルを消して `mux.ErrHerdrAppNoReply` を返す。打ち切る直前に mod が結果を書いていれば、その新しいペインを `hc kill` で閉じる。mod は、引き受けの印を書いた後に依頼のラベルを読み直し、消えていれば割らない。server は、mod を入れるよう促す文言を足して、client のメッセージの行に出す |
 | 別のマシン | mod は、`machines()` のマシンごとに `exec("hc", …, {on})` でそのマシンの `hc` を動かす。herdr app の命令には `<マシン>/<番地>` の形の番地を渡し、ラベルにはそのマシンの番地（前置きなし）を書く |
-| 写しの取り合い | herdr app の画面が複数あると、mod の写しも複数動く。写しは依頼を引き受ける前にラベル `vi-imitation.claim.<番号>` に自分の印を書いて読み直し、自分の印が残っているときだけ処理する |
+| 写しの取り合い | 同じ herdr app の中の写しは、モジュールの中で共有する処理中の依頼の集まりで、1 つの写しだけが処理する。別の herdr app（別の PC からつないだ画面）の mod とは、依頼を引き受ける前にラベル `vi-imitation.claim.<番号>` に自分の印を書いて読み直し、自分の印が残っているときだけ処理する。`hc label` は比べてから書く操作を持たないので、ほぼ同時に書いて読むと両方が処理しうる。このため使い方に、mod は herdr app の画面 1 つにだけ入れると書いた（PR #441 のレビューの推奨 2） |
 
 mod は `internal/mux/herdr-app-mod/`（`main.js` と `mod.json`）に置き、`make dist` が配布物の `herdr-app-mod/` に写す。
 利用者は、herdr app の `mods/vi-imitation/` にこの 2 つのファイルを写して入れる（[使い方](usage.md)）。

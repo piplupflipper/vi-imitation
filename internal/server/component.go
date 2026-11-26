@@ -152,7 +152,7 @@ func (s *Server) openPane(from string, view uint64, dir string, opts editor.Pane
 	if opts.Down {
 		dirn = mux.Down
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), splitWait(m))
+	ctx, cancel := context.WithTimeout(s.muxContext(), splitWait(m))
 	defer cancel()
 	_, err = m.SplitPane(ctx, mux.SplitOptions{Target: from, Direction: dirn, Size: opts.Size, Command: cmd, Focus: opts.Focus})
 	return herdrHint(err)

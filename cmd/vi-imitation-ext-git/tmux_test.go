@@ -95,7 +95,12 @@ func testEnv(t *testing.T) []string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(runtime) })
 	home := t.TempDir()
-	drop := []string{"TMUX", "TMUX_PANE", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_SOCKET_PATH", "VI_IMITATION_SOCKET", "HOME", "TERM"}
+	// herdr app の端末（HC_TERMINAL_ID、HC_TERMINAL_SOCKET）も外す。外さないと、TMUX を外して起動した本体が herdr app と判定し、
+	// テストを打った人の端末にペインを割る依頼を書く（PR #441 のレビューの必須 2）。
+	drop := []string{
+		"TMUX", "TMUX_PANE", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_SOCKET_PATH",
+		"HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "VI_IMITATION_SOCKET", "HOME", "TERM",
+	}
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
 		return strings.HasPrefix(name, "GIT_") || strings.HasPrefix(name, "XDG_") || slices.Contains(drop, name)
@@ -226,7 +231,7 @@ func TestDiffHeadOutsideMuxInTmux(t *testing.T) {
 		_ = k.Run()
 	})
 	p := ts.run("new-session", "-d", "-s", "t", "-x", "160", "-y", "20", "-c", repo, "-P", "-F", "#{pane_id}",
-		fmt.Sprintf("env -u TMUX -u TMUX_PANE '%s' a.txt; sleep 600", editor))
+		fmt.Sprintf("env -u TMUX -u TMUX_PANE -u HC_TERMINAL_ID -u HC_TERMINAL_SOCKET '%s' a.txt; sleep 600", editor))
 	ts.waitPane(p, "a.txt を開いた画面", func(s string) bool { return strings.Contains(s, "ONE") })
 	for range 2 {
 		ts.run("send-keys", "-t", p, "-l", " gd")
@@ -478,7 +483,7 @@ func TestChangesNoDiffInTmux(t *testing.T) {
 
 	// 端末多重化ソフトの外（TMUX と TMUX_PANE を外して起動した本体）では、差分があっても一覧を開かない。
 	writeTestFiles(t, repo, map[string]string{"a.txt": "ONE\n"})
-	q := ts.run("split-window", "-d", "-t", p, "-c", repo, "-P", "-F", "#{pane_id}", fmt.Sprintf("env -u TMUX -u TMUX_PANE '%s' a.txt; sleep 600", editor))
+	q := ts.run("split-window", "-d", "-t", p, "-c", repo, "-P", "-F", "#{pane_id}", fmt.Sprintf("env -u TMUX -u TMUX_PANE -u HC_TERMINAL_ID -u HC_TERMINAL_SOCKET '%s' a.txt; sleep 600", editor))
 	ts.waitPane(q, "a.txt を開いた画面", func(s string) bool { return strings.Contains(s, "ONE") })
 	ts.run("send-keys", "-t", q, "-l", " gV")
 	ts.waitPane(q, "見比べられない知らせ", func(s string) bool { return strings.Contains(s, "外では比べる元と見比べられません") })

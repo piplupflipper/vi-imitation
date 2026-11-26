@@ -209,10 +209,69 @@ func TestDiffSplitHerdrApp(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	waitDiffing(t, c, ch, "b.txt と既に見比べています")
+	// 係は結果を書く前に client を繋ぐので、見比べが始まった時点では、本体はまだ結果を待っている。
+	// 本体が結果を読んでラベルを片付ける（待ちが終わる）まで待ってから終わる（PR #441 のレビューの必須 1）。
+	waitNoLabels(t, hc, "t7")
 
 	served := hc.Served()
 	if len(served) != 1 || served[0].Terminal != "t7" || served[0].Request.Direction != "right" || !served[0].Request.Focus {
 		t.Errorf("mod への依頼 = %+v, want 端末 t7 に右へ割ってフォーカスを移す依頼 1 つ", served)
+	}
+}
+
+// waitNoLabels は、端末 terminal の vi-imitation のラベル（依頼、結果、印）が無くなるまで待つ。
+func waitNoLabels(t *testing.T, hc *muxtest.HC, terminal string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		left := false
+		for k := range hc.Labels(t, terminal) {
+			if strings.HasPrefix(k, "vi-imitation.") {
+				left = true
+			}
+		}
+		if !left {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("端末 %s のラベルが残った: %v", terminal, hc.Labels(t, terminal))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// trapHC は、呼ばれたら引数を記録して失敗する hc を PATH の先頭に置き、記録のファイルのパスを返す。
+// テストの層が、偽の hc（muxtest.Install。この後に置く）を使い終えた後に、PATH の hc（打った人の本物の hc に当たる）を呼ばないことを確かめる。
+func trapHC(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "called")
+	script := "#!/bin/sh\necho \"$@\" >> '" + log + "'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "hc"), []byte(script), 0o700); err != nil { //nolint:gosec // テストの罠の hc
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// herdr app の中の見比べのテストが終わった後に、server と層が、PATH の hc（打った人の本物の hc に当たる罠）を一度も呼ばない
+// （PR #441 のレビューの必須 1）。hc は層を作ったときの偽の hc の絶対パスで呼び、待ちは server の Close で打ち切る。
+// mod の無いときの待ちの打ち切り（期限と Close）の後も同じである。
+func TestHerdrAppNeverCallsPathHC(t *testing.T) {
+	log := trapHC(t)
+	t.Run("diffsplit", TestDiffSplitHerdrApp)
+	t.Run("nomod", TestDiffSplitHerdrAppNoMod)
+	t.Run("closed", func(t *testing.T) {
+		// 結果を待つ途中で server を閉じる。待ちは打ち切られ、片付けは偽の hc で行う。
+		inHerdrApp(t)
+		c, ch := startHerdrAppServer(t)
+		sendKeys(t, c, ":diffsplit b.txt<CR>")
+		waitScreenText(t, ch, "b.txt を別のペインで開いて見比べます")
+	})
+	// テストの片付けで PATH は罠を先頭にした値に戻る。残った待ちがあれば、ここで罠を呼ぶ。
+	time.Sleep(1500 * time.Millisecond)
+	if b, err := os.ReadFile(log); err == nil {
+		t.Errorf("PATH の hc が呼ばれた:\n%s", b)
 	}
 }
 

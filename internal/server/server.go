@@ -96,6 +96,18 @@ type Server struct {
 	terms []*clientTerm
 	// sock は、Serve が待ち受けるソケットのパス（string）である。:diffsplit で開くペインの client に渡す（diffsplit.go）。
 	sock atomic.Value
+	// muxCtx は、端末多重化ソフトの層の操作（ペインの分割）に渡す ctx の元で、Close で取り消す（muxStop）。
+	// herdr app の mod の結果の待ち（最大 mux.HerdrAppWait）を、server の終わりで打ち切るためである（PR #441 のレビューの必須 1）。
+	muxCtx  context.Context
+	muxStop context.CancelFunc
+}
+
+// muxContext は、端末多重化ソフトの層の操作に渡す ctx の元を返す。New で作っていなければ（テスト）、取り消さない ctx を返す。
+func (s *Server) muxContext() context.Context {
+	if s.muxCtx == nil {
+		return context.Background()
+	}
+	return s.muxCtx
 }
 
 // New は、cfg でイベントループ（editor.Editor）を作り、Server を返す。
@@ -106,9 +118,11 @@ func New(cfg editor.Config) (*Server, error) {
 		logger = slog.Default()
 	}
 	s := &Server{onPanic: cfg.OnPanic, log: logger}
+	s.muxCtx, s.muxStop = context.WithCancel(context.Background())
 	s.client = s.newTerm()
 	ed, err := editor.New(s.client, s.withMux(cfg))
 	if err != nil {
+		s.muxStop()
 		return nil, fmt.Errorf("server: %w", err)
 	}
 	s.ed = ed
@@ -522,8 +536,12 @@ func (a *acceptor) stop() {
 	_ = a.ln.Close() // 受け付けの goroutine を止める。閉じる誤りは扱えない
 }
 
-// Close は、拡張機能を止める（editor.Editor.Close）。Run が戻り、client が端末を戻した後に呼ぶ。
+// Close は、端末多重化ソフトの層の操作の待ちを打ち切り（muxStop）、拡張機能を止める（editor.Editor.Close）。
+// Run が戻り、client が端末を戻した後に呼ぶ。
 func (s *Server) Close(ctx context.Context) error {
+	if s.muxStop != nil {
+		s.muxStop()
+	}
 	return s.ed.Close(ctx)
 }
 
