@@ -344,3 +344,184 @@ func TestDiffStartSplitFails(t *testing.T) {
 		return h.e.diff.pending == nil
 	})
 }
+
+// gatedSplit は、呼ばれた引数を calls へ送り、release から値を受け取るまで戻らない Config.SplitPane の偽物を返す。
+// 端末多重化ソフトの層の分割が、入れ替えとフォーカスの移し直し（herdr app では mod の結果）を待って戻るのを真似る。
+func gatedSplit(calls chan<- diffCall, release <-chan error) func(from, file, dir, token string, left bool) error {
+	return func(from, file, dir, token string, left bool) error {
+		calls <- diffCall{from, file, dir, token, left}
+		return <-release
+	}
+}
+
+// diff/start の Wait（#447）は、分割（Config.SplitPane）が戻り、かつ新しい client が繋いで見比べが始まってから応答する。
+// どちらが先でも同じで、片方だけでは応答しない。
+//
+// req: FR-317
+func TestDiffStartWait(t *testing.T) {
+	for _, attachFirst := range []bool{true, false} {
+		name := "split first"
+		if attachFirst {
+			name = "attach first"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := writeFiles(t, map[string]string{"a.txt": "one\ntwo\n"})
+			calls := make(chan diffCall, 1)
+			release := make(chan error, 1)
+			h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t), SplitPane: gatedSplit(calls, release)}, "a.txt")
+			h.e.do(func() { h.e.clients[0].info = ClientInfo{ID: 1, Pane: "%1"} })
+
+			h.keys(":fake.headdiff wait base<CR>")
+			call := waitSplit(t, calls)
+			if !call.left {
+				t.Errorf("SplitPane = %+v, want 左に開く", call)
+			}
+			notYet := func(what string) {
+				t.Helper()
+				h.settle()
+				time.Sleep(200 * time.Millisecond)
+				if msg := h.message(); strings.Contains(msg, "headdiff buf=") {
+					t.Fatalf("%s で応答した: %q", what, msg)
+				}
+			}
+			if attachFirst {
+				h.attach(ClientInfo{ID: 2, Pane: "%2", WorkDir: dir, Env: call.env()})
+				notYet("client が繋いだだけ（分割が戻る前）")
+				release <- nil
+			} else {
+				release <- nil
+				notYet("分割が戻っただけ（client が繋ぐ前）")
+				h.attach(ClientInfo{ID: 2, Pane: "%2", WorkDir: dir, Env: call.env()})
+			}
+			h.waitMessage("headdiff buf=")
+			if msg := h.message(); !strings.Contains(msg, "split=true err=<nil>") {
+				t.Fatalf("message = %q", msg)
+			}
+			if n := h.diffSessions(); n != 1 {
+				t.Errorf("応答の時点の見比べの組 = %d, want 1", n)
+			}
+		})
+	}
+}
+
+// diff/start の Wait で、分割に失敗したら、その誤りで応答する。新しい client が繋ぐ前に版を閉じたら、待ちを捨てて誤りで応答する（#447）。
+//
+// req: FR-317
+func TestDiffStartWaitFails(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "one\n"})
+	calls := make(chan diffCall, 2)
+	release := make(chan error, 2)
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t), SplitPane: gatedSplit(calls, release)}, "a.txt")
+	h.e.do(func() { h.e.clients[0].info = ClientInfo{ID: 1, Pane: "%1"} })
+
+	h.keys(":fake.headdiff wait<CR>")
+	waitSplit(t, calls)
+	release <- errors.New("split failed")
+	// 本体の誤り（分割の誤り）がメッセージの行に出ているので、拡張機能の知らせは履歴で見る。
+	h.eventually("分割の誤りでの応答", func() bool {
+		for _, m := range h.e.msgHistory {
+			if strings.Contains(m.Text, "headdiff buf=") && strings.Contains(m.Text, "見比べのペインを開けません: split failed") {
+				return true
+			}
+		}
+		return false
+	})
+	h.keys("<Esc>")
+
+	h.keys(":fake.headdiff wait<CR>")
+	waitSplit(t, calls)
+	var id ext.BufferID
+	h.eventually("作ったバッファ", func() bool {
+		for _, bs := range h.e.bufs {
+			if bs.title == "HEAD:x" {
+				id = bs.id
+				return true
+			}
+		}
+		return false
+	})
+	h.keys(fmt.Sprintf(":fake.headdiff dispose %d<CR>", id))
+	// diff/start の応答（誤り）と buffer/dispose の応答の知らせは、どちらが後になるか決まらないので、履歴で見る。
+	h.eventually("版を閉じたときの誤りでの応答", func() bool {
+		for _, m := range h.e.msgHistory {
+			if strings.Contains(m.Text, "headdiff buf=") && strings.Contains(m.Text, "見比べが始まりませんでした") {
+				return true
+			}
+		}
+		return false
+	})
+	release <- nil
+}
+
+// diff/start で分割を頼んだ後、新しい client が繋ぐ前に、まだタブでない版を buffer/dispose で閉じると、
+// 後から繋いだその client を断り（ErrSplitCanceled）、名前の無い空のタブの client を残さない（#446）。
+// server は理由を付けずに client を終わらせるので、ペインが閉じる。
+//
+// req: FR-318
+func TestDiffStartDisposedBeforeAttach(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "one\n"})
+	calls := make(chan diffCall, 1)
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t), SplitPane: recordSplit(calls)}, "a.txt")
+	h.e.do(func() { h.e.clients[0].info = ClientInfo{ID: 1, Pane: "%1"} })
+
+	h.keys(":fake.headdiff base<CR>")
+	h.waitMessage("headdiff buf=")
+	call := waitSplit(t, calls)
+	var id ext.BufferID
+	h.e.do(func() {
+		for _, bs := range h.e.bufs {
+			if bs.title == "HEAD:x" {
+				id = bs.id
+			}
+		}
+	})
+	h.keys(fmt.Sprintf(":fake.headdiff dispose %d<CR>", id))
+	h.waitMessage("headdiff dispose err=<nil>")
+
+	term := &exitTerm{fakeTerm: newFakeTerm()}
+	h.peers = append(h.peers, term.fakeTerm)
+	if err := h.e.Attach(term, ClientInfo{ID: 2, Pane: "%2", WorkDir: dir, Env: call.env()}); !errors.Is(err, ErrSplitCanceled) {
+		t.Fatalf("Attach = %v, want ErrSplitCanceled", err)
+	}
+	var n int
+	h.e.do(func() { n = len(h.e.clients) })
+	if n != 1 {
+		t.Errorf("client の数 = %d, want 1（空のタブの client を残さない）", n)
+	}
+	// 同じ印で 2 度目に繋いだ client（ふつうは無い）は、ふつうの client として繋ぐ（印は 1 回だけ使う）。
+	h.attach(ClientInfo{ID: 3, Pane: "%3", WorkDir: dir, Env: call.env()})
+}
+
+// 新しい client が繋ぐ時点で、待っているバッファが閉じずに別の client のタブになっていた（diffAdopt が待ちを捨てる場合）も、
+// その client を断り、空のタブの client を残さない（#448 のレビューの推奨 3。#446）。
+// 待ちのバッファが別の client のタブになる経路（拡張機能の editor/open など）の代わりに、持ち主を直に入れて真似る。
+//
+// req: FR-318
+func TestDiffStartAdoptStale(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "one\n"})
+	calls := make(chan diffCall, 1)
+	h := start(t, Config{WorkDir: dir, Extensions: fakeSpecs(t), SplitPane: recordSplit(calls)}, "a.txt")
+	h.e.do(func() { h.e.clients[0].info = ClientInfo{ID: 1, Pane: "%1"} })
+
+	h.keys(":fake.headdiff base<CR>")
+	h.waitMessage("headdiff buf=")
+	call := waitSplit(t, calls)
+	var buf *bufferState
+	h.e.do(func() {
+		buf = h.e.diff.pending.buf
+		buf.owner = h.e.clients[0]
+	})
+	term := &exitTerm{fakeTerm: newFakeTerm()}
+	h.peers = append(h.peers, term.fakeTerm)
+	err := h.e.Attach(term, ClientInfo{ID: 2, Pane: "%2", WorkDir: dir, Env: call.env()})
+	h.e.do(func() { buf.owner = nil })
+	if !errors.Is(err, ErrSplitCanceled) {
+		t.Fatalf("Attach = %v, want ErrSplitCanceled", err)
+	}
+	var n int
+	var pending bool
+	h.e.do(func() { n, pending = len(h.e.clients), h.e.diff.pending != nil })
+	if n != 1 || pending {
+		t.Errorf("client の数 = %d, 待ち = %v; want 1, false（空のタブの client を残さない）", n, pending)
+	}
+}

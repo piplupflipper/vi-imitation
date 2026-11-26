@@ -41,10 +41,20 @@ const (
 	HerdrAppPendingLabel = "vi-imitation.pending"
 )
 
-// HerdrAppWait は、herdr app の mod に頼んだ操作の結果を待つ上限の目安である（仮）。
-// server は、herdr app の中でペインを分割するときとフォーカスを移すときに、この長さの期限を ctx に付ける。
+// HerdrAppWait は、herdr app の mod が依頼を引き受ける（引き受けの印のラベルを付ける）のを待つ上限である（仮）。
+// この間にどの mod も引き受けなければ、mod が入っていないとみなして ErrHerdrAppNoReply を返す。
+// server は、フォーカスを移すときに、この長さの期限を ctx に付ける。
 // mod は依頼のあった後の 30 秒は 0.5 秒ごと、ほかは 2 秒ごとに依頼を探し（herdr-app-mod/main.js）、herdr app が別のマシンなら、hc の呼び出しは SSH を通る。
 const HerdrAppWait = 10 * time.Second
+
+// HerdrAppSplitWait は、herdr app の中でペインを分割するときに、mod が引き受けた後に結果を待つ上限の目安である（仮。#448 のレビューの推奨 1）。
+// server は、ペインの分割の ctx にこの長さの期限を付ける。mod が引き受けていれば、HerdrAppWait を過ぎても誤りにせず、
+// 結果（入れ替えとフォーカスの移し直しの後）かこの期限まで待つ。diff/start の wait（#447）が、見比べが始まった後の mod の遅れを、
+// 「mod が入っていない」の誤りで応答しないためである。期限を過ぎたら ErrHerdrAppSlow を返す。
+const HerdrAppSplitWait = 40 * time.Second
+
+// herdrAppClaimWait は、ask が mod の引き受けを待つ上限で、HerdrAppWait である。テストは短くする。
+var herdrAppClaimWait = HerdrAppWait
 
 // herdrAppPoll は、本体が結果のラベルを読む間隔である。herdrAppMark は、待つ間に印のラベルを付け直す間隔である。
 // mod が別の依頼を片付けた後に印を消すのと、本体が依頼を書くのが重なって印が消えても、付け直せば mod が見つける。
@@ -56,6 +66,10 @@ const (
 // ErrHerdrAppNoReply は、herdr app の mod に頼んだ操作の結果が期限までに届かなかったことを表す。
 // mod を herdr app に入れていないか、herdr app が動いていない。
 var ErrHerdrAppNoReply = errors.New("mux: no reply from the vi-imitation mod of the herdr app")
+
+// ErrHerdrAppSlow は、herdr app の mod が依頼を引き受けたが、期限までに結果を書かなかったことを表す。
+// mod は入っていて動いているが、herdr app の命令（pane.split、pane.swap、pane.focus）が終わっていない。ErrHerdrAppNoReply とは別である。
+var ErrHerdrAppSlow = errors.New("mux: the vi-imitation mod of the herdr app did not finish in time")
 
 // HerdrApp は、herdr app の中の実装である（#440）。
 //
@@ -223,13 +237,19 @@ func (a *HerdrApp) ask(ctx context.Context, target string, req herdrAppRequest) 
 	if _, err := a.run(ctx, "label", target, reqKey+"="+string(b), HerdrAppPendingLabel+"=1"); err != nil {
 		return herdrAppReply{}, err
 	}
-	marked := time.Now()
+	claimKey := herdrAppClaimPrefix + req.ID
+	started := time.Now()
+	marked := started
+	claimed := false
 	tick := time.NewTicker(herdrAppPoll)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			a.withdraw(ctx, target, reqKey, repKey)
+			if claimed {
+				return herdrAppReply{}, fmt.Errorf("%w (%s %s): %w", ErrHerdrAppSlow, req.Op, target, ctx.Err())
+			}
 			return herdrAppReply{}, fmt.Errorf("%w (%s %s): %w", ErrHerdrAppNoReply, req.Op, target, ctx.Err())
 		case <-tick.C:
 		}
@@ -241,6 +261,14 @@ func (a *HerdrApp) ask(ctx context.Context, target string, req herdrAppRequest) 
 			return herdrAppReply{}, err
 		}
 		v, ok := labels[repKey]
+		if !ok && labels[claimKey] != "" {
+			claimed = true
+		}
+		if !ok && !claimed && time.Since(started) >= herdrAppClaimWait {
+			// HerdrAppWait の間、どの mod も引き受けない。mod が入っていないとみなす。
+			a.withdraw(ctx, target, reqKey, repKey)
+			return herdrAppReply{}, fmt.Errorf("%w (%s %s): no mod claimed the request in %v", ErrHerdrAppNoReply, req.Op, target, herdrAppClaimWait)
+		}
 		if !ok {
 			if time.Since(marked) >= herdrAppMark && labels[HerdrAppPendingLabel] != "1" {
 				if _, err := a.run(ctx, "label", target, HerdrAppPendingLabel+"=1"); err == nil {

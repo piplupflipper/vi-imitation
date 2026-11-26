@@ -46,9 +46,9 @@ func TestMessageJSON(t *testing.T) {
 
 	t.Run("initialize", func(t *testing.T) {
 		roundTrip(t, InitializeParams{APIVersion: APIVersion, Settings: json.RawMessage(`{"a":1}`)},
-			`{"apiVersion":"0.26.0","settings":{"a":1}}`)
-		roundTrip(t, InitializeParams{APIVersion: APIVersion}, `{"apiVersion":"0.26.0"}`)
-		roundTrip(t, InitializeResult{APIVersion: APIVersion}, `{"apiVersion":"0.26.0"}`)
+			`{"apiVersion":"0.27.0","settings":{"a":1}}`)
+		roundTrip(t, InitializeParams{APIVersion: APIVersion}, `{"apiVersion":"0.27.0"}`)
+		roundTrip(t, InitializeResult{APIVersion: APIVersion}, `{"apiVersion":"0.27.0"}`)
 	})
 	t.Run("register/set", func(t *testing.T) {
 		roundTrip(t, RegisterSetParams{Text: ""}, `{"text":""}`)

@@ -33,6 +33,7 @@ const EnvDir = "FAKE_HC_DIR"
 const (
 	requestPrefix = "vi-imitation.req."
 	replyPrefix   = "vi-imitation.res."
+	claimPrefix   = "vi-imitation.claim."
 	pendingLabel  = "vi-imitation.pending"
 )
 
@@ -205,6 +206,8 @@ func (h *HC) ServeMod(t *testing.T, handle func(terminal string, req Request) Re
 						if id, ok := strings.CutPrefix(key, requestPrefix); ok {
 							jobs = append(jobs, job{terminal, id, labels[key]})
 							delete(labels, key)
+							// mod と同じく、処理する間は引き受けの印を付けておく。
+							labels[claimPrefix+id] = "fake"
 						}
 					}
 					delete(labels, pendingLabel)
@@ -226,6 +229,7 @@ func (h *HC) ServeMod(t *testing.T, handle func(terminal string, req Request) Re
 				b, _ := json.Marshal(rep)
 				_ = withStore(h.Dir, func(s *store) error {
 					s.terminal(j.terminal)[replyPrefix+j.id] = string(b)
+					delete(s.terminal(j.terminal), claimPrefix+j.id)
 					return nil
 				})
 			}

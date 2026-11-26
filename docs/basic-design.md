@@ -434,7 +434,7 @@ herdr app が別のマシンで動き、SSH でこのマシンの `hc connect` �
 | フォーカスを移す、フォーカスがあるか | mod に `focus` と `focused` を頼む。`hc` は herdr app のフォーカスを知らないためである。`focused` は、mod が `focused()` の端末の番地と比べる |
 | ペインを閉じる | `hc kill <端末>` |
 | 中央のポップアップ | 持たない（`ErrUnsupported`）。server は herdr app の中では `Config.OpenPopup`、`RunPopup`、`PopupScreenWidth` を入れず、部品のポップアップを client の画面の中に描き（FR-67）、`:terminal.popup` を `:!` と同じく動かす。開くたびに誤りを出さないためである |
-| 待つ上限 | `mux.HerdrAppWait`（10 秒。仮）。server はペインを分割するとき（`splitTimeout` の 2 秒に代えて）とフォーカスを移すときに使う。mod が依頼を探す間隔と、別のマシンの herdr app との往復を待つためである |
+| 待つ上限 | mod が依頼を引き受ける（引き受けの印を付ける）のを待つ上限は `mux.HerdrAppWait`（10 秒。仮）で、過ぎたら「mod が入っていない」（`ErrHerdrAppNoReply`）にする。引き受けた後は、ペインの分割なら `mux.HerdrAppSplitWait`（40 秒。仮。server の分割の ctx の期限）まで結果を待ち、過ぎたら「mod が分割を終えなかった」（`ErrHerdrAppSlow`）にする。フォーカスの移動は、ctx の期限を `HerdrAppWait` にする。mod が依頼を探す間隔と、別のマシンの herdr app との往復を待つためである。引き受けの後に待ちを延ばすのは、`diff/start` の `wait`（#447）が、見比べが始まった後の mod の遅れ（入れ替えとフォーカスの移し直し）を「mod が入っていない」の誤りで応答しないためである（PR #448 のレビューの推奨 1） |
 | mod が無いとき | 期限までに結果が無ければ、本体は依頼と結果のラベルを消して `mux.ErrHerdrAppNoReply` を返す。打ち切る直前に mod が結果を書いていれば、その新しいペインを `hc kill` で閉じる。mod は、引き受けの印を書いた後に依頼のラベルを読み直し、消えていれば割らない。server は、mod を入れるよう促す文言を足して、client のメッセージの行に出す |
 | 別のマシン | mod は、`machines()` のマシンごとに `exec("hc", …, {on})` でそのマシンの `hc` を動かす。herdr app の命令には `<マシン>/<番地>` の形の番地を渡し、ラベルにはそのマシンの番地（前置きなし）を書く |
 | 写しの取り合い | 同じ herdr app の中の写しは、モジュールの中で共有する処理中の依頼の集まりで、1 つの写しだけが処理する。別の herdr app（別の PC からつないだ画面）の mod とは、依頼を引き受ける前にラベル `vi-imitation.claim.<番号>` に自分の印を書いて読み直し、自分の印が残っているときだけ処理する。ほかの mod の印が既に付いた依頼には手を出さず、読み直しで負けた依頼も二度と引き受けない（退く。PR #441 の再レビューの推奨 B）。本体は待ちを打ち切るときに引き受けの印も消す。`hc label` は比べてから書く操作を持たないので、ほぼ同時に書いて読むと両方が処理しうる。このため使い方に、mod は herdr app の画面 1 つにだけ入れると書いた（PR #441 のレビューの推奨 2） |
@@ -2401,6 +2401,8 @@ PR #375 のレビューで、メモリの使用量の拡張機能（6.11）が�
 `editor/state` の result に、カーソルのあるタブの client のペインを分割できるか（`canSplit`）を足した。拡張機能は、端末多重化ソフトの外で分割の要る見比べを始める前に、バッファを作らずに断れる。
 
 #437 で、`diff/start` で片方だけがタブのときの分割の向きを、タブでないバッファが `a` なら左、`b` なら右に決め、拡張機能 API の版を 0.26.0 にした（`ext.DiffStartParams` の doc。6.8 の「拡張機能からの見比べ」の行）。params と result の形は変えていない。0.25.0 までの本体は、どちらでも右に開く。
+#447 で、`diff/start` の params に `wait`（`ext.DiffStartParams.Wait`）を足し、拡張機能 API の版を 0.27.0 にした。`wait` を付けて分割するときは、端末多重化ソフトの層の分割（`Config.SplitPane`。入れ替えとフォーカスの移し直しを含み、herdr app では mod の結果）が戻り、かつ新しい client が繋いでもう片方のバッファがそのタブになり見比べが始まってから応答する（`internal/editor` の `diffPending.reply`。FR-317）。分割の誤り、待ちを捨てたとき（版を閉じた、期限を過ぎた）は誤りで応答する。付けなければ今までどおり分割を頼んだ時点で応答する。続けて見比べるファイルを替える拡張機能が、分割の途中のペインを前の版の `buffer/dispose` で閉じて、端末多重化ソフトの操作（herdr app の mod の `pane.swap` と `pane.focus`）を失敗させないためである。git 連携の拡張機能（`git.changes` と `git.diffHead`）は `wait` を付ける。
+#446 で、`diff/start` の分割を頼んだ後、新しい client が繋ぐ前に待ちを捨てたら、その印（`diffPending.token`）を覚え、後から繋いだその client を `editor.ErrSplitCanceled` で断るようにした（FR-318）。server は理由を付けずに client を終わらせるので、ペインが閉じる（中身の無い client のペインを残さない）。`:diffsplit` の待ちは今までどおりで、断らない。
 
 #### #432 のレジスターへ入れる口
 

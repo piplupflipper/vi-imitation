@@ -119,12 +119,29 @@ func (e *Editor) discardCreated(bs *bufferState, extID string) {
 }
 
 // diffStartRequest は、diff/start を処理する。始められなければ、まだタブでない作ったバッファを閉じ、画面に出せる日本語の誤りで応答する。
+// Wait（#447）でペインを分割したときは、ここでは応答せず、分割が戻り、新しい client が繋いで見比べが始まってから応答する
+// （diffPending.reply。始まらなければ誤りで応答する）。
+//
+// req: FR-99, FR-317
 func (e *Editor) diffStartRequest(ev *exthost.DiffStartRequest) {
-	res, err := e.diffStart(ev.Extension, ev.Params)
+	var reply func(error)
+	if ev.Params.Wait {
+		reply = func(err error) {
+			if err != nil {
+				_ = ev.ReplyError(err)
+				return
+			}
+			_ = ev.Reply(ext.DiffStartResult{Split: true})
+		}
+	}
+	res, err := e.diffStart(ev.Extension, ev.Params, reply)
 	if err != nil {
 		e.discardCreated(e.findBuffer(ev.Params.A), ev.Extension)
 		e.discardCreated(e.findBuffer(ev.Params.B), ev.Extension)
 		_ = ev.ReplyError(err)
+		return
+	}
+	if res.Split && reply != nil {
 		return
 	}
 	_ = ev.Reply(res)
@@ -137,7 +154,9 @@ var errNoTab = errors.New("見比べる 2 つのバッファのどちらもタ�
 //
 // req: FR-99
 // extID は diff/start を送った拡張機能で、待ちを捨てるときに閉じてよいのは、その拡張機能が作ったバッファだけである。
-func (e *Editor) diffStart(extID string, p ext.DiffStartParams) (ext.DiffStartResult, error) {
+// reply は、分割するときに、見比べが始まった（nil）か始まらなかった（誤り）かを後から知らせる関数である（p.Wait。#447）。
+// nil なら知らせない。分割しないとき（その場で始めた、誤り）は呼ばない。
+func (e *Editor) diffStart(extID string, p ext.DiffStartParams, reply func(error)) (ext.DiffStartResult, error) {
 	a, b := e.findBuffer(p.A), e.findBuffer(p.B)
 	for i, bs := range []*bufferState{a, b} {
 		id := []ext.BufferID{p.A, p.B}[i]
@@ -163,12 +182,27 @@ func (e *Editor) diffStart(extID string, p ext.DiffStartParams) (ext.DiffStartRe
 		from, other, swap = b, a, true
 	}
 	c := from.owner
-	if err := e.splitForDiff(c, "", &diffPending{from: from, buf: other, swap: swap, ext: extID}); err != nil {
+	if err := e.splitForDiff(c, "", &diffPending{from: from, buf: other, swap: swap, ext: extID, reply: reply}); err != nil {
 		return ext.DiffStartResult{}, err
 	}
 	text := fmt.Sprintf("%s を別のペインで開いて見比べます", e.bufferName(other))
 	e.withView(c, func() { e.showLaterMessage(infoMessage(text)) })
 	return ext.DiffStartResult{Split: true}, nil
+}
+
+// diffDropStale は、繋ぐ client の印 token が diff/start の待ちのもので、待っているバッファが既に閉じたか別の client のタブなら、
+// 待ちを捨てる（dropPending が印を覚えるので、attach がその client を断る）。attach が client を足す前に呼び、
+// 繋いでいる途中で待ちを捨てる経路でも、空のタブの client を残さない（#448 のレビューの推奨 3。#446）。
+//
+// req: FR-318
+func (e *Editor) diffDropStale(token string) {
+	p := e.diff.pending
+	if p == nil || p.buf == nil || token == "" || token != p.token {
+		return
+	}
+	if p.buf.owner != nil || !slices.Contains(e.bufs, p.buf) {
+		e.dropPending(p)
+	}
 }
 
 // diffAdopt は、繋ぐ client（読み込んでいる client）が、diff/start で分割したペインの client（印 token が待ちのものと同じ）なら、

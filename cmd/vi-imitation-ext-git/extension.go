@@ -124,7 +124,8 @@ func (x *extension) startDiff(ctx context.Context, id ext.BufferID, path, fileTy
 	// ファイルのバッファはタブで、HEAD の版のバッファはタブでないので、本体はファイルのタブの client のペインを分割し、
 	// HEAD の版を新しい client のタブにする。diffview.nvim と同じく、見比べの左の側（A）を HEAD の版、右の側（B）をファイルにする（#437）。
 	// 本体は、タブでない A を元のペインの左に開き、フォーカスを右のファイルのペインに残す（ext.DiffStartParams の doc）。
-	if _, err := x.server.StartDiff(ctx, ext.DiffStartParams{A: created.Buffer, B: id}); err != nil {
+	// Wait で、見比べが始まるまで応答を待つ（#447。ループの外の goroutine なので待ってよい）。
+	if _, err := x.server.StartDiff(ctx, ext.DiffStartParams{A: created.Buffer, B: id, Wait: true}); err != nil {
 		_ = x.server.ShowMessage(ext.MessageWarning, remoteMessage(err))
 	}
 }

@@ -8,6 +8,7 @@ func TestDiffStartMessageJSON(t *testing.T) {
 	roundTrip(t, BufferCreateParams{Title: "t", Text: "", Writable: true}, `{"title":"t","text":"","writable":true}`)
 	roundTrip(t, BufferCreateResult{Buffer: 3, Version: 1}, `{"buffer":3,"version":1}`)
 	roundTrip(t, DiffStartParams{A: 1, B: 3}, `{"a":1,"b":3}`)
+	roundTrip(t, DiffStartParams{A: 1, B: 3, Wait: true}, `{"a":1,"b":3,"wait":true}`)
 	roundTrip(t, DiffStartResult{Split: true}, `{"split":true}`)
 	roundTrip(t, DiffStartResult{}, `{}`)
 }
