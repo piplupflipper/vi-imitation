@@ -261,8 +261,13 @@ func (a *HerdrApp) withdraw(ctx context.Context, target, reqKey, repKey string) 
 			_, _ = a.run(cctx, "kill", rep.Terminal)
 		}
 	}
-	_, _ = a.run(cctx, "label", target, reqKey+"=", repKey+"=")
+	claimKey := herdrAppClaimPrefix + strings.TrimPrefix(reqKey, HerdrAppRequestPrefix)
+	_, _ = a.run(cctx, "label", target, reqKey+"=", repKey+"=", claimKey+"=")
 }
+
+// herdrAppClaimPrefix は、mod が依頼を引き受けた印のラベルの名前の前置きである（後ろに依頼の番号）。
+// 本体は書かず、待ちを打ち切るときに依頼と一緒に消す（引き受けた mod が途中で止まっても印を残さない）。
+const herdrAppClaimPrefix = "vi-imitation.claim."
 
 // labels は、hc get で端末 terminal のラベルを読む。
 func (a *HerdrApp) labels(ctx context.Context, terminal string) (map[string]string, error) {

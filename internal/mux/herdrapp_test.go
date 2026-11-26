@@ -171,7 +171,10 @@ func TestHerdrAppArgvClosesOwnTerminal(t *testing.T) {
 // （PR #441 のレビューの推奨 3）。
 func TestHerdrAppWithdrawClosesLatePane(t *testing.T) {
 	a, hc := newHerdrApp(t)
-	hc.SetLabels(t, "t8", map[string]string{HerdrAppRequestPrefix + "1-1": "{}", HerdrAppReplyPrefix + "1-1": `{"id":"1-1","terminal":"t9"}`, "x": "1"})
+	hc.SetLabels(t, "t8", map[string]string{
+		HerdrAppRequestPrefix + "1-1": "{}", HerdrAppReplyPrefix + "1-1": `{"id":"1-1","terminal":"t9"}`,
+		herdrAppClaimPrefix + "1-1": "other", "x": "1",
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	a.withdraw(ctx, "t8", HerdrAppRequestPrefix+"1-1", HerdrAppReplyPrefix+"1-1")

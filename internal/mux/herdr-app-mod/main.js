@@ -100,6 +100,9 @@ export default class ViImitation extends View {
       const id = key.slice(REQ.length);
       const mark = `${on ?? ""}/${address}/${id}`;
       if (this.handled.has(mark) || inFlight.has(mark)) continue;
+      // ほかの mod の引き受けの印が付いている依頼には手を出さない（退く。PR #441 の再レビューの推奨 B）。
+      const owner = labels[CLAIM + id];
+      if (owner && owner !== this.nonce) continue;
       inFlight.add(mark);
       try {
         // 別の herdr app（別の PC からつないだ画面）の mod と取り合わないように、引き受けの印を書いて読み直し、自分の印が残っていれば処理する。
@@ -107,7 +110,11 @@ export default class ViImitation extends View {
         // 読み直しで依頼のラベルが消えていれば（本体が待ちを打ち切った）、ペインを割らない。
         await hcRun(["label", address, `${CLAIM}${id}=${this.nonce}`], on);
         const again = await hcLabels(address, on);
-        if (again[CLAIM + id] !== this.nonce || !(key in again)) continue;
+        if (again[CLAIM + id] !== this.nonce || !(key in again)) {
+          // 引き受けに負けた（ほかの mod の印に書き替わった）か、本体が取り下げた。この依頼は二度と引き受けない。
+          this.handled.add(mark);
+          continue;
+        }
         if (this.handled.size > 1000) this.handled.clear();
         this.handled.add(mark);
         let reply;
