@@ -15,7 +15,7 @@ import (
 const splitTimeout = 2 * time.Second
 
 // splitPane は、editor.Config.SplitPane である（:diffsplit と diff/start。基本設計 6.8。FR-99）。
-// 端末多重化ソフトの層（server を起動した環境で判定する。基本設計 1.3）で from のペインを右に分割し、
+// 端末多重化ソフトの層（server を起動した環境で判定する。基本設計 1.3）で from のペインを右（left なら左。#437）に分割し、
 // そこで、この server のソケットを -connect で指定して繋ぐ編集の client（本体の実行ファイルに file を渡したもの。空なら渡さない）を、
 // dir で起動する。新しい client には、環境変数 editor.EnvSplit で待ちの印 token を渡す。client は Hello の Env でそれを知らせ、
 // イベントループがその client のタブと見比べを始める。
@@ -24,7 +24,7 @@ const splitTimeout = 2 * time.Second
 // 待つだけの client（FR-83）になり、ファイルを from の client のタブに開いて新しいペインに何も出さなかった（#245 で見つけた）。
 // ソケットのパスの規則（基本設計 1.2）に頼らずに -connect で繋ぐので、from の client が別の window へ動いた後（FR-112）も、
 // herdr のペインに HERDR_PANE_ID が入らないときも、この server に繋ぐ。
-func (s *Server) splitPane(from, file, dir, token string) error {
+func (s *Server) splitPane(from, file, dir, token string, left bool) error {
 	sock, _ := s.sock.Load().(string)
 	if sock == "" {
 		return errors.New("server のソケットで待ち受けていない")
@@ -41,13 +41,18 @@ func (s *Server) splitPane(from, file, dir, token string) error {
 	if file != "" {
 		args = append(args, "--", file)
 	}
+	dirn := mux.Right
+	if left {
+		dirn = mux.Left
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), splitTimeout)
 	defer cancel()
 	_, err = m.SplitPane(ctx, mux.SplitOptions{
 		Target:    from,
-		Direction: mux.Right,
+		Direction: dirn,
 		Command:   mux.Command{Args: args, Env: map[string]string{editor.EnvSplit: token}, Dir: dir},
-		Focus:     true,
+		// フォーカスは右のペインに置く。右に開いたら新しいペインへ移し、左に開いたら元のペインに残す（#437。diffview.nvim と同じ）。
+		Focus: !left,
 	})
 	return err
 }

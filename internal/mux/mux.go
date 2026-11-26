@@ -66,12 +66,16 @@ var ErrNoTarget = errors.New("mux: empty target pane")
 // Direction は、ペインを分割する向きである。
 type Direction int
 
-// 分割の向き。新しいペインは、元のペインの右か下に開く。
+// 分割の向き。新しいペインは、元のペインの右、下、左のどれかに開く。
 const (
 	// Right は、元のペインの右に開く（tmux の split-window -h、herdr の right）。
 	Right Direction = iota
 	// Down は、元のペインの下に開く（tmux の split-window -v、herdr の down）。
 	Down
+	// Left は、元のペインの左に開く（tmux の split-window -h -b）。
+	// herdr 0.9.0 の plugin.pane.open は分割の向きに right と down しか受け付けないので、herdr では右に開いてから
+	// pane.swap で元のペインと入れ替え、Focus のとおりにフォーカスを移し直す（Herdr.SplitPane。#437）。
+	Left
 )
 
 // Command は、ペインかポップアップの中で起動するコマンドである。

@@ -128,4 +128,7 @@ package ext
 // 利用者がキーの前に付けたレジスターの名前を知らせる view/key の Register（ViewKeyParams）を足した（#432。FR-315）。
 // 古い本体は register/set に method not found で応答し、"a の後のキーを popupKeys に当てずに本体のキーとして解釈する。
 // 使う拡張機能は、要る版を VersionLess で apiVersion と比べる。
-const APIVersion = "0.25.0"
+// 0.26.0 で、diff/start で片方だけがタブのときの分割の向きを、タブでないバッファが A（左の側）なら左、B なら右に決めた
+// （DiffStartParams。#437）。0.25.0 までの本体は、どちらでも右に分割する（見比べの左右とペインの左右が逆になる）。
+// 比べる元の版を A にして左のペインに出したい拡張機能は、要る版を VersionLess で apiVersion と比べる。
+const APIVersion = "0.26.0"

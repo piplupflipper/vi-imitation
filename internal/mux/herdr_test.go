@@ -222,6 +222,62 @@ func TestHerdrSplitPaneDefaults(t *testing.T) {
 	}
 }
 
+// TestHerdrSplitPaneLeft は、Left なら右に開いてから pane.swap で元のペインと入れ替え、
+// Focus のとおりのペインへ pane.focus でフォーカスを移し直すことを確かめる（#437）。
+func TestHerdrSplitPaneLeft(t *testing.T) {
+	for _, tc := range []struct {
+		focus bool
+		want  string
+	}{{true, "wW:p2"}, {false, "wW:p8"}} {
+		f := newFakeHerdr(t, func(req herdrRequest) map[string]any {
+			if req.Method == "pane.swap" || req.Method == "pane.focus" {
+				return ok(map[string]any{"type": "ok"})
+			}
+			return ok(map[string]any{"plugin_pane": map[string]any{"pane": paneInfo("wW:p2", "wW:t4")}})
+		})
+		h := &Herdr{Socket: f.socket, Pane: "wW:p7"}
+		pane, err := h.SplitPane(testCtx(t), SplitOptions{Target: "wW:p8", Direction: Left, Focus: tc.focus, Command: Command{Args: []string{"x"}}})
+		if err != nil || pane != "wW:p2" {
+			t.Fatalf("SplitPane = %q, %v; want wW:p2", pane, err)
+		}
+		reqs := f.requests()
+		if len(reqs) != 3 {
+			t.Fatalf("リクエスト = %v, want plugin.pane.open、pane.swap、pane.focus", reqs)
+		}
+		if p := reqs[0].Params; reqs[0].Method != "plugin.pane.open" || p["direction"] != "right" || p["target_pane_id"] != "wW:p8" || p["focus"] != tc.focus {
+			t.Errorf("1 つ目 = %s %v, want plugin.pane.open の right", reqs[0].Method, p)
+		}
+		want := map[string]any{"source_pane_id": "wW:p2", "target_pane_id": "wW:p8"}
+		if reqs[1].Method != "pane.swap" || !reflect.DeepEqual(reqs[1].Params, want) {
+			t.Errorf("2 つ目 = %s %v, want pane.swap %v", reqs[1].Method, reqs[1].Params, want)
+		}
+		if reqs[2].Method != "pane.focus" || reqs[2].Params["pane_id"] != tc.want {
+			t.Errorf("focus=%v: 3 つ目 = %s %v, want pane.focus %s", tc.focus, reqs[2].Method, reqs[2].Params, tc.want)
+		}
+	}
+}
+
+// TestHerdrSplitPaneLeftSwapFails は、入れ替えに失敗したら、開いたペインを閉じて誤りを返すことを確かめる（#437）。
+func TestHerdrSplitPaneLeftSwapFails(t *testing.T) {
+	f := newFakeHerdr(t, func(req herdrRequest) map[string]any {
+		switch req.Method {
+		case "pane.swap":
+			return herdrErr("invalid_params", "nope")
+		case "pane.close":
+			return ok(map[string]any{"type": "ok"})
+		}
+		return ok(map[string]any{"plugin_pane": map[string]any{"pane": paneInfo("wW:p2", "wW:t4")}})
+	})
+	h := &Herdr{Socket: f.socket, Pane: "wW:p7"}
+	if _, err := h.SplitPane(testCtx(t), SplitOptions{Target: "wW:p8", Direction: Left, Command: Command{Args: []string{"x"}}}); err == nil {
+		t.Fatal("SplitPane: err = nil, want the pane.swap error")
+	}
+	reqs := f.requests()
+	if len(reqs) != 3 || reqs[2].Method != "pane.close" || reqs[2].Params["pane_id"] != "wW:p2" {
+		t.Errorf("リクエスト = %v, want 最後に wW:p2 の pane.close", reqs)
+	}
+}
+
 // TestHerdrEmptyTarget は、元のペインが空なら、server の環境変数のペインを既定にせず ErrNoTarget を返すことを確かめる。
 func TestHerdrEmptyTarget(t *testing.T) {
 	f := newFakeHerdr(t, func(herdrRequest) map[string]any { return ok(map[string]any{"type": "ok"}) })

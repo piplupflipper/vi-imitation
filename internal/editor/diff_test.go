@@ -11,15 +11,18 @@ import (
 )
 
 // diffCall は、Config.SplitPane に渡された引数である。
-type diffCall struct{ from, file, dir, token string }
+type diffCall struct {
+	from, file, dir, token string
+	left                   bool
+}
 
 // env は、分割したペインの client が Hello で知らせる環境変数（待ちの印）である。
 func (c diffCall) env() []string { return []string{EnvSplit + "=" + c.token} }
 
 // recordSplit は、呼ばれた引数を calls へ送るだけの Config.SplitPane の偽物を返す。
-func recordSplit(calls chan<- diffCall) func(from, file, dir, token string) error {
-	return func(from, file, dir, token string) error {
-		calls <- diffCall{from, file, dir, token}
+func recordSplit(calls chan<- diffCall) func(from, file, dir, token string, left bool) error {
+	return func(from, file, dir, token string, left bool) error {
+		calls <- diffCall{from, file, dir, token, left}
 		return nil
 	}
 }
@@ -87,7 +90,8 @@ func TestDiffSplit(t *testing.T) {
 		"a.txt": "one\ntwo\nthree\nfour\n",
 		"b.txt": "one\nTWO\nthree\n",
 	})
-	if want := (diffCall{"%1", filepath.Join(dir, "b.txt"), dir, "1"}); call != want {
+	// :diffsplit は、いまのペインの右に開く（#437 で変えない）。
+	if want := (diffCall{"%1", filepath.Join(dir, "b.txt"), dir, "1", false}); call != want {
 		t.Errorf("SplitPane = %+v, want %+v", call, want)
 	}
 	if n := h.diffSessions(); n != 1 {
@@ -250,7 +254,7 @@ func TestDiffErrors(t *testing.T) {
 		t.Errorf("組 = %d", n)
 	}
 	// 同じ client のタブのファイルへの :diffsplit も断る。
-	h.e.do(func() { h.e.cfg.SplitPane = func(string, string, string, string) error { return nil } })
+	h.e.do(func() { h.e.cfg.SplitPane = func(string, string, string, string, bool) error { return nil } })
 	h.keys(":diffsplit a.txt<CR>")
 	h.settle()
 	if msg := h.message(); !strings.Contains(msg, "この client のタブ") {

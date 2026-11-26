@@ -143,6 +143,7 @@ func runFakeExt(mode string) int {
 		// fake.headdiff は、buffer/create で編集を禁止した "HEAD:x" のバッファ（中身は one と TWO の 2 行）を作り、
 		// diff/start でカーソルのあるバッファ（A）と見比べさせる（#245。git 連携の拡張機能の代役）。
 		// 引数が数なら、作らずにその番号のバッファを B にし、notab なら、作った 2 つのバッファを見比べさせる。
+		// base なら、作ったバッファを A（左の側）に、カーソルのあるバッファを B にする（#437。git 連携の拡張機能の並び）。
 		// 結果は message/show で "headdiff buf=<作った番号> split=<分割したか> err=<誤り>" と出す。
 		// "update <番号> <テキスト>" なら buffer/update を、"dispose <番号>" なら buffer/dispose を送り、
 		// "headdiff update version=<番号> err=<誤り>" か "headdiff dispose err=<誤り>" と出す。
@@ -183,10 +184,13 @@ func runFakeExt(mode string) int {
 				} else {
 					created, err = s.CreateBuffer(hostCtx, ext.BufferCreateParams{Title: "HEAD:x", Text: "one\nTWO"})
 					dp.B = created.Buffer
-					if err == nil && a.Text == "notab" {
+					switch {
+					case err == nil && a.Text == "notab":
 						var other ext.BufferCreateResult
 						other, err = s.CreateBuffer(hostCtx, ext.BufferCreateParams{Title: "other", Text: ""})
 						dp.A = other.Buffer
+					case a.Text == "base":
+						dp.A, dp.B = dp.B, dp.A
 					}
 				}
 				var r ext.DiffStartResult

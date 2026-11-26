@@ -276,10 +276,13 @@ func (p *changesPicker) choose(id string) {
 //
 // 閉じる時機は、操作中の client のカーソルのあるバッファがその版かどうかで分ける。
 //
-//   - その版のとき（見比べのペインから一覧を開いた。選んだ後はカーソルがそのペインへ移るので、続けて選ぶとこちらになる）は、ファイルを開く前に閉じる。
-//     そのペインの client が終わり、ファイルは左のペインの client のタブに開く。開いた後に閉じると、ファイルがそのペインの client のタブになり、
+//   - その版のとき（左の版のペインから一覧を開いた）は、ファイルを開く前に閉じる。
+//     そのペインの client が終わり、ファイルは右のペインの client のタブに開く。開いた後に閉じると、ファイルがそのペインの client のタブになり、
 //     そのペインがもう一度分割されてペインが増える（PR #382 のレビューの必須 1）
-//   - それ以外（左のペインから開いた）は、ファイルを開いた後に閉じる
+//   - それ以外（右のファイルのペインから開いた。選んだ後もカーソルはそのペインに残るので、続けて選ぶとこちらになる）は、
+//     ファイルを開いた後に閉じる。版のペインの client が終わり、新しい版はファイルのペインの左に開く
+//
+// #437 で版を左のペインに移した。どちらの時機でも、閉じるのは版だけをタブに持つ client なので、ペインは左右の 2 つのままである。
 //
 // req: FR-251, FR-252
 func (x *extension) openChange(ctx context.Context, cmp comparison, c change) {
@@ -348,9 +351,10 @@ func (x *extension) openChange(ctx context.Context, cmp comparison, c change) {
 		return
 	}
 	x.lastBase = created.Buffer
-	// ファイルのバッファは操作中の client のタブで、比べる元の版はタブでないので、本体はファイルのタブの client のペインを右に分割する。
-	// 見比べが始まらなければ、本体がまだタブでない比べる元の版を閉じる（ext.DiffStartParams の doc）。
-	if _, err := x.server.StartDiff(ctx, ext.DiffStartParams{A: opened.Buffer, B: created.Buffer}); err != nil {
+	// ファイルのバッファは操作中の client のタブで、比べる元の版はタブでないので、本体はファイルのタブの client のペインを分割する。
+	// diffview.nvim と同じく、比べる元の版を左の側（A）、ファイルを右の側（B）にする（#437）。本体は版のペインを左に開き、
+	// フォーカスを右のファイルのペインに残す。見比べが始まらなければ、本体がまだタブでない比べる元の版を閉じる（ext.DiffStartParams の doc）。
+	if _, err := x.server.StartDiff(ctx, ext.DiffStartParams{A: created.Buffer, B: opened.Buffer}); err != nil {
 		_ = x.server.ShowMessage(ext.MessageWarning, remoteMessage(err))
 	}
 }
