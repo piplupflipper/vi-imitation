@@ -164,6 +164,8 @@ type preparer struct {
 	compiler string
 	// listed は、設定に並べたパーサの名前の集合である（treesitterSettings.listed）。
 	listed map[string]bool
+	// specs は、誤り無く読めたパーサの名前からその項目への表である。クエリを継ぐパーサ（FR-328）の取得元と版を引くのに使う。
+	specs map[string]parserSpec
 	// progress は、利用者へ進み具合を知らせる（progress/report。FR-178）。
 	progress func(ext.ProgressReportParams)
 }
@@ -180,7 +182,11 @@ const progressTitle = "tree-sitter"
 // 取得からロックファイルの記録までは、置き場所の flock を取って行う。
 // 失敗したら、理由を返す。呼び出し側は、このパーサだけを使わない。
 //
-// req: FR-142
+// spec のクエリがほかのパーサのファイルを継ぐ（FR-328）ときは、継ぐパーサのリポジトリも、同じロックファイルの記録の規則で取得し、
+// そのコミットを記録する（継ぐパーサのビルドはしない）。ビルドしたものの鍵には継ぐパーサのコミットを含めるので、
+// 継ぐパーサの版が変わってコミットが変われば、つないだクエリを読み直してビルドし直す（FR-329）。
+//
+// req: FR-142, FR-329
 func (p *preparer) prepare(ctx context.Context, spec parserSpec) (*language, error) {
 	if p.env.err != nil {
 		return nil, p.env.err
@@ -196,12 +202,33 @@ func (p *preparer) prepare(ctx context.Context, spec parserSpec) (*language, err
 	if err != nil {
 		return nil, err
 	}
-	pinned := ""
-	if e, ok := lock.Parsers[spec.name]; ok && e.Repo == spec.repo && e.Version == spec.version {
-		pinned = e.Commit
+	pinnedOf := func(s parserSpec) string {
+		if e, ok := lock.Parsers[s.name]; ok && e.Repo == s.repo && e.Version == s.version {
+			return e.Commit
+		}
+		return ""
 	}
-	if pinned != "" {
-		if dir := p.buildDir(spec, pinned); exists(filepath.Join(dir, libraryFileName)) {
+	inherits := spec.inherits()
+	bases := make([]parserSpec, len(inherits))
+	for i, name := range inherits {
+		base, ok := p.specs[name]
+		if !ok {
+			// parseSettings が除くので起きない。起きたら、継ぐクエリを欠いたまま使わずに誤りにする。
+			return nil, fmt.Errorf("queries の継ぐパーサ %s が設定に無い", name)
+		}
+		bases[i] = base
+	}
+	// 継ぐパーサのコミットは、記録が合えばその記録である。どれかが合わなければ、取得して決める。
+	baseCommits := map[string]string{}
+	pinned := pinnedOf(spec)
+	cached := pinned != ""
+	for _, b := range bases {
+		c := pinnedOf(b)
+		baseCommits[b.name] = c
+		cached = cached && c != ""
+	}
+	if cached {
+		if dir := p.buildDir(spec, pinned, baseCommits); exists(filepath.Join(dir, libraryFileName)) {
 			return loadBuilt(spec.name, dir)
 		}
 	}
@@ -216,14 +243,24 @@ func (p *preparer) prepare(ctx context.Context, spec parserSpec) (*language, err
 	defer func() {
 		p.progress(ext.ProgressReportParams{Token: token, Kind: ext.ProgressEnd, Message: endMessage, Failed: failed})
 	}()
-	src := filepath.Join(p.env.dataDir, "src", spec.name)
-	fctx, cancel := context.WithTimeout(ctx, p.env.fetchTimeout)
-	commit, err := extmgr.Checkout(fctx, src, spec.repo, spec.version, pinned, extmgr.CheckoutOptions{Git: p.env.git, Env: p.env.env})
-	cancel()
+	// 継ぐパーサのリポジトリを先に取得する。そのパーサの記録が合えばそのコミットを、合わなければ version を解決したコミットを取り出す。
+	for _, b := range bases {
+		p.progress(ext.ProgressReportParams{
+			Token: token, Kind: ext.ProgressReport,
+			Message: fmt.Sprintf("パーサ %s が継ぐクエリのパーサ %s を取得している（%s %s）", spec.name, b.name, b.repo, b.version),
+		})
+		c, cerr := p.checkout(ctx, b, pinnedOf(b))
+		if cerr != nil {
+			return nil, fmt.Errorf("継ぐパーサ %s を取得できない: %w", b.name, cerr)
+		}
+		baseCommits[b.name] = c
+	}
+	commit, err := p.checkout(ctx, spec, pinned)
 	if err != nil {
 		return nil, fmt.Errorf("取得できない: %w", err)
 	}
-	dir := p.buildDir(spec, commit)
+	src := p.srcDir(spec.name)
+	dir := p.buildDir(spec, commit, baseCommits)
 	if !exists(filepath.Join(dir, libraryFileName)) {
 		p.progress(ext.ProgressReportParams{
 			Token: token, Kind: ext.ProgressReport, Message: fmt.Sprintf("パーサ %s をビルドしている（%s）", spec.name, p.compiler),
@@ -231,6 +268,9 @@ func (p *preparer) prepare(ctx context.Context, spec parserSpec) (*language, err
 		if err = p.build(ctx, spec, src, commit, dir); err != nil {
 			return nil, err
 		}
+	}
+	for _, b := range bases {
+		lock.Parsers[b.name] = extmgr.LockEntry{Repo: b.repo, Version: b.version, Commit: baseCommits[b.name]}
 	}
 	lock.Parsers[spec.name] = extmgr.LockEntry{Repo: spec.repo, Version: spec.version, Commit: commit}
 	for name := range lock.Parsers {
@@ -249,16 +289,39 @@ func (p *preparer) prepare(ctx context.Context, spec parserSpec) (*language, err
 	return lang, nil
 }
 
-// buildDir は、spec をコミット commit でビルドしたものを置くディレクトリである。
-func (p *preparer) buildDir(spec parserSpec, commit string) string {
-	return filepath.Join(p.env.dataDir, "parsers", spec.name, buildKey(spec, commit))
+// srcDir は、パーサ name の取得したソースを置くディレクトリである。
+func (p *preparer) srcDir(name string) string {
+	return filepath.Join(p.env.dataDir, "src", name)
 }
 
-// buildKey は、ビルドしたものを見分ける鍵である。コミット、path、queries のどれかが変われば、別のディレクトリにビルドする。
+// checkout は、spec のリポジトリを srcDir に取得し、pinned（空なら version を解決したもの）のコミットを取り出して、そのハッシュを返す。
+func (p *preparer) checkout(ctx context.Context, spec parserSpec, pinned string) (string, error) {
+	fctx, cancel := context.WithTimeout(ctx, p.env.fetchTimeout)
+	defer cancel()
+	return extmgr.Checkout(fctx, p.srcDir(spec.name), spec.repo, spec.version, pinned, extmgr.CheckoutOptions{Git: p.env.git, Env: p.env.env})
+}
+
+// buildDir は、spec をコミット commit でビルドしたものを置くディレクトリである。
+// baseCommits は、spec のクエリが継ぐパーサ（FR-328）の名前から、取り出したコミットへの表である。
+func (p *preparer) buildDir(spec parserSpec, commit string, baseCommits map[string]string) string {
+	return filepath.Join(p.env.dataDir, "parsers", spec.name, buildKey(spec, commit, baseCommits))
+}
+
+// buildKey は、ビルドしたものを見分ける鍵である。コミット、path、queries、継ぐパーサのコミットのどれかが変われば、別のディレクトリにビルドする。
 // 同じパスの共有ライブラリを、中身を変えて dlopen し直すことはしない（読み込み済みのライブラリが使われうる）。
-func buildKey(spec parserSpec, commit string) string {
+// 継ぐパーサの無いパーサの鍵は、FR-328 より前と同じ値になる（前にビルドしたものをそのまま使う）。
+//
+// req: FR-329
+func buildKey(spec parserSpec, commit string, baseCommits map[string]string) string {
 	h := sha256.New()
-	for _, s := range append([]string{commit, spec.path}, spec.queries...) {
+	parts := []string{commit, spec.path}
+	for _, q := range spec.queries {
+		parts = append(parts, q.String())
+	}
+	for _, name := range spec.inherits() {
+		parts = append(parts, "inherit:"+name+"@"+baseCommits[name])
+	}
+	for _, s := range parts {
 		h.Write([]byte(s))
 		h.Write([]byte{0})
 	}
@@ -290,7 +353,7 @@ func (p *preparer) build(ctx context.Context, spec parserSpec, src, commit, dir 
 	if err != nil {
 		return err
 	}
-	highlights, err := readQueries(src, root, spec.queries)
+	highlights, err := readQueries(src, root, spec.queries, p.srcDir)
 	if err != nil {
 		return err
 	}
@@ -357,7 +420,11 @@ func grammarSymbol(srcDir, name string) (string, error) {
 
 // readQueries は、ハイライトのクエリを読み、順につないで返す。
 // queries が空なら、root（path の下）の queries/highlights.scm、無ければ src（リポジトリの最上位）の queries/highlights.scm を読む。
-func readQueries(src, root string, queries []string) ([]byte, error) {
+// ほかのパーサのファイル（FR-328）は、srcOf が返すそのパーサの取得したソースの最上位から読む。
+// 継ぐファイルの中の継ぎ（nvim-treesitter の "; inherits:" など）はたどらない。
+//
+// req: FR-328
+func readQueries(src, root string, queries []querySource, srcOf func(name string) string) ([]byte, error) {
 	if len(queries) == 0 {
 		for _, dir := range []string{root, src} {
 			data, err := os.ReadFile(filepath.Join(dir, "queries", "highlights.scm"))
@@ -369,7 +436,11 @@ func readQueries(src, root string, queries []string) ([]byte, error) {
 	}
 	var out []byte
 	for _, q := range queries {
-		data, err := os.ReadFile(filepath.Join(src, q))
+		base := src
+		if q.parser != "" {
+			base = srcOf(q.parser)
+		}
+		data, err := os.ReadFile(filepath.Join(base, q.file))
 		if err != nil {
 			return nil, fmt.Errorf("ハイライトのクエリ %s を読めない: %w", q, err)
 		}
