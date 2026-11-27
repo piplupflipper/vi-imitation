@@ -22,6 +22,10 @@ const (
 	StyleVariable    = "variable"
 	StyleOperator    = "operator"
 	StylePunctuation = "punctuation"
+	// StyleTag は、マークアップ（JSX など）のタグの名前である（tree-sitter のキャプチャ名 @tag。FR-330）。
+	StyleTag = "tag"
+	// StyleAttribute は、マークアップ（JSX など）のタグの属性の名前である（tree-sitter のキャプチャ名 @attribute。FR-330）。
+	StyleAttribute = "attribute"
 
 	// StyleVisual は、ビジュアルモードの選択の範囲である。
 	StyleVisual = "visual"
@@ -169,7 +173,7 @@ const (
 // styleNames は、本体が色を付ける対象の名前の全部である（StyleNames）。
 var styleNames = []string{
 	StyleComment, StyleKeyword, StyleString, StyleNumber, StyleConstant, StyleFunction, StyleType, StyleVariable,
-	StyleOperator, StylePunctuation,
+	StyleOperator, StylePunctuation, StyleTag, StyleAttribute,
 	StyleVisual, StyleStatusLine, StyleStatusLineNC, StyleNonText, StyleSpecialKey, StyleWhitespace, StyleLineNr, StyleSearch, StyleIncSearch, StyleYank,
 	StyleMessageInfo, StyleMessageWarning, StyleMessageError,
 	StyleDiagnosticError, StyleDiagnosticWarning, StyleDiagnosticInfo, StyleDiagnosticHint,
@@ -294,6 +298,9 @@ func (t Theme) WithColors(colors map[string]Attr) Theme {
 
 // DefaultTheme は、既定の対応（仮）を返す。色は端末の 16 色の番号で、Vim の暗い背景の既定の色に近いものを選んだ。
 // 設定の colorscheme で選んだ配色（FR-125）と設定の colors（FR-91）は、この順に WithColors で名前ごとに上書きする。
+// JSX のタグの名前と属性の名前（StyleTag、StyleAttribute）にも既定の色を持つ（FR-331）。
+//
+// req: FR-331
 func DefaultTheme() Theme {
 	return Theme{
 		StyleComment:  {Fg: Indexed(14)},
@@ -304,6 +311,10 @@ func DefaultTheme() Theme {
 		StyleFunction: {Fg: Indexed(14)},
 		StyleType:     {Fg: Indexed(10)},
 		StyleOperator: {Fg: Indexed(11)},
+		// タグの名前と属性の名前は、Vim 9.1 の syntax/html.vim のリンク（htmlTagName は htmlStatement を経て Statement、
+		// htmlArg は Type）に合わせ、keyword と type と同じ番号にした（FR-331）。
+		StyleTag:       {Fg: Indexed(11)},
+		StyleAttribute: {Fg: Indexed(10)},
 
 		StyleVisual:     {Reverse: true},
 		StyleStatusLine: {Reverse: true, Bold: true},

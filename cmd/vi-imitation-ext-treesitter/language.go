@@ -129,7 +129,7 @@ type styleID uint8
 const noStyle styleID = 0
 
 // styleNames は、styleID から色の種類の名前への対応である。0 番は noStyle で、名前は空である。
-var styleNames = []string{"", "comment", "keyword", "string", "number", "constant", "function", "type", "variable", "operator", "punctuation"}
+var styleNames = []string{"", "comment", "keyword", "string", "number", "constant", "function", "type", "variable", "operator", "punctuation", "tag", "attribute"}
 
 // String は、色の種類の名前を返す。
 func (s styleID) String() string { return styleNames[s] }
@@ -148,6 +148,11 @@ func styleByName(name string) (styleID, bool) {
 var captureAliases = map[string]string{
 	// 文字列の中のエスケープ（"\n" の \n）は、文字列のリテラルの一部として色を付ける。
 	"escape": "string",
+	// nvim-treesitter の書き方の、タグの属性の名前とタグの区切りの記号（FR-330）。
+	// ドットを除いて "tag" に写すと、属性の名前と <、> がタグの名前の色になる。
+	// 属性の名前は Neovim と同じく属性の色に、区切りの記号は、iceberg の nvim で色が無い（下の捕捉の色で描かれる）ので括弧の色に写す。
+	"tag.attribute": "attribute",
+	"tag.delimiter": "punctuation",
 }
 
 // styleFor は、ハイライトのクエリのキャプチャ名を、6.1 の表の色の種類の名前に写す。
@@ -156,6 +161,9 @@ var captureAliases = map[string]string{
 // 名前そのものが表か captureAliases にあればそれを返し、無ければ最後のドットから後ろを除いて探し直す。
 // "function.method" と "function.builtin" は "function" に、"constant.builtin" は "constant" に、"string.special.key" は "string" になる。
 // どこまで除いても見つからない名前（Go の "property" など）は noStyle を返し、その範囲には色を付けない。
+// JSX のタグの名前（"tag"）と属性の名前（"attribute"）は、それぞれの色の種類に写す（FR-330）。
+//
+// req: FR-330
 func styleFor(capture string) styleID {
 	name := capture
 	for {

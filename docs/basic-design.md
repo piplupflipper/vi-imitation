@@ -2751,6 +2751,12 @@ tree-sitter-json（v0.24.8）の文法はコメントを含み、公式のクエ
 | `variable` | 変数と引数の名前 |
 | `operator` | 演算子 |
 | `punctuation` | 括弧と区切りの記号 |
+| `tag` | マークアップ（JSX など）のタグの名前（FR-330） |
+| `attribute` | マークアップ（JSX など）のタグの属性の名前（FR-330） |
+
+`tag` と `attribute` は、tree-sitter-javascript の `queries/highlights-jsx.scm` のキャプチャ名 `@tag` と `@attribute` に当たる（#457）。
+tree-sitter の拡張機能は、nvim-treesitter の書き方の `@tag.attribute` を `attribute` に、`@tag.delimiter` を `punctuation` に写す（`language.go` の `captureAliases`）。
+言語の名前で分けないので、同じキャプチャ名を使うほかの言語のパーサのクエリの範囲にも、同じ色が付く。
 
 表に無い名前を受け取った本体は、その範囲に色を付けない（直に付けた色があれば、その色だけを付ける。この節の「範囲に直に付ける色」）。
 

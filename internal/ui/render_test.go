@@ -568,6 +568,22 @@ func TestDefaultTheme(t *testing.T) {
 	}
 }
 
+// TestTagAndAttributeStyles は、JSX のタグの名前と属性の名前の色の種類（tag、attribute）が、設定の colors に書ける名前で、
+// 既定の対応では Vim 9.1 の syntax/html.vim のリンクと同じく keyword と type の色になることを確かめる（FR-331）。
+//
+// req: FR-331
+func TestTagAndAttributeStyles(t *testing.T) {
+	th := DefaultTheme()
+	for name, like := range map[string]string{StyleTag: StyleKeyword, StyleAttribute: StyleType} {
+		if !IsStyleName(name) {
+			t.Errorf("IsStyleName(%q) = false", name)
+		}
+		if a, ok := th[name]; !ok || a != th[like] {
+			t.Errorf("DefaultTheme の %s = %+v, want %s と同じ %+v", name, a, like, th[like])
+		}
+	}
+}
+
 // 行をまたぐ範囲が重なり合っても、行をまたがない範囲と同じ順に重ねる。
 // 表示の上の端より前の行から始まる範囲、下の端より後の行で終わる範囲、行の途中で終わる範囲を含む。
 // 飾りだけの名前（下線）と色だけの名前を重ね、下の範囲の飾りが上の範囲の色の下に残ることも見る。

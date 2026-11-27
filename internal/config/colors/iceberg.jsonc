@@ -3,6 +3,7 @@
 //
 // 値は iceberg.vim のコミット 23835d5ed696436f716cbfdb56a93a7850fe3b18 の colors/iceberg.vim だけから写した。
 // ただし、iceberg.vim のグループの色では読めない名前（scrollbar.search、inlayHint）は、その行のコメントに書いた理由で別の色にした。
+// tag は、iceberg.vim のリンク先に色が無いので、Neovim の既定のリンク先（Special）の iceberg.vim の色にした（その行のコメント）。
 // 写したのは dark の側（&background が light でない側）のハイライトグループの guifg、guibg、guisp と gui の飾りである。
 // 同じリポジトリの lightline と airline のテーマの色は、配色そのものの色ではないので入れていない
 // （lightline に近いステータス行の色は、config.example.jsonc の colors にある）。
@@ -26,6 +27,11 @@
   "variable": { "fg": "#c6c8d1" }, // TSVariable → icebergNormalFg
   "operator": { "fg": "#c6c8d1" }, // TSOperator → icebergNormalFg
   "punctuation": { "fg": "#c6c8d1" }, // TSPunctDelimiter、TSPunctBracket → icebergNormalFg
+  // タグの名前。iceberg.vim の @tag → TSTag → htmlTagName は、html の構文を読まないと色が無い。
+  // tree-sitter-javascript の @tag（小文字で始まる JSX のタグ）は、nvim-treesitter では @tag.builtin で、
+  // Neovim 0.12.5 の既定のリンク @tag.builtin → Special で描かれる（2026-11-27 にオーナーの nvim で .tsx を開いて確かめた）
+  "tag": { "fg": "#b4be82" }, // Special
+  "attribute": { "fg": "#a093c7" }, // TSTagAttribute → htmlArg → Constant
 
   // 画面の部品
   "visual": { "bg": "#272c42" }, // Visual

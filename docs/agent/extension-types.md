@@ -783,7 +783,8 @@ styles の 1 つの項目は、色の種類の名前だけなら文字列で、�
 - `range`（`Range`）
 - `style`（`string`）: 色の種類の名前（"keyword" など）である。
   名前から色への対応は本体が持ち、利用者は設定の colors で名前ごとに変えられる。
-  構文の色の名前は comment、keyword、string、number、constant、function、type、variable、operator、punctuation の 10 個で、
+  構文の色の名前は comment、keyword、string、number、constant、function、type、variable、operator、punctuation、
+  tag、attribute（マークアップのタグの名前と属性の名前。足す前の本体は知らないので色を付けない）の 12 個で、
   前に "syntax." を付けない。構文の色の他に、本体の色の名前（`vi-imitation --docs usage 見た目の設定`の表。診断の diagnostic.error、
   画面の部品の statusline など）のどれを使ってもよい。本体が知らない名前の範囲には色を付けない。
 - `attr`（`*TextAttr`、省ける）: 名前の色の上に重ねて直に付ける色と飾りである（TextAttr）。nil なら付けない。
