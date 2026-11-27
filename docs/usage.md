@@ -2217,6 +2217,18 @@ mod を入れ直した後は、1 分ほど経ってからポップアップを�
 mod が入っていないと、ペインを割る操作は 10 秒待ってから、メッセージの行に「herdr app に vi-imitation の mod が入っていないか、herdr app が動いていません」と出す。
 外すときは `mods/vi-imitation/` を消す。
 
+mod の動きを調べるときは、vi-imitation の動くマシン（mod が `hc` を動かすマシン）に、目印の空のファイル `~/.local/state/vi-imitation/herdr-app-mod.debug` を置く。
+
+```sh
+mkdir -p ~/.local/state/vi-imitation
+touch ~/.local/state/vi-imitation/herdr-app-mod.debug
+```
+
+mod は 30 秒以内に目印に気づき、それから後、herdr app の命令と `hc` を呼ぶたびに、1 行の JSON を同じディレクトリの `herdr-app-mod.log` に追記する。
+1 行には、時刻、依頼の番号と種類、呼んだ命令とその引数、結果か誤り、そのときのフォーカスと関係するペインが入る。
+記録は 1 MB を超えると古いほうを捨てる。
+調べ終えたら目印のファイルを消す（30 秒以内に書かなくなる）。
+
 ## ヘルプとキーの一覧
 
 `:help {語}`（`:h {語}`）は、この文書を本体の中で開き、語の説明のある行へカーソルを置く（FR-89）。

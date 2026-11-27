@@ -122,23 +122,29 @@ export default class ViImitation extends View {
     this.lastPoll = now;
     cx.spawn(async (cx) => {
       const before = this.status;
-      // 窓が開いている間は、中のコマンドの終わりにすぐ気づけるように、短い間隔で探す。
-      if (popups.size > 0) this.lastActive = Date.now();
-      await watchPopups();
-      await this.reapOrphans();
-      for (const on of machineNames()) {
-        if ((this.retryAt.get(on) ?? 0) > Date.now()) continue;
-        try {
-          await this.serveMachine(on);
-          this.retryAt.delete(on);
-        } catch (e) {
-          // このマシンで hc を動かせない（hc が無い、PATH に無い、繋がらない）。しばらく探さず、ほかのマシンは続ける。
-          // このコンピューター（null）は、vi-imitation の動かないことが多い（Windows など）ので、帯に出さない。
-          this.retryAt.set(on, Date.now() + FAIL_BACKOFF_MS);
-          if (on !== null) this.status = `${on}: ${errorText(e)}`;
+      try {
+        const names = machineNames().filter((on) => (this.retryAt.get(on) ?? 0) <= Date.now());
+        // 調べるための記録の目印を確かめる（マシンごとに TRACE_CHECK_MS に 1 回）。
+        for (const on of names) await refreshTrace(on);
+        // 窓が開いている間は、中のコマンドの終わりにすぐ気づけるように、短い間隔で探す。
+        if (popups.size > 0) this.lastActive = Date.now();
+        await watchPopups();
+        await this.reapOrphans();
+        for (const on of names) {
+          try {
+            await this.serveMachine(on);
+            this.retryAt.delete(on);
+          } catch (e) {
+            // このマシンで hc を動かせない（hc が無い、PATH に無い、繋がらない）。しばらく探さず、ほかのマシンは続ける。
+            // このコンピューター（null）は、vi-imitation の動かないことが多い（Windows など）ので、帯に出さない。
+            this.retryAt.set(on, Date.now() + FAIL_BACKOFF_MS);
+            if (on !== null) this.status = `${on}: ${errorText(e)}`;
+          }
         }
+        await flushTrace();
+      } finally {
+        this.busy = false;
       }
-      this.busy = false;
       if (this.status !== before) cx.notify();
     });
   }
@@ -202,14 +208,24 @@ export default class ViImitation extends View {
         }
         if (this.handled.size > 1000) this.handled.clear();
         this.handled.add(mark);
-        let reply;
+        let req = null;
         try {
-          reply = await this.handle(on, address, JSON.parse(again[key]));
-        } catch (e) {
-          reply = { error: errorText(e) };
+          req = JSON.parse(again[key]);
+        } catch {
+          req = null;
         }
-        reply.id = id;
-        await hcRun(["label", address, `${RES}${id}=${JSON.stringify(reply)}`, `${key}=`, `${CLAIM}${id}=`], on);
+        const reply = await withTrace({ on, id, op: req?.op ?? null, from: address }, async () => {
+          let r;
+          try {
+            if (!req) throw new Error("invalid request");
+            r = await this.handle(on, address, req);
+          } catch (e) {
+            r = { error: errorText(e) };
+          }
+          r.id = id;
+          await hcRun(["label", address, `${RES}${id}=${JSON.stringify(r)}`, `${key}=`, `${CLAIM}${id}=`], on);
+          return r;
+        });
         this.served++;
         this.status = reply.error ? `${this.served} 件目 ${address}: ${reply.error}` : `${this.served} 件処理`;
       } finally {
@@ -384,7 +400,7 @@ async function openPopup(on, address, req) {
     seat.terminal = term;
     const qualTerm = on ? `${on}/${term}` : term;
     // 上に帯（この mod の写し。ドラッグの取っ手と閉じるボタン。窓が消えたら close で端末を終わらせる）、下に端末を置く（AGENTS.md の Windows の例）。
-    seat.overlay = await openOverlay({
+    const spec = {
       kind: "window",
       ...popupSize(req.width, req.height),
       layout: {
@@ -394,7 +410,14 @@ async function openPopup(on, address, req) {
           { type: "block", content: { terminal: qualTerm } },
         ],
       },
-    });
+    };
+    try {
+      seat.overlay = await openOverlay(spec);
+    } catch (e) {
+      record(on, "overlay", "openOverlay", spec, undefined, errorText(e));
+      throw e;
+    }
+    record(on, "overlay", "openOverlay", spec, seat.overlay, undefined);
     // キーボードは、窓のブロックが描かれた後（次の探索）に、まだ窓の端末に無ければ移す（focusPopup）。開いた直後に pane.focus を呼ぶと、
     // 窓の端末のブロックがまだ無く失敗し、herdr app がトーストに出す（2026-11-27 にオーナーの herdr app で「pane.focus failed」）。
     seat.focusAt = Date.now() + FOCUS_DELAY_MS;
@@ -433,22 +456,24 @@ async function watchPopups() {
   try {
     for (const p of [...popups]) {
       if (p.overlay == null) continue; // 開いている途中
-      await focusPopup(p);
-      let alive = true;
-      try {
-        const out = await hcRun(["ls", "--json", "--label", `${POPUP}=${p.id}`], p.on);
-        alive = (JSON.parse(out).terminals ?? []).length > 0;
-      } catch {
-        continue;
-      }
-      if (alive) continue;
-      // 窓を閉じる前に、利用者がまだ窓（かペインの無いところ）にいて、開いたときと同じタブにいるかを見る。
-      // 窓の外を押して別のペインやタブへ移った利用者を、元の端末へ引き戻さない（#248 の部品のペインと同じ考え方）。
-      const back = stillInPopup(p);
-      await closePopups((x) => x === p, false);
-      // 元の端末を出すペインがまだあるときだけ、そのペインを指して戻す（無いペインへの pane.focus は失敗してトーストになる）。
-      const pane = back ? paneShowing(p.on, p.from) : null;
-      if (pane) await command("pane.focus", { pane }).catch(() => {});
+      await withTrace({ on: p.on, id: p.id, op: "watch", from: p.from }, async () => {
+        await focusPopup(p);
+        let alive = true;
+        try {
+          const out = await hcRun(["ls", "--json", "--label", `${POPUP}=${p.id}`], p.on);
+          alive = (JSON.parse(out).terminals ?? []).length > 0;
+        } catch {
+          return;
+        }
+        if (alive) return;
+        // 窓を閉じる前に、利用者がまだ窓（かペインの無いところ）にいて、開いたときと同じタブにいるかを見る。
+        // 窓の外を押して別のペインやタブへ移った利用者を、元の端末へ引き戻さない（#248 の部品のペインと同じ考え方）。
+        const back = stillInPopup(p);
+        await closePopups((x) => x === p, false);
+        // 元の端末を出すペインがまだあるときだけ、そのペインを指して戻す（無いペインへの pane.focus は失敗してトーストになる）。
+        const pane = back ? paneShowing(p.on, p.from) : null;
+        if (pane) await command("pane.focus", { pane }).catch(() => {});
+      });
     }
   } finally {
     watching = false;
@@ -504,7 +529,10 @@ async function endPopup(id, close = false) {
     if (p.id !== id) continue;
     popups.delete(p);
     if (close && p.overlay != null) closeOverlayQuietly(p.overlay);
-    if (p.terminal) await hcRun(["kill", p.terminal], p.on).catch(() => {});
+    const op = close ? "close_button" : "window_gone";
+    if (p.terminal) {
+      await withTrace({ on: p.on, id: p.id, op, from: p.from }, () => hcRun(["kill", p.terminal], p.on).catch(() => {}));
+    }
   }
 }
 
@@ -532,9 +560,11 @@ async function closePopups(match, kill) {
 function closeOverlayQuietly(id) {
   try {
     const r = closeOverlay(id);
+    record(trace.cur.on, "overlay", "closeOverlay", { id }, r, undefined);
     if (r && typeof r.catch === "function") r.catch(() => {});
-  } catch {
+  } catch (e) {
     // 既に閉じている。
+    record(trace.cur.on, "overlay", "closeOverlay", { id }, undefined, errorText(e));
   }
 }
 
@@ -589,13 +619,23 @@ function machineNames() {
 async function hcRun(args, on) {
   const opts = { timeout: HC_TIMEOUT_MS };
   if (on) opts.on = on;
-  const r = await exec("hc", args, opts);
+  let r;
+  try {
+    r = await exec("hc", args, opts);
+  } catch (e) {
+    record(on, "hc", args[0], args, undefined, errorText(e));
+    throw e;
+  }
   const code = r.code ?? r.status ?? r.exit_code ?? 0;
   if (code !== 0) {
     const msg = String(r.stderr ?? "").trim();
-    throw new Error(`hc ${args[0]}: ${msg || `exit ${code}`}`);
+    const err = `hc ${args[0]}: ${msg || `exit ${code}`}`;
+    record(on, "hc", args[0], args, undefined, err);
+    throw new Error(err);
   }
-  return String(r.stdout ?? "");
+  const out = String(r.stdout ?? "");
+  record(on, "hc", args[0], args, out, undefined);
+  return out;
 }
 
 // hcLabels は、マシン on の端末 address のラベルを返す。
@@ -606,9 +646,138 @@ async function hcLabels(address, on) {
 
 // command は、herdr app の命令を動かす。{ error } が返れば誤りにする。
 async function command(name, args) {
-  const r = await run(name, args);
+  const on = trace.cur.on;
+  let r;
+  try {
+    r = await run(name, args);
+  } catch (e) {
+    record(on, "run", name, args, undefined, errorText(e));
+    throw e;
+  }
+  record(on, "run", name, args, r, undefined);
   if (r && typeof r === "object" && r.error) throw new Error(`${name}: ${r.error}`);
   return r;
+}
+
+// 調べるための記録（2026-11-27。#452）。
+//
+// mod が herdr app の命令（run）と hc を呼ぶたびに、時刻、依頼の番号と op、命令の名前、引数、結果か誤り、そのときの focused() と、
+// 関係するペイン（引数と依頼の端末に出てくるペインと、フォーカスのあるペイン）の panes() の項目を、1 行の JSON にする。
+// 依頼を処理したマシン（exec の on）の ~/.local/state/vi-imitation/herdr-app-mod.log に追記する。
+// 同じディレクトリに目印のファイル herdr-app-mod.debug があるときだけ書く。目印の有無は、マシンごとに TRACE_CHECK_MS ごとに確かめる。
+// 記録は探索の間はメモリに溜め、探索の終わりにマシンごとに 1 回の exec で書く（SSH の往復を増やさない）。
+// ファイルが TRACE_MAX_BYTES を超えたら、後ろの半分だけを残す。書けなくても（sh が無い Windows など）、依頼の処理は止めない。
+const TRACE_DIR = '"$HOME/.local/state/vi-imitation"';
+const TRACE_CHECK_MS = 30000;
+const TRACE_MAX_BYTES = 1048576;
+const TRACE_MAX_FIELD = 2000;
+const trace = {
+  // cur は、今処理している依頼（{ on, id, op, from }）である。命令の記録に付ける。
+  cur: { on: null, id: null, op: null, from: null },
+  // marks は、マシンごとの目印の有無と、次に確かめる時刻である。
+  marks: new Map(),
+  // lines は、マシンごとの、まだ書いていない記録である。
+  lines: new Map(),
+};
+
+// withTrace は、依頼の文脈 cur で f を動かす。
+async function withTrace(cur, f) {
+  const prev = trace.cur;
+  trace.cur = cur;
+  try {
+    return await f();
+  } finally {
+    trace.cur = prev;
+  }
+}
+
+// refreshTrace は、マシン on の目印のファイルの有無を、前に確かめてから TRACE_CHECK_MS が経っていれば確かめ直す。
+async function refreshTrace(on) {
+  const key = on ?? "";
+  const m = trace.marks.get(key);
+  if (m && m.until > Date.now()) return;
+  trace.marks.set(key, { on: m?.on ?? false, until: Date.now() + TRACE_CHECK_MS });
+  let enabled = false;
+  try {
+    const opts = { timeout: HC_TIMEOUT_MS };
+    if (on) opts.on = on;
+    const r = await exec("sh", ["-c", `[ -e ${TRACE_DIR}/herdr-app-mod.debug ] && echo 1`], opts);
+    enabled = String(r.stdout ?? "").trim() === "1";
+  } catch {
+    enabled = false;
+  }
+  trace.marks.set(key, { on: enabled, until: Date.now() + TRACE_CHECK_MS });
+}
+
+// record は、マシン on で目印があれば、命令 1 回の記録を溜める。記録を作れなくても投げない。
+function record(on, kind, name, args, result, error) {
+  const key = on ?? "";
+  if (!trace.marks.get(key)?.on) return;
+  try {
+    let f = null;
+    try {
+      f = focused();
+    } catch (e) {
+      f = { error: errorText(e) };
+    }
+    let list = [];
+    try {
+      list = panes() ?? [];
+    } catch {
+      list = [];
+    }
+    const words = new Set(
+      [trace.cur.from, args?.pane, args?.terminal, args?.target, f?.pane, f?.terminal, ...(Array.isArray(args) ? args : [])]
+        .filter((x) => typeof x === "string")
+        .flatMap((x) => [x, x.includes("/") ? x.slice(x.indexOf("/") + 1) : x]),
+    );
+    const related = list
+      .filter((p) => p && (words.has(p.id) || words.has(p.terminal) || p.focused))
+      .map((p) => ({ id: p.id, terminal: p.terminal, focused: p.focused }));
+    const cut = (v) => {
+      const s = typeof v === "string" ? v : JSON.stringify(v);
+      return s && s.length > TRACE_MAX_FIELD ? `${s.slice(0, TRACE_MAX_FIELD)}…` : v;
+    };
+    const line = JSON.stringify({
+      time: new Date().toISOString(),
+      id: trace.cur.id,
+      op: trace.cur.op,
+      from: trace.cur.from,
+      on,
+      kind,
+      name,
+      args: cut(args),
+      result: cut(result),
+      error,
+      focused: f,
+      panes: related,
+    });
+    if (!trace.lines.has(key)) trace.lines.set(key, { on, lines: [] });
+    trace.lines.get(key).lines.push(line);
+  } catch {
+    // 記録を作れなくても、依頼の処理は続ける。
+  }
+}
+
+// flushTrace は、溜めた記録をマシンごとに追記する。書けなければ捨てる。
+async function flushTrace() {
+  const all = [...trace.lines.values()];
+  trace.lines.clear();
+  for (const { on, lines } of all) {
+    if (lines.length === 0) continue;
+    const script =
+      `d=${TRACE_DIR}; [ -e "$d/herdr-app-mod.debug" ] || exit 0; f="$d/herdr-app-mod.log"; ` +
+      `printf '%s\\n' "$@" >> "$f" || exit 0; ` +
+      `s=$(wc -c < "$f"); if [ "$s" -gt ${TRACE_MAX_BYTES} ]; then ` +
+      `tail -c ${TRACE_MAX_BYTES / 2} "$f" | sed 1d > "$f.tmp" && mv "$f.tmp" "$f"; fi`;
+    try {
+      const opts = { timeout: HC_TIMEOUT_MS };
+      if (on) opts.on = on;
+      await exec("sh", ["-c", script, "sh", ...lines], opts);
+    } catch {
+      // 書けなくても続ける。
+    }
+  }
 }
 
 function errorText(e) {

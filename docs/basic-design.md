@@ -446,6 +446,7 @@ herdr app の `AGENTS.md`（オーナーから受け取った 2026-11-26 の版�
 mod の写しは、ブロックがレイアウトにある間は、隠れていても動き続ける（同じ文書の「Mods」）。
 このため mod はビューを持ち、画面の下に 1 行の帯（`mod.json` の `place` が `bottom`）を出して、処理した件数と最後の誤りを出す。
 mod の `init` は、`herdr-app check` の間（`checking()`）は `hc` を呼ばない。
+調べるための記録として、mod は、マシンに目印のファイル `~/.local/state/vi-imitation/herdr-app-mod.debug` があるときだけ、herdr app の命令（`run`、`openOverlay`、`closeOverlay`）と `hc` を呼ぶたびに、時刻、依頼の番号と `op`、命令の名前、引数、結果か誤り、そのときの `focused()`、関係するペインの `panes()` の項目（`id`、`terminal`、`focused`）を 1 行の JSON で、依頼を処理したマシンの同じディレクトリの `herdr-app-mod.log` に追記する（2026-11-27 にオーナーの herdr app で「pane.focus failed」が出た原因を、実物の記録で調べるため。#452）。目印の有無はマシンごとに 30 秒に 1 回 `exec("sh", …, {on})` で確かめ、記録は探索の終わりにマシンごとに 1 回の `exec` で書く。1 MB を超えたら後ろの半分を残す。書けなくても依頼の処理は止めない。
 mod を実物の herdr app で動かす確かめは、オーナーが手元で行う（#440 の「確かめ方の制約」）。
 本体の側は、偽の `hc`（`internal/mux/muxtest`。ラベルをファイルに覚える）と、mod の依頼の処理を真似た偽の係で、`internal/mux` と `internal/server` のテストが確かめる。
 
