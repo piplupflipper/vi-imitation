@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
@@ -70,6 +71,9 @@ type PaneOptions struct {
 	// Focus は、新しいペインへフォーカスを移すことを表す。
 	Focus bool
 }
+
+// DefaultPopupAwaitTimeout は、Config.PopupAwaitTimeout の既定である（仮。#452）。
+const DefaultPopupAwaitTimeout = 5 * time.Second
 
 // PopupOptions は、Config.OpenPopup に渡す、端末多重化ソフトのポップアップの開き方である。
 type PopupOptions struct {
@@ -383,7 +387,10 @@ func (e *Editor) focusAfterPane(extID string, move bool) {
 // 判定と実際の窓の幅が食い違う（PR #298 のレビューの必須 1）。問い合わせられなければ、元の client の画面の幅で代える。
 // ポップアップを今開けない（Config.PopupReady が false。herdr app に mod が無いか古い）なら頼まず、誤りも出さずに画面の中央に描いたままにする（FR-326）。
 //
-// req: FR-67, FR-149, FR-326
+// Config.PopupAwaitRemote（herdr app）なら、部品の client が繋ぐまで画面の中に描かず、開けなかったときと、開けたのに繋がないまま
+// Config.PopupAwaitTimeout が過ぎたときだけ画面の中に描く（FR-325）。
+//
+// req: FR-67, FR-149, FR-325, FR-326
 func (e *Editor) requestPopup(f *floatState) {
 	pane := e.view.info.Pane
 	if e.cfg.OpenPopup == nil || pane == "" || (e.cfg.PopupReady != nil && !e.cfg.PopupReady(pane)) {
@@ -395,6 +402,9 @@ func (e *Editor) requestPopup(f *floatState) {
 	}
 	rule, fallback, screenWidth := e.previewRule(), e.renderer.Width, e.cfg.PopupScreenWidth
 	open, id, dir, c := e.cfg.OpenPopup, f.id, e.workDir(), e.view
+	// herdr app では、部品の client が繋ぐまで画面の中に描かない（Config.PopupAwaitRemote）。
+	f.awaitRemote = e.cfg.PopupAwaitRemote
+	await, awaitTimeout := f.awaitRemote, cmp.Or(e.cfg.PopupAwaitTimeout, DefaultPopupAwaitTimeout)
 	go func() {
 		defer e.recoverPanic()
 		var opts PopupOptions
@@ -414,12 +424,27 @@ func (e *Editor) requestPopup(f *floatState) {
 		}
 		err := open(pane, id, dir, opts)
 		if err == nil {
+			if await {
+				// 開けたと答えたのに部品の client が繋がない（部品の client が起動できないなど）ときに、見えないポップアップを残さない。
+				time.Sleep(awaitTimeout)
+				e.later(func() {
+					if !f.awaitRemote || f.remote != nil || !c.attached() || e.viewOf(c).float != f {
+						return
+					}
+					f.awaitRemote = false
+					e.log.Warn("端末多重化ソフトのポップアップの部品の client が繋がない", "view", id)
+					e.withView(c, func() {
+						e.showError(errors.New("端末多重化ソフトのポップアップに部品が出ないので、この画面の中に出します"))
+					})
+				})
+			}
 			return
 		}
 		e.log.Warn("端末多重化ソフトのポップアップを開けない", "view", id, "err", err)
 		e.later(func() {
 			// 編集の client の画面の中に描くので、その画面の幅で判定する。
 			f.screen = 0
+			f.awaitRemote = false
 			if c.attached() && c.replay != nil {
 				// マクロの再生の途中で開けなかった（端末多重化ソフトが消えたなど）。再生を続けると、開けないポップアップを開き直し続けるので、
 				// <C-c> と同じく再生を止める（PR #249 の 4 回目の確認の必須）。

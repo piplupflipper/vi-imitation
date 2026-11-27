@@ -466,7 +466,7 @@ func TestWithMuxHerdrApp(t *testing.T) {
 	}
 	s := &Server{log: slog.New(slog.DiscardHandler)}
 	got := s.withMux(editor.Config{})
-	if got.OpenPopup == nil || got.RunPopup == nil || got.PopupReady == nil || s.herdrPopups == nil {
+	if got.OpenPopup == nil || got.RunPopup == nil || got.PopupReady == nil || !got.PopupAwaitRemote || s.herdrPopups == nil {
 		t.Error("herdr app の中で、ポップアップの関数が入らない")
 	}
 	if got.PopupScreenWidth != nil {

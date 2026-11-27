@@ -165,6 +165,9 @@ type floatState struct {
 	// remote は、この部品を描いている部品の client（端末多重化ソフトのポップアップかペインの中）である。
 	// nil なら、まだ繋いでいないか、編集の client の画面の中に描く（component.go）。
 	remote *component
+	// awaitRemote は、端末多重化ソフトのポップアップを頼んで、部品の client が繋ぐのを待っている間、編集の client の画面に描かないことを表す
+	// （Config.PopupAwaitRemote。herdr app。requestPopup）。開けなかったとき、待つ上限を過ぎたときに下ろし、画面の中に描く。
+	awaitRemote bool
 	// closeOnSelect は、pane/open の CloseOnSelect で、中央のポップアップに出したときに、項目を選んだら閉じることを表す
 	// （FR-147。selectFloat）。分割したペイン（pane）では読まない。
 	closeOnSelect bool

@@ -154,6 +154,8 @@ func (s *Server) withMux(cfg editor.Config) editor.Config {
 			cfg.OpenPopup = s.openPopup
 			cfg.RunPopup = s.runPopup
 			cfg.PopupReady = s.herdrPopups.Ready
+			// 窓の中の部品の client が繋ぐまで、client の画面の中に描かない（画面の中に描いてから窓へ移るちらつきを出さない。#452）。
+			cfg.PopupAwaitRemote = true
 		}
 		return cfg
 	}

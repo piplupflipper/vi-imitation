@@ -64,6 +64,22 @@ const IDLE_AFTER_MS = 30000;
 // hc を動かせなかったマシン（hc が無い、繋がらない）は、FAIL_BACKOFF_MS の間は探さない。
 const FAIL_BACKOFF_MS = 30000;
 const HC_TIMEOUT_MS = 10000;
+// TICK_MS は、探すかを決めるタイマーの刻みである。起こされたら（wakeLoop）、この刻みのうちに探す。
+const TICK_MS = 50;
+// WAKE_SCRIPT は、別のマシンで、ラベル $1 の付いた端末の変化を hc events で待つ sh のスクリプトである。
+// hc events は最初に今の様子を 1 行で出し、変化のたびに 1 行を足す（2026-11-27 にこのホストの hc で、ラベルを付けてから 5 ms で 2 行目が出た）。
+// 2 行目が出たら 1、WAKE_WAIT_S 秒経っても出なければ 0、hc events が終わったら（使えない）2 を出して終わる。
+// パイプの先で head を使うと、hc events が次に書くまで sh が終わらないので、一時ファイルの行数を見る。
+const WAKE_WAIT_S = 25;
+const WAKE_SCRIPT =
+  `f=$(mktemp) || exit 1; hc events --json --label "$1" > "$f" 2>/dev/null & p=$!; r=0; i=0; ` +
+  `while [ "$i" -lt ${WAKE_WAIT_S * 20} ]; do ` +
+  `[ "$(wc -l < "$f")" -ge 2 ] && { r=1; break; }; kill -0 "$p" 2>/dev/null || { r=2; break; }; sleep 0.05; i=$((i+1)); done; ` +
+  `kill "$p" 2>/dev/null; rm -f "$f"; echo "$r"`;
+const WAKE_TIMEOUT_MS = (WAKE_WAIT_S + 15) * 1000;
+// WAKE_QUICK_MS より短い待ちが WAKE_QUICK_MAX 回を超えて続いたら、待つのをやめて退く。
+const WAKE_QUICK_MS = 200;
+const WAKE_QUICK_MAX = 20;
 
 // POPUP は、popup で起動した窓の端末に付けるラベルの名前である（値は依頼の番号。internal/mux の HerdrAppPopupLabel）。
 const POPUP = "vi-imitation.popup";
@@ -106,22 +122,72 @@ export default class ViImitation extends View {
     this.retryAt = new Map();
     this.orphans = [];
     this.nonce = Math.random().toString(36).slice(2);
+    this.wakers = new Set();
+    this.woken = 0;
     // herdr-app check の間は、hc を呼ばない。
     if (checking()) return;
-    cx.timer.every(POLL_MS, (cx) => this.poll(cx));
+    // 探す間隔そのものは POLL_MS と IDLE_POLL_MS で、タイマーは起こされたとき（wake）にすぐ探せるように細かく刻む。
+    cx.timer.every(TICK_MS, (cx) => this.poll(cx));
+  }
+
+  // startWakers は、別のマシンごとに、依頼の印のラベルの変化を hc events で待つ係（wakeLoop）を 1 つずつ始める。
+  // このコンピューター（null）は始めない（Windows などで sh が無い）。依頼に気づくまでの遅れを、探す間隔によらず縮めるためである（#452）。
+  // 待てない（sh か hc events が無い、繋がらない）マシンは、FAIL_BACKOFF_MS の間は始め直さない（wakeRetryAt）。その間も、探す間隔での探索は続く。
+  startWakers(cx, names) {
+    this.wakers ??= new Set();
+    this.wakeRetryAt ??= new Map();
+    for (const on of names) {
+      if (on == null || this.wakers.has(on) || (this.wakeRetryAt.get(on) ?? 0) > Date.now()) continue;
+      this.wakers.add(on);
+      cx.spawn(async () => {
+        try {
+          if (!(await this.wakeLoop(on))) this.wakeRetryAt.set(on, Date.now() + FAIL_BACKOFF_MS);
+        } finally {
+          this.wakers.delete(on);
+        }
+      });
+    }
+  }
+
+  // wakeLoop は、マシン on で、依頼の印のラベル（PENDING=1）の付いた端末に変化があるまで待ち（WAKE_SCRIPT）、あれば次の探索をすぐ始めさせる。
+  // 待てなければ false を返して終わる（startWakers が退いてから始め直す）。
+  // 変化の知らせが短い間に続きすぎる（hc events が思った形で動かない）ときも、SSH の往復を重ねないように false で終わる。
+  async wakeLoop(on) {
+    let quick = 0;
+    for (;;) {
+      const started = Date.now();
+      let r = "";
+      try {
+        const out = await exec("sh", ["-c", WAKE_SCRIPT, "sh", `${PENDING}=1`], { on, timeout: WAKE_TIMEOUT_MS });
+        r = String(out.stdout ?? "").trim();
+      } catch {
+        r = "";
+      }
+      if (r !== "0" && r !== "1") return false;
+      quick = Date.now() - started < WAKE_QUICK_MS ? quick + 1 : 0;
+      if (quick > WAKE_QUICK_MAX) return false;
+      if (r === "1") {
+        this.woken = Date.now();
+        this.lastActive = this.woken;
+      }
+      if (!machineNames().includes(on)) return true;
+    }
   }
 
   // poll は、前の探索が終わっていて、次に探す時刻を過ぎていれば、すべてのマシンの依頼を探して処理する。表示が変わったときだけ描き直す。
   poll(cx) {
     const now = Date.now();
     const interval = now - this.lastActive < IDLE_AFTER_MS ? POLL_MS : IDLE_POLL_MS;
-    if (this.busy || now - this.lastPoll < interval - 50) return;
+    // 起こされた（hc events で依頼の印の変化を見た）なら、間隔を待たずに探す。
+    const woken = this.woken > this.lastPoll;
+    if (this.busy || (!woken && now - this.lastPoll < interval - 50)) return;
     this.busy = true;
     this.lastPoll = now;
     cx.spawn(async (cx) => {
       const before = this.status;
       try {
         const names = machineNames().filter((on) => (this.retryAt.get(on) ?? 0) <= Date.now());
+        this.startWakers(cx, names);
         // 調べるための記録の目印を確かめる（マシンごとに TRACE_CHECK_MS に 1 回）。
         for (const on of names) await refreshTrace(on);
         // 窓が開いている間は、中のコマンドの終わりにすぐ気づけるように、短い間隔で探す。
@@ -192,6 +258,8 @@ export default class ViImitation extends View {
   // serveTerminal は、端末 address の依頼をすべて処理し、残りが無ければ印を消す。
   async serveTerminal(on, address) {
     const labels = await hcLabels(address, on);
+    // rest は、依頼を処理した後の端末のラベルである（結果を書いた hc label の戻り値。処理しなければ最初に読んだもの）。
+    let rest = labels;
     for (const key of Object.keys(labels)) {
       if (!key.startsWith(REQ)) continue;
       const id = key.slice(REQ.length);
@@ -205,8 +273,8 @@ export default class ViImitation extends View {
         // 別の herdr app（別の PC からつないだ画面）の mod と取り合わないように、引き受けの印を書いて読み直し、自分の印が残っていれば処理する。
         // hc label は比べてから書く操作を持たないので、2 つの mod がほぼ同時に書いて読むと両方が処理しうる（使い方に、mod は 1 つの画面に入れると書いた）。
         // 読み直しで依頼のラベルが消えていれば（本体が待ちを打ち切った）、ペインを割らない。
-        await hcRun(["label", address, `${CLAIM}${id}=${this.nonce}`], on);
-        const again = await hcLabels(address, on);
+        // hc label は、書いた後の端末（ラベルを含む）を返すので、読み直しの hc get を省く（窓を出すまでの往復を 1 回減らす。#452）。
+        const again = await hcLabelSet(address, on, [`${CLAIM}${id}=${this.nonce}`]);
         if (again[CLAIM + id] !== this.nonce || !(key in again)) {
           // 引き受けに負けた（ほかの mod の印に書き替わった）か、本体が取り下げた。この依頼は二度と引き受けない。
           this.handled.add(mark);
@@ -229,7 +297,7 @@ export default class ViImitation extends View {
             r = { error: errorText(e) };
           }
           r.id = id;
-          await hcRun(["label", address, `${RES}${id}=${JSON.stringify(r)}`, `${key}=`, `${CLAIM}${id}=`], on);
+          rest = await hcLabelSet(address, on, [`${RES}${id}=${JSON.stringify(r)}`, `${key}=`, `${CLAIM}${id}=`]);
           return r;
         });
         this.served++;
@@ -238,7 +306,6 @@ export default class ViImitation extends View {
         inFlight.delete(mark);
       }
     }
-    const rest = await hcLabels(address, on);
     if (!Object.keys(rest).some((k) => k.startsWith(REQ))) {
       await hcRun(["label", address, `${PENDING}=`], on);
     }
@@ -636,6 +703,19 @@ async function hcRun(args, on) {
   const out = String(r.stdout ?? "");
   record(on, "hc", args[0], args, out, undefined);
   return out;
+}
+
+// hcLabelSet は、マシン on の端末 address に hc label で kvs を書き、書いた後のラベルを返す。
+// hc label は書いた後の端末を JSON で返す（2026-11-27 のオーナーの記録で、labels を含んでいた）。読めなければ hc get で読み直す。
+async function hcLabelSet(address, on, kvs) {
+  const out = await hcRun(["label", address, ...kvs], on);
+  try {
+    const labels = JSON.parse(out)?.labels;
+    if (labels && typeof labels === "object") return labels;
+  } catch {
+    // 読み直す。
+  }
+  return hcLabels(address, on);
 }
 
 // hcLabels は、マシン on の端末 address のラベルを返す。

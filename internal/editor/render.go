@@ -98,8 +98,9 @@ func (e *Editor) frame() *ui.Frame {
 	case e.regList != nil:
 		f.List = e.uiRegList()
 	case e.float != nil:
-		if e.float.remote == nil {
+		if e.float.remote == nil && !e.float.awaitRemote {
 			// 部品の client が描くポップアップ（端末多重化ソフトのポップアップの中。component.go）は、この画面には描かない。
+			// 部品の client が繋ぐのを待っている間（awaitRemote。herdr app）も描かない（画面の中に描いてから窓へ移るちらつきを出さない）。
 			f.Float = e.floatFrame(e.float)
 		}
 	case f.Message.Text == "" && st.Mode() == command.ModeNormal && !st.Pending() && !e.wantsDiagnosticPopup():
