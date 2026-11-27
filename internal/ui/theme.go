@@ -298,9 +298,6 @@ func (t Theme) WithColors(colors map[string]Attr) Theme {
 
 // DefaultTheme は、既定の対応（仮）を返す。色は端末の 16 色の番号で、Vim の暗い背景の既定の色に近いものを選んだ。
 // 設定の colorscheme で選んだ配色（FR-125）と設定の colors（FR-91）は、この順に WithColors で名前ごとに上書きする。
-// JSX のタグの名前と属性の名前（StyleTag、StyleAttribute）にも既定の色を持つ（FR-331）。
-//
-// req: FR-331
 func DefaultTheme() Theme {
 	return Theme{
 		StyleComment:  {Fg: Indexed(14)},
@@ -311,10 +308,6 @@ func DefaultTheme() Theme {
 		StyleFunction: {Fg: Indexed(14)},
 		StyleType:     {Fg: Indexed(10)},
 		StyleOperator: {Fg: Indexed(11)},
-		// タグの名前と属性の名前は、Vim 9.1 の syntax/html.vim のリンク（htmlTagName は htmlStatement を経て Statement、
-		// htmlArg は Type）に合わせ、keyword と type と同じ番号にした（FR-331）。
-		StyleTag:       {Fg: Indexed(11)},
-		StyleAttribute: {Fg: Indexed(10)},
 
 		StyleVisual:     {Reverse: true},
 		StyleStatusLine: {Reverse: true, Bold: true},
@@ -416,9 +409,14 @@ func DefaultTheme() Theme {
 //   - StyleInlayHint は StyleNonText（Neovim 0.12.5 の LspInlayHint は NonText へのリンク。2026-11-22 に nvim --clean の :hi LspInlayHint で確かめた）
 //   - StyleViewChild は StyleTabLine、StyleViewChildSelected は StyleTabLineSelected（切り替えの部品の見出しの行は、
 //     タブの行の見出しの色を引き継ぐ。基本設計 1.4。nvim-dap-view の見出しの行も Tab と TabSelected を使う）
+//   - StyleTag は StyleKeyword、StyleAttribute は StyleType（Vim 9.1 の syntax/html.vim のリンク。htmlTagName は htmlStatement を経て
+//     Statement、htmlArg は Type。FR-331）。#457 より前に書いた利用者の配色は tag と attribute を持たないので、
+//     既定の対応に固定の色を置くと、その配色の中でこの 2 つだけが配色の外の色になる（PR #458 のレビューの推奨 1）
 //
-// req: FR-258
+// req: FR-258, FR-331
 var styleLinks = map[string]string{
+	StyleTag:               StyleKeyword,
+	StyleAttribute:         StyleType,
 	StyleBand:              StylePopup,
 	StyleBandLineNr:        StyleLineNr,
 	StyleInlayHint:         StyleNonText,

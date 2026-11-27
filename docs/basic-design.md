@@ -5609,6 +5609,8 @@ nvim-scrollview の既定のリンク先は、`ScrollView` が `Visual`、診断
 #359 で、画面の上のポップアップのコマンドライン（7.4 の「画面の上のポップアップ」）の色の名前 `commandLine.popup`（枠の中と、その下の一覧の項目。noice.nvim の `NoiceCmdlinePopup`）、`commandLine.popup.border`（コマンドラインの枠と一覧の枠の、枠線と題。`NoiceCmdlinePopupBorder`）、`commandLine.popup.border.search`（検索の枠の、枠線と題。`NoiceCmdlinePopupBorderSearch`）を足した。既定は noice.nvim（コミット 7bfd942445fb63089b59f97ca487d605e715f155）の `lua/noice/config/highlights.lua` の既定のリンク先（`Normal`、`DiagnosticSignInfo`、`DiagnosticSignWarn`）に当て、`commandLine.popup` は既定の対応に置かず（`progress` と同じく端末の既定の色）、枠線と題は `sign.diagnostic.info` と `sign.diagnostic.warning` と同じ番号にした。同梱の iceberg には、iceberg.vim の dark の側の `DiagnosticSignInfo` と `DiagnosticSignWarn` の文字の色を写した。名前を `popup.` の下に置かないのは、浮かべる窓の色（`popup`）と別に選べるようにするためである。
 #387 で、LSP のインレイヒント（6.3 の「インレイヒント」）の文字列の色の名前 `inlayHint` を足した（Neovim の `LspInlayHint`。FR-258）。既定の対応には置かず、`band` と同じく、書いていなければ `nontext` の今の色を引き継ぐ（`internal/ui` の `styleLinks`。Neovim 0.12.5 の `LspInlayHint` は `NonText` へのリンクで、2026-11-22 に `nvim --clean` の `:hi LspInlayHint` で確かめた）。同梱の iceberg には、iceberg.vim の `NonText`（`#242940`）が `Normal` の背景（`#161821`）とのコントラスト比 1.24 で読めないので、オーナーの nvim の設定の `LspInlayHint` の `#8b80a8`（比は 4.85。WCAG の相対輝度で計算した）を書いた。`kind`（型と引数）ごとの名前は置いていない（6.3 の「インレイヒント」の描き方）。
 
+#457 で、構文の色の名前に `tag` と `attribute`（6.1 の `style` の表。FR-331）を足した。既定の対応には置かず、書いていなければ `tag` は `keyword` の、`attribute` は `type` の今の色を引き継ぐ（`internal/ui` の `styleLinks`。Vim 9.1 の `syntax/html.vim` の `htmlTagName` は `htmlStatement` を経て `Statement`、`htmlArg` は `Type` へのリンク）。#457 より前に書いた利用者の配色は 2 つを持たないので、既定の対応に固定の番号を置くと、その配色の中で 2 つだけが端末の 16 色になる（PR #458 のレビューの推奨 1）。同梱の iceberg には、オーナーの nvim で `.tsx` の JSX のタグの名前と属性の名前に出る `#b4be82` と `#a093c7` を書いた。
+
 ```jsonc
 {
   "colors": {

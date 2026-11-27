@@ -569,17 +569,33 @@ func TestDefaultTheme(t *testing.T) {
 }
 
 // TestTagAndAttributeStyles は、JSX のタグの名前と属性の名前の色の種類（tag、attribute）が、設定の colors に書ける名前で、
-// 既定の対応では Vim 9.1 の syntax/html.vim のリンクと同じく keyword と type の色になることを確かめる（FR-331）。
+// どこにも書いていなければ、Vim 9.1 の syntax/html.vim のリンクと同じく keyword と type の今の色を引き継ぐことを確かめる（FR-331）。
+// tag と attribute を書いていない利用者の配色では、その配色の keyword と type の色になり、配色の外の色にならない（PR #458 のレビューの推奨 1）。
+// 書いていれば、書いた色を使う。
 //
 // req: FR-331
 func TestTagAndAttributeStyles(t *testing.T) {
-	th := DefaultTheme()
-	for name, like := range map[string]string{StyleTag: StyleKeyword, StyleAttribute: StyleType} {
+	links := map[string]string{StyleTag: StyleKeyword, StyleAttribute: StyleType}
+	scheme := DefaultTheme().WithColors(map[string]Attr{
+		StyleKeyword: {Fg: RGB(0x2d, 0x53, 0x9e)},
+		StyleType:    {Fg: RGB(0x01, 0x02, 0x03), Bold: true},
+	})
+	for name, like := range links {
 		if !IsStyleName(name) {
 			t.Errorf("IsStyleName(%q) = false", name)
 		}
-		if a, ok := th[name]; !ok || a != th[like] {
-			t.Errorf("DefaultTheme の %s = %+v, want %s と同じ %+v", name, a, like, th[like])
+		if _, ok := DefaultTheme()[name]; ok {
+			t.Errorf("DefaultTheme が %s を固定の色で持つ", name)
+		}
+		if got, want := DefaultTheme().attr(name), DefaultTheme()[like]; got != want {
+			t.Errorf("既定の対応の %s = %+v, want %s と同じ %+v", name, got, like, want)
+		}
+		if got, want := scheme.attr(name), scheme[like]; got != want {
+			t.Errorf("tag と attribute の無い配色の %s = %+v, want %s と同じ %+v", name, got, like, want)
+		}
+		own := scheme.WithColors(map[string]Attr{name: {Fg: RGB(0xb4, 0xbe, 0x82)}})
+		if got := own.attr(name); got != (Attr{Fg: RGB(0xb4, 0xbe, 0x82)}) {
+			t.Errorf("書いた %s = %+v", name, got)
 		}
 	}
 }

@@ -605,7 +605,7 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 | 名前 | 対象 | 既定 |
 |---|---|---|
 | `comment`、`keyword`、`string`、`number`、`constant`、`function`、`type`、`variable`、`operator`、`punctuation` | 構文の色（基本設計 6.1） | 端末の 16 色の一部。`variable` と `punctuation` は色なし |
-| `tag`、`attribute` | JSX などのタグの名前と属性の名前（構文の色。基本設計 6.1） | `keyword` と `type` と同じ色（Vim の HTML の構文の色と同じ）。同梱の iceberg では `#b4be82` と `#a093c7` |
+| `tag`、`attribute` | JSX などのタグの名前と属性の名前（構文の色。基本設計 6.1） | 書いていなければ、`tag` は `keyword` の、`attribute` は `type` の今の色を引き継ぐ（Vim の HTML の構文の色と同じ対応）。`tag` と `attribute` を書いていない配色では、その配色の `keyword` と `type` の色になる。同梱の iceberg は `#b4be82` と `#a093c7` を書いている |
 | `visual` | ビジュアルモードの選択の範囲 | 反転 |
 | `statusline` | ステータス行 | 反転と太字 |
 | `statuslinenc` | 出力の欄の下の行 | 反転 |
