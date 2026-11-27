@@ -22,6 +22,10 @@ const (
 	StyleVariable    = "variable"
 	StyleOperator    = "operator"
 	StylePunctuation = "punctuation"
+	// StyleTag は、マークアップ（JSX など）のタグの名前である（tree-sitter のキャプチャ名 @tag。FR-330）。
+	StyleTag = "tag"
+	// StyleAttribute は、マークアップ（JSX など）のタグの属性の名前である（tree-sitter のキャプチャ名 @attribute。FR-330）。
+	StyleAttribute = "attribute"
 
 	// StyleVisual は、ビジュアルモードの選択の範囲である。
 	StyleVisual = "visual"
@@ -169,7 +173,7 @@ const (
 // styleNames は、本体が色を付ける対象の名前の全部である（StyleNames）。
 var styleNames = []string{
 	StyleComment, StyleKeyword, StyleString, StyleNumber, StyleConstant, StyleFunction, StyleType, StyleVariable,
-	StyleOperator, StylePunctuation,
+	StyleOperator, StylePunctuation, StyleTag, StyleAttribute,
 	StyleVisual, StyleStatusLine, StyleStatusLineNC, StyleNonText, StyleSpecialKey, StyleWhitespace, StyleLineNr, StyleSearch, StyleIncSearch, StyleYank,
 	StyleMessageInfo, StyleMessageWarning, StyleMessageError,
 	StyleDiagnosticError, StyleDiagnosticWarning, StyleDiagnosticInfo, StyleDiagnosticHint,
@@ -405,9 +409,14 @@ func DefaultTheme() Theme {
 //   - StyleInlayHint は StyleNonText（Neovim 0.12.5 の LspInlayHint は NonText へのリンク。2026-11-22 に nvim --clean の :hi LspInlayHint で確かめた）
 //   - StyleViewChild は StyleTabLine、StyleViewChildSelected は StyleTabLineSelected（切り替えの部品の見出しの行は、
 //     タブの行の見出しの色を引き継ぐ。基本設計 1.4。nvim-dap-view の見出しの行も Tab と TabSelected を使う）
+//   - StyleTag は StyleKeyword、StyleAttribute は StyleType（Vim 9.1 の syntax/html.vim のリンク。htmlTagName は htmlStatement を経て
+//     Statement、htmlArg は Type。FR-331）。#457 より前に書いた利用者の配色は tag と attribute を持たないので、
+//     既定の対応に固定の色を置くと、その配色の中でこの 2 つだけが配色の外の色になる（PR #458 のレビューの推奨 1）
 //
-// req: FR-258
+// req: FR-258, FR-331
 var styleLinks = map[string]string{
+	StyleTag:               StyleKeyword,
+	StyleAttribute:         StyleType,
 	StyleBand:              StylePopup,
 	StyleBandLineNr:        StyleLineNr,
 	StyleInlayHint:         StyleNonText,

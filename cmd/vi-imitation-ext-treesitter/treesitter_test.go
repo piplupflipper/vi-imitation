@@ -229,6 +229,9 @@ func checkWellFormed(t *testing.T, d *document, decs []ext.Decoration) {
 }
 
 // TestStyleFor は、キャプチャ名から論理名への対応を確かめる。
+// JSX のタグの名前（@tag、nvim-treesitter の @tag.builtin）と属性の名前（@attribute、@tag.attribute）も写す（FR-330）。
+//
+// req: FR-330
 func TestStyleFor(t *testing.T) {
 	tests := map[string]string{
 		"comment":            "comment",
@@ -242,6 +245,11 @@ func TestStyleFor(t *testing.T) {
 		"property":           "",
 		"variable.parameter": "variable",
 		"embedded":           "",
+		"tag":                "tag",
+		"tag.builtin":        "tag",
+		"attribute":          "attribute",
+		"tag.attribute":      "attribute",
+		"tag.delimiter":      "punctuation",
 	}
 	for capture, want := range tests {
 		if got := styleFor(capture).String(); got != want {

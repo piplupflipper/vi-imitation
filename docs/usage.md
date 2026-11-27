@@ -598,13 +598,14 @@ Vim の `mapleader` は、マッピングを定義した時点の値で置き換
 `statusline` の太字は外せないので、部品を太字にしたくないときは `statusline` 自体を書き換える。
 
 色を付ける対象の名前は次のとおりである。
-構文の色の 10 個の名前は、拡張機能（tree-sitter など）が `decoration/set` の `style` で使う名前と同じで、前に `syntax.` を付けない。
+構文の色の 12 個の名前は、拡張機能（tree-sitter など）が `decoration/set` の `style` で使う名前と同じで、前に `syntax.` を付けない。
 表に無い名前の範囲には色を付けない。
 拡張機能は、名前の色の上に、拡張機能が決めた色（インレイヒントの薄い色、色コードの文字の範囲のその色など）を直に重ねることもある。直に重ねた色は `colors` では変えられない（拡張機能の設定で変える）。
 
 | 名前 | 対象 | 既定 |
 |---|---|---|
 | `comment`、`keyword`、`string`、`number`、`constant`、`function`、`type`、`variable`、`operator`、`punctuation` | 構文の色（基本設計 6.1） | 端末の 16 色の一部。`variable` と `punctuation` は色なし |
+| `tag`、`attribute` | JSX などのタグの名前と属性の名前（構文の色。基本設計 6.1） | 書いていなければ、`tag` は `keyword` の、`attribute` は `type` の今の色を引き継ぐ（Vim の HTML の構文の色と同じ対応）。`tag` と `attribute` を書いていない配色では、その配色の `keyword` と `type` の色になる。同梱の iceberg は `#b4be82` と `#a093c7` を書いている |
 | `visual` | ビジュアルモードの選択の範囲 | 反転 |
 | `statusline` | ステータス行 | 反転と太字 |
 | `statuslinenc` | 出力の欄の下の行 | 反転 |
@@ -2606,7 +2607,8 @@ TypeScript と TSX のパーサ（tree-sitter-typescript）のハイライトの
 - 継ぐパーサが `parsers` に無いか、設定の誤りで使えないときは、継ぐ側のパーサも使わない（最初にファイルを開いたときにメッセージの行で知らせる）
 - 継ぐパーサのリポジトリを取得できない（`version` がリポジトリに無いなど）ときも、継ぐ側のパーサを使わない。理由はメッセージの行に出る（「パーサ typescript を使えない: 継ぐパーサ javascript を取得できない: ...」）。継ぐパーサはビルドしないので、継ぐパーサ自身のビルドの失敗は継ぐ側に関係しない
 - 継ぎは 1 段だけである。継ぐパーサの `queries` に書いた継ぎも、継ぐパーサのファイルの中の継ぎ（nvim-treesitter のクエリの `; inherits:`）もたどらない
-- tree-sitter-javascript の `queries/highlights-jsx.scm` は、JSX のタグの名前を `@tag`、属性の名前を `@attribute` で捕まえるが、これらの名前は色の種類（[基本設計](basic-design.md) 6.1 の表）に無いので、色が付かない
+- tree-sitter-javascript の `queries/highlights-jsx.scm` は、JSX のタグの名前を `@tag`、属性の名前を `@attribute` で捕まえ、それぞれ色の種類 `tag` と `attribute`（[色の設定](#見た目の設定)の表）の色が付く（FR-330）。同梱の iceberg では、オーナーの nvim（iceberg.vim と nvim-treesitter）で `.tsx` に出る色と同じ `#b4be82` と `#a093c7` になる
+- `highlights-jsx.scm` が `@tag` で捕まえるのは小文字で始まるタグ（`div`、`span`）だけである。大文字で始まるコンポーネントのタグ（`<Baz />`）は、tree-sitter-typescript のクエリの大文字で始まる名前の規則で `type` の色になり、nvim（nvim-treesitter のクエリはコンポーネントも `@tag.builtin` か `@tag` にする）の `tag` の色とは違う
 
 2026-11-27 に、`make dist` の配布物の本体を tmux の中で起動し、上の例の設定で `.ts` と `.tsx` のファイルを開いて、`import`、`from`、`export`、`const`、`return` に予約語の色が付くことと、起動し直して開いたときも同じ色が付くことを確かめた（tmux 3.4、git 2.43.0、gcc 13.3.0）。
 

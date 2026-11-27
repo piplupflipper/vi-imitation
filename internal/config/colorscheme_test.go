@@ -42,9 +42,9 @@ func TestParseColorSchemeName(t *testing.T) {
 
 // 配色は設定ディレクトリの colors/<名前>.jsonc を先に探し、無ければ同梱の配色を使う。同じ名前なら利用者のファイルが勝つ。
 // colorscheme を書かなければ配色を読まない。同梱の iceberg のヤンクの色は、選択と見分けられる背景の色を持つ。
-// 同梱の iceberg のインレイヒントの色は #8b80a8 である。
+// 同梱の iceberg のインレイヒントの色は #8b80a8 である。タグの名前と属性の名前の色は #b4be82 と #a093c7 である。
 //
-// req: FR-125, FR-140, FR-258
+// req: FR-125, FR-140, FR-258, FR-331
 func TestLoadColorScheme(t *testing.T) {
 	dir := t.TempDir()
 	writeColorScheme(t, dir, "iceberg", `// 利用者の iceberg
@@ -90,6 +90,16 @@ func TestLoadColorScheme(t *testing.T) {
 	// 同梱の iceberg のインレイヒントの色は、nontext（#242940）を引き継がず、オーナーの nvim の LspInlayHint の薄紫にする（#387。FR-258）。
 	if got := load("iceberg", "").SchemeColors["inlayHint"]; got != (Style{Fg: Color{Kind: ColorRGB, R: 0x8b, G: 0x80, B: 0xa8}}) {
 		t.Errorf("同梱の iceberg の inlayHint = %+v", got)
+	}
+
+	// 同梱の iceberg の JSX のタグの名前と属性の名前の色は、オーナーの nvim で .tsx に出る色（Special と Constant）にする（#457。FR-331）。
+	for name, want := range map[string]Style{
+		"tag":       {Fg: Color{Kind: ColorRGB, R: 0xb4, G: 0xbe, B: 0x82}},
+		"attribute": {Fg: Color{Kind: ColorRGB, R: 0xa0, G: 0x93, B: 0xc7}},
+	} {
+		if got := load("iceberg", "").SchemeColors[name]; got != want {
+			t.Errorf("同梱の iceberg の %s = %+v, want %+v", name, got, want)
+		}
 	}
 
 	var cfg Config

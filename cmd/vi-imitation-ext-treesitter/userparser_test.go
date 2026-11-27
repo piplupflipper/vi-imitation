@@ -727,6 +727,28 @@ func TestUserParserFailureIsolated(t *testing.T) {
 	}
 }
 
+// TestUserParserTagAndAttribute は、パーサのクエリが @tag と @attribute で捕まえた範囲に、色の種類 tag と attribute を付けることを確かめる。
+// tree-sitter-javascript の queries/highlights-jsx.scm が JSX のタグの名前と属性の名前に使う名前である。
+// 文法は tree-sitter-json なので、キーの文字列を属性の名前に、true をタグの名前に見立てる。
+//
+// req: FR-330
+func TestUserParserTagAndAttribute(t *testing.T) {
+	repo := newGrammarRepo(t, ".", map[string]string{"queries/highlights.scm": "(pair key: (string) @attribute)\n(true) @tag\n(false) @tag.builtin\n"})
+	env := testParserEnv(t)
+	conn, got, _, _ := connectParsers(t, env, settingsJSON(t, "", map[string]map[string]any{
+		"markup": {"repo": repo.dir, "version": "v1", "fileTypes": []string{"markup"}},
+	}))
+	text := `{"a": true, "b": false}`
+	openBuffer(t, conn, 1, "markup", text)
+	p := receiveBuffer(t, got, 1, nil)
+	for _, c := range []struct{ word, want string }{{`"a"`, "attribute"}, {"true", "tag"}, {"false", "tag"}} {
+		at := ext.Position{Line: 0, Byte: strings.Index(text, c.word)}
+		if s := styleAt(p.Decorations, at); s != c.want {
+			t.Errorf("%s の色の種類 = %q, want %q（decorations %+v）", c.word, s, c.want, p.Decorations)
+		}
+	}
+}
+
 // TestUserParserOverridesBuiltin は、同梱の言語と利用者の設定のパーサが同じファイルの種類を持つとき、利用者の設定のパーサを使い、
 // 利用者の設定のパーサを用意できなければ、同梱の言語を使うことを確かめる。
 //
