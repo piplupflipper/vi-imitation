@@ -234,6 +234,11 @@ type Config struct {
 	// 中のコマンドが起動したら、終わりを待たずに戻る。イベントループを止めないよう、別の goroutine で呼ぶ。
 	// nil か、元の client のペインを知らない（端末多重化ソフトの外）ときは、:! と同じく端末を子プロセスへ渡して動かす。
 	RunPopup func(from string, argv []string, dir string, opts PopupOptions) error
+	// PopupReady は、元の client のペイン from の上に、端末多重化ソフトのポップアップ（OpenPopup と RunPopup）を今開けるかを返す関数である
+	// （herdr app の mod がポップアップの依頼を知っているか。FR-326）。イベントループから呼ぶので、待たずに覚えている答えを返す。
+	// false なら OpenPopup と RunPopup を呼ばず、それらが nil のときと同じく、中央のポップアップを編集の client の画面の中央に描き、
+	// :terminal.popup を :! と同じく動かす。nil なら常に開ける扱いにする（tmux、herdr）。
+	PopupReady func(from string) bool
 	// Problems は、呼び出し側が設定ファイルと宣言ファイルを読んだときの誤り（位置と内容）である（基本設計 8 章）。
 	// New は、すべてをログに記録し、New 自身が見つけた設定の誤りより先に並べて、最初の 1 件を起動後のメッセージで知らせる。
 	Problems []error

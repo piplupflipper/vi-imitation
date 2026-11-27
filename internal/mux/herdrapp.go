@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,6 +68,10 @@ const (
 // mod を herdr app に入れていないか、herdr app が動いていない。
 var ErrHerdrAppNoReply = errors.New("mux: no reply from the vi-imitation mod of the herdr app")
 
+// ErrHerdrAppModOutdated は、herdr app の mod が依頼の操作を知らない（古い mod）ことを表す（#452）。
+// mod は知らない操作に unknown op の誤りを書き返す。利用者は配布物の mod を入れ直す。
+var ErrHerdrAppModOutdated = errors.New("mux: the vi-imitation mod of the herdr app is outdated")
+
 // ErrHerdrAppSlow は、herdr app の mod が依頼を引き受けたが、期限までに結果を書かなかったことを表す。
 // mod は入っていて動いているが、herdr app の命令（pane.split、pane.swap、pane.focus）が終わっていない。ErrHerdrAppNoReply とは別である。
 var ErrHerdrAppSlow = errors.New("mux: the vi-imitation mod of the herdr app did not finish in time")
@@ -75,8 +80,9 @@ var ErrHerdrAppSlow = errors.New("mux: the vi-imitation mod of the herdr app did
 //
 // ペインの識別子は、hc の端末の番地（t10 など）である。herdr app のペインは端末を 1 つずつ持ち、
 // 端末を終わらせるとペインも閉じるので、本体はペインを端末の番地で指す。
-// 中央のポップアップ（OpenPopup、ClosePopup）は持たない（ErrUnsupported）。server は、herdr app の中では
-// ポップアップを client の画面の中に描く。
+// 中央のポップアップ（OpenPopup、ClosePopup）も mod に頼む（#452）。mod は、コマンドを herdr.* のラベルの無い端末として
+// hc run で起動し、その端末を herdr app の窓（openOverlay の kind window）で画面の中央に出す。
+// mod がポップアップの依頼を知っているかは PopupSupported で問う。
 type HerdrApp struct {
 	// Bin は、hc の実行ファイルの絶対パスである（Detect が、渡された環境の PATH から決める）。
 	// 絶対パスでなければ、どの操作も hc を呼ばずに誤りを返す。
@@ -94,12 +100,18 @@ type herdrAppRequest struct {
 	// ID は、依頼の番号である（ラベルの名前の後ろと同じ）。
 	ID string `json:"id"`
 	// Op は、操作である。split（ペインを割る）、focus（Terminal の端末のペインへフォーカスを移す）、
-	// focused（Terminal の端末のペインにフォーカスがあるかを問う）のどれかである。
+	// focused（Terminal の端末のペインにフォーカスがあるかを問う）、popup（中央の窓でコマンドを動かす。#452）、
+	// popup_close（依頼を書いた端末から開いた窓を閉じる）、hello（mod の知っている操作を問う）のどれかである。
 	Op string `json:"op"`
 	// Direction は、split の向き（right、down、left）である。left は、mod が右に割ってから元のペインと入れ替える。
 	Direction string `json:"direction,omitempty"`
-	// Argv は、split で新しいペインの端末で起動するコマンドである。
+	// Argv は、split で新しいペインの端末で起動するコマンドと、popup で窓の端末で起動するコマンドである。
 	Argv []string `json:"argv,omitempty"`
+	// Cwd は、popup で窓の端末のコマンドを起動するディレクトリである。空なら hc run の既定である。
+	Cwd string `json:"cwd,omitempty"`
+	// Width と Height は、popup の窓の大きさの、herdr app の画面の大きさに対する百分率（1〜100）である。0 なら mod の既定である。
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
 	// Focus は、split で新しいペインへフォーカスを移すかである。false なら mod は元のペインへフォーカスを戻す。
 	Focus bool `json:"focus"`
 	// Terminal は、focus と focused の相手の端末の番地である。
@@ -118,7 +130,14 @@ type herdrAppReply struct {
 	FocusError string `json:"focus_error,omitempty"`
 	// Focused は、focused の答えである。
 	Focused bool `json:"focused,omitempty"`
+	// Busy は、popup で、この herdr app に mod の窓が既に開いていて開かなかったことを表す（Error も書く）。
+	Busy bool `json:"busy,omitempty"`
+	// Ops は、hello の答えで、mod の知っている操作である。
+	Ops []string `json:"ops,omitempty"`
 }
+
+// herdrAppUnknownOp は、mod が知らない操作の依頼に書き返す誤りの前置きである（herdr-app-mod/main.js の handle）。
+const herdrAppUnknownOp = "unknown op "
 
 // herdrAppSeq は、依頼の番号の連番である。番号はプロセスの ID と連番を - でつないだものにする。
 var herdrAppSeq atomic.Uint64
@@ -188,11 +207,93 @@ func (a *HerdrApp) SplitPane(ctx context.Context, opts SplitOptions) (string, er
 	return rep.Terminal, nil
 }
 
-// OpenPopup は ErrUnsupported を返す（herdr app の中の中央のポップアップは、client の画面の中に描く）。
-func (*HerdrApp) OpenPopup(context.Context, PopupOptions) error { return ErrUnsupported }
+// HerdrAppPopupLabel は、mod が popup で起動する窓の端末に付けるラベルの名前である。値は依頼の番号である。
+// mod は、hc ls --label でこのラベルの端末が無くなった（中のコマンドが終わった）のを見て、窓を閉じる（#452）。
+const HerdrAppPopupLabel = "vi-imitation.popup"
 
-// ClosePopup は ErrUnsupported を返す。
-func (*HerdrApp) ClosePopup(context.Context, string) error { return ErrUnsupported }
+// OpenPopup は、mod に popup を頼み、herdr app の画面の中央の窓でコマンドを動かす（#452）。依頼は opts.Target の端末に書く。
+//
+// mod は、この herdr app に自分の窓が既に開いていれば Busy を書き返し、OpenPopup は ErrPopupBusy を包んだ誤りを返す。
+// そうでなければ、コマンドを hc run --bg で herdr.* のラベルの無い端末として起動し（ラベル HerdrAppPopupLabel を付ける）、
+// その端末を openOverlay の kind window で画面の中央に出して、キーボードをその端末へ移す。
+// 窓の大きさは、opts.Width と opts.Height の百分率を、mod が herdr app の画面の大きさ（window()。論理ピクセル）から決める。
+// 中のコマンドが終わって端末が無くなると、mod が窓を閉じる。opts.KeepOnFailure なら、コマンドを keepOnFailure で包み、
+// 0 でない終了コードで終わったときにキーを待ってから端末を終わらせる。
+// 起動するコマンドの環境変数は、hc run が受け付けないので env で足す（herdrAppEnvArgv）。作業ディレクトリは hc run の --cwd で渡す。
+// mod が popup を知らなければ（古い mod）、ErrHerdrAppModOutdated を包んだ誤りを返す。
+//
+// req: FR-325
+func (a *HerdrApp) OpenPopup(ctx context.Context, opts PopupOptions) error {
+	if err := checkCommand(opts.Target, opts.Command); err != nil {
+		return err
+	}
+	if err := checkPercent("width", opts.Width); err != nil {
+		return err
+	}
+	if err := checkPercent("height", opts.Height); err != nil {
+		return err
+	}
+	c := opts.Command
+	if opts.KeepOnFailure {
+		c = keepOnFailure(c)
+	}
+	req := herdrAppRequest{Op: "popup", Argv: herdrAppEnvArgv(c), Cwd: c.Dir, Width: opts.Width, Height: opts.Height}
+	rep, err := a.ask(ctx, opts.Target, req)
+	switch {
+	case err == nil:
+		return nil
+	case rep.Busy:
+		return fmt.Errorf("%w: %w", ErrPopupBusy, err)
+	case strings.HasPrefix(rep.Error, herdrAppUnknownOp):
+		return fmt.Errorf("%w: %w", ErrHerdrAppModOutdated, err)
+	}
+	return err
+}
+
+// ClosePopup は、mod に popup_close を頼み、target の端末から開いた窓を閉じさせる（#452）。依頼は target の端末に書く。
+// mod は、その窓の端末を hc kill で終わらせてから窓を閉じる。開いた窓が無ければ何もしない。
+// mod が popup_close を知らなければ（古い mod）、ErrHerdrAppModOutdated を包んだ誤りを返す。
+//
+// req: FR-325
+func (a *HerdrApp) ClosePopup(ctx context.Context, target string) error {
+	if target == "" {
+		return ErrNoTarget
+	}
+	rep, err := a.ask(ctx, target, herdrAppRequest{Op: "popup_close"})
+	if err != nil && strings.HasPrefix(rep.Error, herdrAppUnknownOp) {
+		return fmt.Errorf("%w: %w", ErrHerdrAppModOutdated, err)
+	}
+	return err
+}
+
+// PopupSupported は、mod に hello を頼み、mod が popup の依頼を知っているかを返す（#452）。依頼は target の端末に書く。
+// hello を知らない mod（#452 より前の mod）は popup も知らないので、false と nil を返す。
+// mod から結果が届かない（mod が入っていない。ErrHerdrAppNoReply）など、問えなかったときは false と誤りを返す。
+//
+// req: FR-326
+func (a *HerdrApp) PopupSupported(ctx context.Context, target string) (bool, error) {
+	if target == "" {
+		return false, ErrNoTarget
+	}
+	rep, err := a.ask(ctx, target, herdrAppRequest{Op: "hello"})
+	if err != nil {
+		if strings.HasPrefix(rep.Error, herdrAppUnknownOp) {
+			return false, nil
+		}
+		return false, err
+	}
+	return slices.Contains(rep.Ops, "popup"), nil
+}
+
+// herdrAppEnvArgv は、c を、環境変数を env で足してから c.Args を起動する argv にする（hc run に渡す。作業ディレクトリは渡さない）。
+// 環境変数は名前の順に並べる（テストで比べられるように）。
+func herdrAppEnvArgv(c Command) []string {
+	argv := []string{"env"}
+	for _, name := range slices.Sorted(maps.Keys(c.Env)) {
+		argv = append(argv, name+"="+c.Env[name])
+	}
+	return append(argv, c.Args...)
+}
 
 // FocusPane は、mod に focus を頼み、from の端末のペインから pane の端末のペインへフォーカスを移す。
 // 依頼は from の端末に書く。

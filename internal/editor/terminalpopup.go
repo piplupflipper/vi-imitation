@@ -21,7 +21,8 @@ import (
 // コマンドが変えたファイルは、外での変更の確認（autoread と checkIntervalMs。基本設計 6.7）で読み直す。この Ex コマンドのための契機は足さない。
 
 // startPopupShell は、:terminal.popup の求め req を、コマンドを打った client のペインの上の端末多重化ソフトのポップアップで動かし始め、true を返す。
-// 端末多重化ソフトの外（Config.RunPopup が無いか、client のペインを知らない）なら何もせずに false を返し、呼び出し側が :! と同じく動かす。
+// 端末多重化ソフトの外（Config.RunPopup が無いか、client のペインを知らない）か、ポップアップを今開けない（Config.PopupReady が false。
+// herdr app に mod が無いか古い。FR-326）なら、何もせずに false を返し、呼び出し側が :! と同じく動かす。
 //
 // コマンドは、:{range}! と同じシェル（shellPath。環境変数 SHELL、無ければ /bin/sh）に -c で渡す。作業ディレクトリは :! と同じく
 // コマンドを打った client の作業ディレクトリ（workDir）である。環境変数は端末多重化ソフトがポップアップに与えるもので、
@@ -33,10 +34,10 @@ import (
 //
 // 起動を頼んだら、:! が終わったときと同じく command.State.FinishShell で求めを終え、止めていた再生の残りを続ける。
 //
-// req: FR-168
+// req: FR-168, FR-326
 func (e *Editor) startPopupShell(bs *bufferState, req *ex.ShellRequest, replay []command.ReplaySegment) bool {
 	c := e.op
-	if e.cfg.RunPopup == nil || c == nil || c.info.Pane == "" {
+	if e.cfg.RunPopup == nil || c == nil || c.info.Pane == "" || (e.cfg.PopupReady != nil && !e.cfg.PopupReady(c.info.Pane)) {
 		return false
 	}
 	run, pane, dir := e.cfg.RunPopup, c.info.Pane, e.workDir()

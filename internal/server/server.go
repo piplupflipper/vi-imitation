@@ -100,6 +100,9 @@ type Server struct {
 	// herdr app の mod の結果の待ち（最大 mux.HerdrAppWait）を、server の終わりで打ち切るためである（PR #441 のレビューの必須 1）。
 	muxCtx  context.Context
 	muxStop context.CancelFunc
+	// herdrPopups は、herdr app の mod がポップアップを知っているかの覚えた答えである（#452）。
+	// herdr app の中で withMux がポップアップの関数を入れたときだけ作る。ほかは nil である。
+	herdrPopups *herdrPopups
 }
 
 // muxContext は、端末多重化ソフトの層の操作に渡す ctx の元を返す。New で作っていなければ（テスト）、取り消さない ctx を返す。
@@ -131,29 +134,48 @@ func New(cfg editor.Config) (*Server, error) {
 
 // withMux は、cfg の端末多重化ソフトの層を使う関数のうち、空のものに server の関数を入れて返す。
 //
-// herdr app（#440）は中央のポップアップを開けない（mux.HerdrApp.OpenPopup は mux.ErrUnsupported）。
-// 開くたびに誤りを出さないように、ポップアップの関数を入れない。editor は、部品のポップアップを client の画面の中に描き（FR-67）、
-// :terminal.popup を :! と同じく動かす（FR-168 の端末多重化ソフトの外と同じ）。
+// herdr app（#440）の中の中央のポップアップは、mod に頼んで herdr app の窓に出す（#452）。mod が無いか古いときに開くたびに誤りを出さず、
+// 部品のポップアップを client の画面の中に描き（FR-67）、:terminal.popup を :! と同じく動かすように、ポップアップを今開けるかを
+// editor.Config.PopupReady で知らせる（herdrPopups）。OpenPopup と RunPopup と PopupReady は組で入れ、どれかを呼び出し側が入れていれば
+// どれも入れない（テストの偽物の OpenPopup に、mod への問いを混ぜない）。PopupScreenWidth は入れない（herdr app の窓の大きさは画面の
+// 論理ピクセルで決まり、端末の列数を前もって知る口が無い。editor は元の client の画面の幅で代える）。
 //
-// req: FR-316
+// req: FR-316, FR-326
 func (s *Server) withMux(cfg editor.Config) editor.Config {
 	if cfg.SplitPane == nil {
 		cfg.SplitPane = s.splitPane
 	}
-	popups := mux.Detect(os.Getenv).Kind() != mux.KindHerdrApp
-	if cfg.OpenPopup == nil && popups {
-		cfg.OpenPopup = s.openPopup
-	}
-	if cfg.PopupScreenWidth == nil && popups {
-		cfg.PopupScreenWidth = s.popupScreenWidth
-	}
 	if cfg.OpenPane == nil {
 		cfg.OpenPane = s.openPane
 	}
-	if cfg.RunPopup == nil && popups {
+	if mux.Detect(os.Getenv).Kind() == mux.KindHerdrApp {
+		if cfg.OpenPopup == nil && cfg.RunPopup == nil && cfg.PopupReady == nil {
+			s.herdrPopups = newHerdrPopups(s.log, s.muxContext, herdrPopupProbe)
+			cfg.OpenPopup = s.openPopup
+			cfg.RunPopup = s.runPopup
+			cfg.PopupReady = s.herdrPopups.Ready
+		}
+		return cfg
+	}
+	if cfg.OpenPopup == nil {
+		cfg.OpenPopup = s.openPopup
+	}
+	if cfg.PopupScreenWidth == nil {
+		cfg.PopupScreenWidth = s.popupScreenWidth
+	}
+	if cfg.RunPopup == nil {
 		cfg.RunPopup = s.runPopup
 	}
 	return cfg
+}
+
+// herdrPopupProbe は、herdrPopups の問いである。server を起動した環境の herdr app の層で、mod がポップアップを知っているかを問う。
+func herdrPopupProbe(ctx context.Context, target string) (bool, error) {
+	a, ok := mux.Detect(os.Getenv).(*mux.HerdrApp)
+	if !ok {
+		return false, mux.ErrUnsupported
+	}
+	return a.PopupSupported(ctx, target)
 }
 
 // newTerm は、1 つの client との接続を editor.Terminal の口にするものを作る。
@@ -232,6 +254,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, first protocol.Serv
 	conn, hello, err := s.firstClient(ctx, a, first)
 	if err != nil {
 		return err
+	}
+	if s.herdrPopups != nil && hello.Pane != "" {
+		// 1 つのプロセスの構成の最初の client は admit を通らないので、ここでも問い始める（問いの途中なら重ねない）。
+		s.herdrPopups.prime(hello.Pane)
 	}
 	id := editor.ClientID(s.nextID.Add(1))
 	s.client.attach(id, conn, hello)
@@ -455,6 +481,10 @@ func (s *Server) admit(a *acceptor, conn protocol.ServerConn, pc *progressConn) 
 	case h.Kind == protocol.KindPopup, h.Kind == protocol.KindPane:
 		s.serveComponent(a, conn, h)
 		return
+	}
+	if s.herdrPopups != nil && h.Pane != "" {
+		// 最初のポップアップの前に、herdr app の mod がポップアップを知っているかを問うておく（#452）。
+		s.herdrPopups.prime(h.Pane)
 	}
 	select {
 	case a.joined <- joined{conn: conn, hello: h}:

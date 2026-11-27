@@ -6,24 +6,42 @@
 //
 // ラベル（値は JSON。internal/mux/herdrapp.go と合わせる）:
 //   vi-imitation.pending=1        依頼のある端末の印。hc ls --label で探す（hc ls はラベルを返さない）
-//   vi-imitation.req.<番号>       依頼 {id, op, direction, argv, focus, terminal}
-//   vi-imitation.res.<番号>       結果 {id, error, terminal, focus_error, focused}
+//   vi-imitation.req.<番号>       依頼 {id, op, direction, argv, cwd, width, height, focus, terminal}
+//   vi-imitation.res.<番号>       結果 {id, error, terminal, focus_error, focused, busy, ops}
 //   vi-imitation.claim.<番号>     この mod の写しが依頼を引き受けた印（同じ依頼を 2 つの写しが処理しないため）
 //   vi-imitation.split=<番号>     split で開いた新しい端末に、その中で動く本体の包んだスクリプトが付ける印。
 //                                 run("pane.split") が番地を返さないときに、新しい端末を探すのに使う（#444）
+//   vi-imitation.popup=<番号>     popup で起動した窓の端末に付ける印。この印の端末が無くなったら（中のコマンドが終わった）窓を閉じる（#452）
 //
 // 依頼の op:
-//   split    元の端末のペインを direction（right、down、left）に割り、新しいペインで argv を起動する。
-//            left は右に割ってから pane.swap で元のペインと入れ替える。focus が false なら元のペインへフォーカスを戻す
-//   focus    terminal の端末のペインへフォーカスを移す
-//   focused  terminal の端末のペインにフォーカスがあるかを答える
+//   split        元の端末のペインを direction（right、down、left）に割り、新しいペインで argv を起動する。
+//                left は右に割ってから pane.swap で元のペインと入れ替える。focus が false なら元のペインへフォーカスを戻す
+//   focus        terminal の端末のペインへフォーカスを移す
+//   focused      terminal の端末のペインにフォーカスがあるかを答える
+//   popup        argv を、herdr.* のラベルの無い端末として hc run で cwd に起動し、その端末を画面の中央の窓（openOverlay の kind window）に出して、
+//                キーボードをその端末へ移す。窓の大きさは、width と height の百分率を画面の大きさ（window()）から決める。
+//                この herdr app に窓が既に開いていれば、開かずに busy を返す（#452）
+//   popup_close  依頼を書いた端末から開いた窓の端末を終わらせ、窓を閉じる
+//   hello        この mod の知っている op を ops で答える。本体は、popup を知っているかをこれで確かめ、知らなければ（古い mod）
+//                ポップアップを vi-imitation の画面の中に描く
 //
 // herdr app が別のマシンの端末を扱うときは、hc をそのマシンで動かし（exec の on）、app の命令には machine/t7 の形の番地を渡す。
 // ラベルに書く番地は、そのマシンの番地（machine/ の前置きなし）にする。
 
 import { View } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { checking, exec, focused, machines, panes, run, theme } from "herdr";
+import {
+  checking,
+  closeOverlay,
+  exec,
+  focused,
+  machines,
+  openOverlay,
+  panes,
+  run,
+  theme,
+  window as appWindow,
+} from "herdr";
 
 const PENDING = "vi-imitation.pending";
 const REQ = "vi-imitation.req.";
@@ -44,6 +62,20 @@ const IDLE_AFTER_MS = 30000;
 // hc を動かせなかったマシン（hc が無い、繋がらない）は、FAIL_BACKOFF_MS の間は探さない。
 const FAIL_BACKOFF_MS = 30000;
 const HC_TIMEOUT_MS = 10000;
+
+// POPUP は、popup で起動した窓の端末に付けるラベルの名前である（値は依頼の番号。internal/mux の HerdrAppPopupLabel）。
+const POPUP = "vi-imitation.popup";
+// OPS は、hello で答える、この mod の知っている op である。
+const OPS = ["split", "focus", "focused", "popup", "popup_close", "hello"];
+// 窓の大きさの百分率の既定（依頼に無いとき。本体の既定と同じ 80%）と、画面の大きさを読めないときの窓の大きさ（論理ピクセル。仮）。
+const POPUP_PERCENT = 80;
+const POPUP_FALLBACK = { width: 960, height: 600 };
+
+// popups は、この herdr app に開いている（開いている途中を含む）窓である。{ on, from, id, terminal, overlay } を持つ。
+// 写しの間で共有し、1 つの herdr app に窓を 1 つだけ開く（tmux と CLI の herdr のポップアップと同じ）。
+const popups = new Set();
+// watching は、ある写しが窓の端末の終わりを確かめている途中であることを表す（写しが重ねて閉じない）。
+let watching = false;
 
 // inFlight は、この herdr app の中で処理中の依頼である。mod の写しが複数あっても、同じ herdr app の中では 1 つの写しだけが処理する。
 // モジュールのコードは写しの間で 1 つなので、写しの間で共有する（JavaScript は 1 本のスレッドで動くので、調べて足す間に割り込まれない）。
@@ -74,6 +106,9 @@ export default class ViImitation extends View {
     this.lastPoll = now;
     cx.spawn(async (cx) => {
       const before = this.status;
+      // 窓が開いている間は、中のコマンドの終わりにすぐ気づけるように、短い間隔で探す。
+      if (popups.size > 0) this.lastActive = Date.now();
+      await watchPopups();
       await this.reapOrphans();
       for (const on of machineNames()) {
         if ((this.retryAt.get(on) ?? 0) > Date.now()) continue;
@@ -219,7 +254,15 @@ export default class ViImitation extends View {
         const t = f?.terminal;
         return { focused: !!f?.pane && (t === qual(req.terminal) || t === req.terminal) };
       }
+      case "popup":
+        return await openPopup(on, address, req);
+      case "popup_close":
+        await closePopups((p) => p.on === on && p.from === address, true);
+        return {};
+      case "hello":
+        return { ops: OPS };
       default:
+        // 本体（internal/mux の herdrAppUnknownOp）は、この前置きで古い mod を見分ける。
         return { error: `unknown op ${req.op}` };
     }
   }
@@ -254,6 +297,104 @@ async function paneOf(on, address) {
   await command("pane.focus", { terminal: names[0] });
   const f = focused();
   return f?.pane && names.includes(f.terminal) ? f.pane : null;
+}
+
+// openPopup は、マシン on の端末 address からの popup の依頼 req を処理する（#452）。
+// 窓が既に開いていれば busy を返す。そうでなければ、先に席を取ってから（hc run を待つ間に別の依頼が割り込まない）、
+// req.argv を hc run --bg で起動する。--no-parent は、起動した端末を元の端末の子（sub-agent）として扱わせず、元の端末の
+// プログラムが終わっても道連れにしないため、--no-notify は元の端末へ知らせの文字を打ち込ませないため、--rm は終わった端末を
+// hc ls から消して終わりに気づくためである。herdr.* のラベルを付けないので、端末はタブに取り込まれない。
+// 起動した端末を窓の中のブロックに出し、pane.focus {terminal} でキーボードをその端末へ移す（移せなくても窓は開いたままにする）。
+async function openPopup(on, address, req) {
+  if (popups.size > 0) return { busy: true, error: "a vi-imitation popup is already open" };
+  if (!Array.isArray(req.argv) || req.argv.length === 0) return { error: "popup: empty argv" };
+  const seat = { on, from: address, id: req.id, terminal: null, overlay: null };
+  popups.add(seat);
+  try {
+    const args = ["run", "--bg", "--json", "--no-parent", "--no-notify", "--rm", "--label", `${POPUP}=${req.id}`];
+    if (req.cwd) args.push("--cwd", req.cwd);
+    args.push("--", ...req.argv);
+    const started = JSON.parse(await hcRun(args, on));
+    let term = started?.address;
+    if (!term) throw new Error("hc run: no terminal address");
+    if (on && term.startsWith(`${on}/`)) term = term.slice(on.length + 1);
+    seat.terminal = term;
+    const qualTerm = on ? `${on}/${term}` : term;
+    seat.overlay = await openOverlay({
+      kind: "window",
+      ...popupSize(req.width, req.height),
+      layout: { type: "block", content: { terminal: qualTerm } },
+    });
+    await command("pane.focus", { terminal: qualTerm }).catch(() => {});
+    return { terminal: term };
+  } catch (e) {
+    popups.delete(seat);
+    if (seat.terminal) await hcRun(["kill", seat.terminal], on).catch(() => {});
+    if (seat.overlay != null) closeOverlayQuietly(seat.overlay);
+    return { error: errorText(e) };
+  }
+}
+
+// popupSize は、窓の幅と高さ（論理ピクセル）を、百分率 wp と hp（0 なら POPUP_PERCENT）と画面の大きさ（window()）から決める。
+// 画面の大きさを読めなければ POPUP_FALLBACK にする。
+function popupSize(wp, hp) {
+  let win = null;
+  try {
+    win = appWindow();
+  } catch {
+    win = null;
+  }
+  const w = Number(win?.width ?? win?.size?.width);
+  const h = Number(win?.height ?? win?.size?.height);
+  const pct = (p) => (p > 0 && p <= 100 ? p : POPUP_PERCENT) / 100;
+  return {
+    width: w > 0 ? Math.round(w * pct(wp)) : POPUP_FALLBACK.width,
+    height: h > 0 ? Math.round(h * pct(hp)) : POPUP_FALLBACK.height,
+  };
+}
+
+// watchPopups は、開いている窓の端末（ラベル POPUP=<番号>）が hc ls から消えていれば（中のコマンドが終わった）、窓を閉じて、
+// 窓を開いた元の端末へキーボードを戻す。端末を読めなければ、次の探索で読み直す。
+async function watchPopups() {
+  if (watching || popups.size === 0) return;
+  watching = true;
+  try {
+    for (const p of [...popups]) {
+      if (p.overlay == null) continue; // 開いている途中
+      let alive = true;
+      try {
+        const out = await hcRun(["ls", "--json", "--label", `${POPUP}=${p.id}`], p.on);
+        alive = (JSON.parse(out).terminals ?? []).length > 0;
+      } catch {
+        continue;
+      }
+      if (alive) continue;
+      await closePopups((x) => x === p, false);
+      await command("pane.focus", { terminal: p.on ? `${p.on}/${p.from}` : p.from }).catch(() => {});
+    }
+  } finally {
+    watching = false;
+  }
+}
+
+// closePopups は、match に合う開いた窓を閉じる。kill なら、先に窓の端末を hc kill で終わらせる。
+async function closePopups(match, kill) {
+  for (const p of [...popups]) {
+    if (!match(p) || p.overlay == null) continue;
+    popups.delete(p);
+    if (kill && p.terminal) await hcRun(["kill", p.terminal], p.on).catch(() => {});
+    closeOverlayQuietly(p.overlay);
+  }
+}
+
+// closeOverlayQuietly は、窓 id を閉じる。既に閉じていて誤りになっても無視する。
+function closeOverlayQuietly(id) {
+  try {
+    const r = closeOverlay(id);
+    if (r && typeof r.catch === "function") r.catch(() => {});
+  } catch {
+    // 既に閉じている。
+  }
 }
 
 // findSplit は、マシン on で、ラベル SPLIT=<id> の付いた端末と、その端末を出しているペインを、FIND_MS まで探す。

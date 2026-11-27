@@ -74,18 +74,25 @@ func (s *Server) openPopup(from string, view uint64, dir string, opts editor.Pop
 	}
 	po := popupOptions(from, opts)
 	po.Command = cmd
-	return openPopupRetry(m, po)
+	return s.openPopupRetry(m, po)
 }
 
 // openPopupRetry は、m で中央のポップアップ po を開く。ポップアップが既に開いていれば（mux.ErrPopupBusy）、popupBusyTimeout まで
 // popupBusyRetry ごとに開き直す。部品の client（openPopup）と :terminal.popup（runPopup）が同じ扱いにするためにまとめた。
-func openPopupRetry(m mux.Mux, po mux.PopupOptions) error {
+// 1 回に待つ上限は、ペインの分割と同じ（splitWait。herdr app では mod の結果を待つ。#452）で、server の終わりで打ち切る。
+// herdr app の mod が無いか古くて開けなければ、次からは client の画面の中に描くように覚え直す（herdrPopups.fail）。
+//
+// req: FR-326
+func (s *Server) openPopupRetry(m mux.Mux, po mux.PopupOptions) error {
 	deadline := time.Now().Add(popupBusyTimeout)
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), splitTimeout)
+		ctx, cancel := context.WithTimeout(s.muxContext(), splitWait(m))
 		err := m.OpenPopup(ctx, po)
 		cancel()
 		if !errors.Is(err, mux.ErrPopupBusy) || time.Now().After(deadline) {
+			if err != nil && s.herdrPopups != nil {
+				s.herdrPopups.fail(err)
+			}
 			return herdrHint(err)
 		}
 		time.Sleep(popupBusyRetry)
@@ -110,7 +117,7 @@ func (s *Server) runPopup(from string, argv []string, dir string, opts editor.Po
 	// 同じ window（タブ）の server に繋ぐように、from のペインを知らせる（mux.InPane。FR-59）。
 	po.Command = mux.InPane(m, from, mux.Command{Args: argv, Dir: dir})
 	po.KeepOnFailure = true
-	return openPopupRetry(m, po)
+	return s.openPopupRetry(m, po)
 }
 
 // popupScreenWidth は、editor.Config.PopupScreenWidth である（FR-149）。元のペイン from の上にポップアップを出す端末の列数を返す。
@@ -171,9 +178,13 @@ func herdrHint(err error) error {
 		return fmt.Errorf("herdr app に vi-imitation の mod が入っていないか、herdr app が動いていません"+
 			"（<配布物>/herdr-app-mod を herdr app の mods/vi-imitation に置いてください）: %w", err)
 	}
+	if errors.Is(err, mux.ErrHerdrAppModOutdated) {
+		// mod が依頼の操作を知らない（#452 より前の mod）。
+		return fmt.Errorf("herdr app の vi-imitation の mod が古いので、配布物の herdr-app-mod を入れ直してください: %w", err)
+	}
 	if errors.Is(err, mux.ErrHerdrAppSlow) {
 		// mod は入っていて引き受けたが、herdr app の命令が期限までに終わらなかった（#448 のレビューの推奨 1）。
-		return fmt.Errorf("herdr app の vi-imitation の mod がペインの分割を終えませんでした: %w", err)
+		return fmt.Errorf("herdr app の vi-imitation の mod が依頼（ペインの分割かポップアップ）を終えませんでした: %w", err)
 	}
 	return err
 }

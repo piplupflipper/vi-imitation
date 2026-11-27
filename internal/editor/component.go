@@ -381,11 +381,12 @@ func (e *Editor) focusAfterPane(extID string, move bool) {
 // 出すかの判定（previewShown）も、同じ列数（floatState.screen）から同じ規則で行う。
 // ポップアップの百分率は端末の幅に対するものなので、開いた client のペインの幅で判定すると、分割した狭いペインから開いたときに、
 // 判定と実際の窓の幅が食い違う（PR #298 のレビューの必須 1）。問い合わせられなければ、元の client の画面の幅で代える。
+// ポップアップを今開けない（Config.PopupReady が false。herdr app に mod が無いか古い）なら頼まず、誤りも出さずに画面の中央に描いたままにする（FR-326）。
 //
-// req: FR-67, FR-149
+// req: FR-67, FR-149, FR-326
 func (e *Editor) requestPopup(f *floatState) {
 	pane := e.view.info.Pane
-	if e.cfg.OpenPopup == nil || pane == "" {
+	if e.cfg.OpenPopup == nil || pane == "" || (e.cfg.PopupReady != nil && !e.cfg.PopupReady(pane)) {
 		return
 	}
 	capable := e.previewCapable(f)

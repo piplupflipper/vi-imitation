@@ -146,6 +146,13 @@ func waitScreenText(t *testing.T, ch <-chan string, want string) {
 // startHerdrAppServer は、herdr app の中で server を起動し、ペイン t7 の編集の client として a.txt を開いて繋ぐ。
 func startHerdrAppServer(t *testing.T) (protocol.ClientConn, <-chan string) {
 	t.Helper()
+	c, ch, _, _ := startHerdrAppServerAt(t)
+	return c, ch
+}
+
+// startHerdrAppServerAt は、startHerdrAppServer と同じく server を起動して繋ぎ、server と、a.txt のあるディレクトリも返す。
+func startHerdrAppServerAt(t *testing.T) (protocol.ClientConn, <-chan string, *Server, string) {
+	t.Helper()
 	dir := t.TempDir()
 	for name, body := range map[string]string{"a.txt": "one\ntwo\n", "b.txt": "one\nTWO\n"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
@@ -179,7 +186,18 @@ func startHerdrAppServer(t *testing.T) (protocol.ClientConn, <-chan string) {
 	}
 	ch := screens(c)
 	waitScreenText(t, ch, "a.txt")
-	return c, ch
+	return c, ch, srv, dir
+}
+
+// servedOps は、偽の係が処理した依頼のうち、操作が op のものを返す。
+func servedOps(hc *muxtest.HC, op string) []muxtest.Served {
+	var out []muxtest.Served
+	for _, s := range hc.Served() {
+		if s.Request.Op == op {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // herdr app の中の :diffsplit は、元の client の端末（t7）に右へ割る依頼のラベルを書き、mod の結果を受け取る。
@@ -192,7 +210,8 @@ func TestDiffSplitHerdrApp(t *testing.T) {
 	t.Cleanup(clients.close)
 	hc.ServeMod(t, func(_ string, req muxtest.Request) muxtest.Reply {
 		if req.Op != "split" {
-			return muxtest.Reply{Error: "unexpected op " + req.Op}
+			// client が繋いだときの、ポップアップを知っているかの問い（hello。#452）には、古い mod と同じく答える。
+			return muxtest.Reply{Error: "unknown op " + req.Op}
 		}
 		clients.connect(t, req.Argv, "t9")
 		return muxtest.Reply{Terminal: "t9"}
@@ -202,7 +221,7 @@ func TestDiffSplitHerdrApp(t *testing.T) {
 	waitScreenText(t, ch, "b.txt を別のペインで開いて見比べます")
 	// 見比べが始まると、:diffthis は既に見比べていると答える。始まる前なら相手を待つ。
 	deadline := time.Now().Add(10 * time.Second)
-	for !slices.ContainsFunc(hc.Served(), func(s muxtest.Served) bool { return s.Request.Op == "split" }) {
+	for len(servedOps(hc, "split")) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("mod に依頼が届かない")
 		}
@@ -213,7 +232,7 @@ func TestDiffSplitHerdrApp(t *testing.T) {
 	// 本体が結果を読んでラベルを片付ける（待ちが終わる）まで待ってから終わる（PR #441 のレビューの必須 1）。
 	waitNoLabels(t, hc, "t7")
 
-	served := hc.Served()
+	served := servedOps(hc, "split")
 	if len(served) != 1 || served[0].Terminal != "t7" || served[0].Request.Direction != "right" || !served[0].Request.Focus {
 		t.Errorf("mod への依頼 = %+v, want 端末 t7 に右へ割ってフォーカスを移す依頼 1 つ", served)
 	}
@@ -427,9 +446,11 @@ func TestDiffSplitHerdrAppNoMod(t *testing.T) {
 	waitScreenText(t, ch, "herdr app に vi-imitation の mod が入っていない")
 }
 
-// herdr app の中の server は、中央のポップアップの関数（OpenPopup、RunPopup）を入れない。
-// ポップアップは client の画面の中に描き、:terminal.popup は :! と同じく動かす（mux.HerdrApp.OpenPopup は持たない）。
-// ペインの部品（OpenPane）と見比べ（SplitPane）は入れる。
+// herdr app の中の server は、中央のポップアップの関数（OpenPopup、RunPopup）と、今開けるかを知らせる関数（PopupReady）を組で入れる（#452）。
+// 端末の列数を問う PopupScreenWidth は入れない。呼び出し側がポップアップの関数のどれかを入れていれば、どれも入れない。
+// ペインの部品（OpenPane）と見比べ（SplitPane）は入れる。tmux の中では PopupReady を入れない（常に開ける）。
+//
+// req: FR-326
 func TestWithMuxHerdrApp(t *testing.T) {
 	inHerdrApp(t)
 	if mux.Detect(os.Getenv).Kind() != mux.KindHerdrApp {
@@ -437,10 +458,26 @@ func TestWithMuxHerdrApp(t *testing.T) {
 	}
 	s := &Server{log: slog.New(slog.DiscardHandler)}
 	got := s.withMux(editor.Config{})
-	if got.OpenPopup != nil || got.RunPopup != nil || got.PopupScreenWidth != nil {
-		t.Error("herdr app の中で、ポップアップの関数が入った")
+	if got.OpenPopup == nil || got.RunPopup == nil || got.PopupReady == nil || s.herdrPopups == nil {
+		t.Error("herdr app の中で、ポップアップの関数が入らない")
+	}
+	if got.PopupScreenWidth != nil {
+		t.Error("herdr app の中で、PopupScreenWidth が入った")
 	}
 	if got.OpenPane == nil || got.SplitPane == nil {
 		t.Error("herdr app の中で、ペインの関数が入らない")
+	}
+
+	s = &Server{log: slog.New(slog.DiscardHandler)}
+	got = s.withMux(editor.Config{OpenPopup: func(string, uint64, string, editor.PopupOptions) error { return nil }})
+	if got.RunPopup != nil || got.PopupReady != nil || s.herdrPopups != nil {
+		t.Error("呼び出し側が OpenPopup を入れたのに、server のポップアップの関数を混ぜた")
+	}
+
+	t.Setenv("TMUX", "/tmp/t/default,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+	s = &Server{log: slog.New(slog.DiscardHandler)}
+	if got = s.withMux(editor.Config{}); got.PopupReady != nil || got.OpenPopup == nil || got.PopupScreenWidth == nil {
+		t.Error("tmux の中のポップアップの関数が違う")
 	}
 }

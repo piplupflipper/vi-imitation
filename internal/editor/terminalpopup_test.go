@@ -153,6 +153,73 @@ func TestTerminalPopupBusy(t *testing.T) {
 	}
 }
 
+// ポップアップを今開けない（Config.PopupReady が false。herdr app に mod が無いか古い）client の :terminal.popup は、
+// 端末多重化ソフトの外と同じく :! と同じ経路で動かし、RunPopup を呼ばず、誤りも出さない。
+// 中央のポップアップの部品も OpenPopup を呼ばずに、元の client の画面の中央に描き、誤りを出さない。
+// PopupReady が true に変われば、どちらも端末多重化ソフトのポップアップに出す。PopupReady には client のペインを渡す。
+//
+// req: FR-326
+func TestTerminalPopupNotReady(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"a.txt": "abc\n", "b.txt": "xyz\n"})
+	rec := &popupRecorder{}
+	var mu sync.Mutex
+	ready := false
+	var asked []string
+	var calls muxCalls
+	cfg := Config{WorkDir: dir, RunPopup: rec.run, Extensions: fakeSpecs(t), PopupReady: func(from string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		asked = append(asked, from)
+		return ready
+	}}
+	calls.config(&cfg)
+	h := start(t, cfg, "a.txt")
+	b := h.attachPaneHandover(dir, "t7", filepath.Join(dir, "b.txt"))
+	message := func() string {
+		var msg string
+		h.e.do(func() { msg = h.e.viewOf(h.e.findClient(2)).message.Text })
+		return msg
+	}
+	b.keys(":terminal.popup git log --oneline<CR>")
+	j := b.job()
+	if len(j.Commands) != 1 || j.Commands[0].Shell != "git log --oneline" {
+		t.Errorf("頼み = %+v, want :! と同じ頼み", j)
+	}
+	b.reply(TerminalResult{ID: j.ID})
+	h.eventually("実行の終わり", func() bool { return h.e.shell == nil })
+	if msg := message(); msg != "" {
+		t.Errorf("メッセージ = %q, want 空", msg)
+	}
+
+	b.keys(":fake.popup list<CR>")
+	h.eventually("元の client の画面のポップアップ", func() bool { return strings.Contains(b.term.screen(), "close me") })
+	h.settle()
+	calls.mu.Lock()
+	n := len(calls.popups)
+	calls.mu.Unlock()
+	if n != 0 || len(rec.list()) != 0 {
+		t.Errorf("開けないのに OpenPopup（%d 回）か RunPopup（%+v）を呼んだ", n, rec.list())
+	}
+	if msg := message(); strings.Contains(msg, "端末多重化ソフト") {
+		t.Errorf("メッセージ = %q, want 端末多重化ソフトのポップアップの誤りを出さない", msg)
+	}
+	b.keys("<Esc>")
+	h.eventually("ポップアップを閉じる", func() bool { return h.e.viewOf(h.e.findClient(2)).float == nil })
+
+	mu.Lock()
+	ready = true
+	mu.Unlock()
+	b.keys(":terminal.popup ls<CR>")
+	h.eventually("開けるようになった後の頼み", func() bool { return len(rec.list()) == 1 })
+	b.keys(":fake.popup list<CR>")
+	h.eventually("開けるようになった後の OpenPopup", func() bool { _, ok := calls.last(false); return ok })
+	mu.Lock()
+	defer mu.Unlock()
+	if len(asked) < 4 || slices.ContainsFunc(asked, func(p string) bool { return p != "t7" }) {
+		t.Errorf("PopupReady の引数 = %q, want client のペイン t7 で 4 回以上", asked)
+	}
+}
+
 // キーに { "command": "terminal.popup", "args": ... } で割り当てると、コマンドラインを出さずに同じくポップアップで動かす（FR-154）。
 // マクロに記録した :terminal.popup は、再生でもポップアップを開き、ポップアップの終わりを待たずに再生の残りを続ける。
 //
