@@ -12,7 +12,8 @@
   ],
   "contributes": {
     "commands": [
-      { "id": "lsp.inlayHints.toggle", "description": "LSP のインレイヒント（型や引数の名前）を出すかどうかを切り替える" }
+      { "id": "lsp.inlayHints.toggle", "description": "LSP のインレイヒント（型や引数の名前）を出すかどうかを切り替える" },
+      { "id": "lsp.root", "description": "言語サーバーの根を見る（引数なし）か指定する（:lsp.root <ディレクトリ>、目印へ戻すのは :lsp.root --markers）" }
     ]
   }
 }

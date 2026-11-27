@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
+	"github.com/piplupflipper/vi-imitation/ext/project"
 	"github.com/piplupflipper/vi-imitation/ext/server"
 	"github.com/piplupflipper/vi-imitation/internal/rpc"
 )
@@ -45,7 +48,10 @@ type proc struct {
 	progress map[string]bool
 }
 
-// client は、1 つのファイルの種類について、言語サーバーのプロセスを起動し、文書を同期し、診断を本体へ送る。
+// client は、1 つの言語サーバーの設定（名前）と 1 つのワークスペースの根の組について、言語サーバーのプロセスを起動し、
+// 文書を同期し、診断を本体へ送る（FR-320）。
+// 同じ言語サーバーでも根が違えば別の client で、同じ根のファイルはファイルの種類が違っても同じ client が受け持つ
+// （Neovim の vim.lsp が、設定の名前と root_dir ごとに 1 つの client を起動するのと同じ）。
 //
 // 文書の写し（docs）と言語サーバーの状態は mu で守る。
 // mu は、ext/server のループ（フックとハンドラー）、言語サーバーの接続の読み取りの goroutine（診断など）、
@@ -57,9 +63,20 @@ type proc struct {
 // 言語サーバーは、最初の文書を開いたときに起動する。起動するまでと再起動を待つ間は、文書の写しだけを更新し、何も送らない。
 // 起動したら（initialize の応答の後）、その時点の写しの全文を didOpen で送る。
 type client struct {
-	x        *extension
-	fileType string
-	cfg      *serverConfig
+	x *extension
+	// server は、言語サーバーの名前（設定の servers の鍵）である。
+	server string
+	cfg    *serverConfig
+	// root は、ワークスペースの根のディレクトリである。client を作るときに決め、変えない。
+	root string
+	// venv は、根から探した Python の仮想環境である。設定の PythonVenvSetting が無いか、見つからなければ空である（FR-321）。
+	venv project.Venv
+	// settings は、workspace/configuration に答える値である。設定の Settings に、仮想環境の python を入れたものである。
+	settings map[string]json.RawMessage
+	// idleTimer と idleGen は、受け持つ文書が無くなった後に言語サーバーを止める予約である（extension.scheduleIdleStop。FR-323）。
+	// x.mu で守る。idleGen は、予約するたびと、clientAt でこの client を返すたびに増やし、古い予約を無効にする。
+	idleTimer *time.Timer
+	idleGen   uint64
 
 	// maxRestarts は、異常終了したときに再起動する回数の上限である。
 	maxRestarts int
@@ -82,8 +99,6 @@ type client struct {
 	mu   sync.Mutex
 	docs map[ext.BufferID]*document
 	proc *proc
-	// root は、ワークスペースの根のディレクトリである。最初に起動したときに決め、再起動しても変えない。
-	root string
 	// starting は、起動の goroutine が動いているか、再起動を待っていることを表す。
 	starting bool
 	// restarts は、異常終了から再起動した回数である。resetAfter より長く動いた後の異常終了では 0 から数え直す。
@@ -96,12 +111,20 @@ type client struct {
 	miseDone chan struct{}
 }
 
-func newClient(x *extension, fileType string, cfg *serverConfig, maxRestarts int) *client {
+// newClient は、言語サーバー server（設定 cfg）の、根 root の client を作る。言語サーバーは、最初の文書を開いたときに起動する。
+//
+// 設定に PythonVenvSetting があれば、根から Python の仮想環境を探し、見つかればその python を workspace/configuration の答えに入れる。
+// 見つからないことは誤りにしない（PATH の python のまま）。探すときの権限の誤りと、入れる場所の誤りはログに書き、入れない。
+//
+// req: FR-321
+func newClient(x *extension, server, root string, cfg *serverConfig, maxRestarts int) *client {
 	ctx, cancel := context.WithCancel(x.ctx)
-	return &client{
+	c := &client{
 		x:              x,
-		fileType:       fileType,
+		server:         server,
 		cfg:            cfg,
+		root:           root,
+		settings:       cfg.Settings,
 		maxRestarts:    maxRestarts,
 		restartDelay:   defaultRestartDelay,
 		initTimeout:    defaultInitTimeout,
@@ -113,10 +136,33 @@ func newClient(x *extension, fileType string, cfg *serverConfig, maxRestarts int
 		cancel:         cancel,
 		docs:           make(map[ext.BufferID]*document),
 	}
+	if cfg.PythonVenvSetting == "" {
+		return c
+	}
+	v, err := project.PythonVenv(root)
+	switch {
+	case errors.Is(err, project.ErrNotFound):
+		return c
+	case err != nil:
+		c.logf("%s: Python virtual environment: %v", c.name(), err)
+		return c
+	}
+	settings, err := cfg.effectiveSettings(v.Python)
+	if err != nil {
+		c.logf("%s: %v", c.name(), err)
+		return c
+	}
+	c.venv, c.settings = v, settings
+	return c
 }
 
 // name は、利用者へのメッセージに使う言語サーバーの名前である。
 func (c *client) name() string { return filepath.Base(c.cfg.Command) }
+
+// logf は、拡張機能のログに、根を前に付けて書く。同じ言語サーバーの、根の違う client のログを見分けるためである。
+func (c *client) logf(format string, args ...any) {
+	c.x.logf("[%s] "+format, append([]any{c.root}, args...)...)
+}
 
 // ready は、mu を持った状態で、稼働中の proc を返す。稼働中でなければ nil である。
 func (c *client) readyProc() *proc {
@@ -146,20 +192,76 @@ func (c *client) open(b *server.Buffer, reopen bool) {
 		}
 		return
 	}
-	d = newDocument(b, c.cfg.LanguageID)
-	c.docs[b.ID()] = d
+	c.addLocked(newDocument(b, c.cfg.languageID(b.FileType())))
+}
+
+// addLocked は、mu を持った状態で、文書 d を受け持つ。言語サーバーが稼働中なら didOpen を送り、インレイヒントの問い合わせを予約する。
+// 起動していなければ起動を始める。
+func (c *client) addLocked(d *document) {
+	c.docs[d.buffer] = d
 	if p := c.readyProc(); p != nil {
 		c.didOpen(p, d)
 		c.scheduleInlay(p, d)
 		return
 	}
 	if c.proc == nil && !c.starting && !c.failed && !c.stopped {
-		if c.root == "" {
-			c.root = findRoot(b.Path(), c.cfg.RootMarkers)
-		}
 		c.starting = true
 		go c.start()
 	}
+}
+
+// take は、バッファ id の文書を、この client から外して返す。ループから呼ぶ。持っていなければ nil を返す。
+// detach と同じく textDocument/didClose を送り、この client が送った診断とインレイヒントを、文書の現在の版で消す。
+// 返した文書は、別の client の adopt に渡す（根を指定し直したとき。FR-322）。
+//
+// req: FR-322
+func (c *client) take(id ext.BufferID) *document {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	d, ok := c.docs[id]
+	if !ok {
+		return nil
+	}
+	c.resetInlay(d, true)
+	c.closeLocked(id)
+	v := d.current().version
+	c.x.setDiagnostics(ext.DiagnosticSetParams{Buffer: id, Version: v, Diagnostics: []ext.Diagnostic{}})
+	return d
+}
+
+// adopt は、別の client から外した文書 d を受け持つ。ループから呼ぶ。
+// 文書の写しは本体のバッファの現在の版のままなので、そのまま didOpen で送る。
+//
+// req: FR-322
+func (c *client) adopt(d *document) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addLocked(d)
+}
+
+// pathOf は、バッファ id の文書のパスを返す。受け持っていなければ ok は false である。
+func (c *client) pathOf(id ext.BufferID) (path string, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	d, ok := c.docs[id]
+	if !ok {
+		return "", false
+	}
+	return d.path, true
+}
+
+// bufferIDs は、受け持っている文書のバッファの番号を、小さい順に返す。
+func (c *client) bufferIDs() []ext.BufferID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Sorted(maps.Keys(c.docs))
+}
+
+// idle は、受け持つ文書が無いかを返す。
+func (c *client) idle() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.docs) == 0
 }
 
 // didOpen は、mu を持った状態で、d の textDocument/didOpen を送る。
@@ -193,7 +295,7 @@ func (c *client) change(e *server.BufferChangeEvent) {
 	}
 	changes, err := d.apply(e.Edits, e.ToVersion, enc, incremental)
 	if err != nil {
-		c.x.logf("%s: buffer %d: %v; resending the whole text", c.name(), d.buffer, err)
+		c.logf("%s: buffer %d: %v; resending the whole text", c.name(), d.buffer, err)
 		d.reset(e.Buffer)
 		incremental = false
 	}
@@ -251,16 +353,18 @@ func (c *client) detach(b *server.Buffer) {
 	}
 	c.x.setDiagnostics(ext.DiagnosticSetParams{Buffer: b.ID(), Version: b.Version(), Diagnostics: []ext.Diagnostic{}})
 	if err := c.x.srv.SetVirtualTexts(ext.VirtualTextSetParams{Buffer: b.ID(), Version: b.Version(), VirtualTexts: []ext.VirtualText{}}); err != nil {
-		c.x.logf("virtualText/set: %v", err)
+		c.logf("virtualText/set: %v", err)
 	}
 }
 
-// syncs は、バッファ id をパス path の文書として同期しているかを返す。ループから呼ぶ。
-func (c *client) syncs(id ext.BufferID, path string) bool {
+// syncs は、バッファ id を、パス path、ファイルの種類 fileType の文書として同期しているかを返す。ループから呼ぶ。
+// 1 つの言語サーバーが複数のファイルの種類を受け持つので、languageId の変わる種類の変更（typescript から typescriptreact）は、
+// 外して開き直す（言語サーバーの文書の languageId は didOpen でしか伝えられない）。
+func (c *client) syncs(id ext.BufferID, path, fileType string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	d, ok := c.docs[id]
-	return ok && d.path == path
+	return ok && d.path == path && d.languageID == c.cfg.languageID(fileType)
 }
 
 // didSave は、言語サーバーが保存の通知を求めていれば、textDocument/didSave を送る。ループから呼ぶ。
@@ -293,7 +397,7 @@ func lspVersion(v ext.Version) int64 {
 // notify は、言語サーバーへ通知を送る。送れなければログに書く（接続が終わっていれば、監視の goroutine が後始末をする）。
 func (c *client) notify(p *proc, method string, params any) {
 	if err := p.conn.Notify(method, params); err != nil {
-		c.x.logf("%s: %s: %v", c.name(), method, err)
+		c.logf("%s: %s: %v", c.name(), method, err)
 	}
 }
 
@@ -308,8 +412,9 @@ func (c *client) notify(p *proc, method string, params any) {
 //
 // req: FR-30
 func (c *client) start() {
+	root := c.root
 	c.mu.Lock()
-	stopped, root := c.stopped, c.root
+	stopped := c.stopped
 	c.mu.Unlock()
 	if stopped {
 		c.mu.Lock()
@@ -331,7 +436,7 @@ func (c *client) start() {
 	case err != nil:
 		c.failed = true
 		c.mu.Unlock()
-		c.x.logf("%s: %v", c.name(), err)
+		c.logf("%s: %v", c.name(), err)
 		if !errors.Is(err, errReported) {
 			c.x.showMessage(ext.MessageError, fmt.Sprintf("言語サーバー %s を起動できない: %v", c.name(), err))
 		}
@@ -359,7 +464,7 @@ func (c *client) start() {
 	defer cancel()
 	var res initializeResult
 	if err := p.conn.Call(ctx, lspInitialize, params, &res); err != nil {
-		c.x.logf("%s: initialize: %v", c.name(), err)
+		c.logf("%s: initialize: %v", c.name(), err)
 		_ = p.cmd.Process.Kill()
 		return
 	}
@@ -458,13 +563,13 @@ func (c *client) watch(p *proc) {
 	if n > c.maxRestarts {
 		c.failed = true
 		c.mu.Unlock()
-		c.x.logf("%s exited (%v); giving up after %d restarts", c.name(), err, c.maxRestarts)
+		c.logf("%s exited (%v); giving up after %d restarts", c.name(), err, c.maxRestarts)
 		c.x.showMessage(ext.MessageError, fmt.Sprintf("言語サーバー %s が終了した。再起動の回数の上限（%d 回）に達したので、もう起動しない", c.name(), c.maxRestarts))
 		return
 	}
 	c.starting = true
 	c.mu.Unlock()
-	c.x.logf("%s exited (%v); restarting (%d/%d)", c.name(), err, n, c.maxRestarts)
+	c.logf("%s exited (%v); restarting (%d/%d)", c.name(), err, n, c.maxRestarts)
 	c.x.showMessage(ext.MessageWarning, fmt.Sprintf("言語サーバー %s が終了した。再起動する（%d/%d 回目）", c.name(), n, c.maxRestarts))
 	time.AfterFunc(c.restartDelay*time.Duration(n), c.start)
 }
@@ -529,11 +634,7 @@ func (c *client) serverRequest(req *rpc.Request, reply rpc.Replier) {
 		}
 		items := make([]json.RawMessage, len(p.Items))
 		for i, it := range p.Items {
-			if v, ok := c.cfg.Settings[it.Section]; ok && it.Section != "" {
-				items[i] = v
-			} else {
-				items[i] = json.RawMessage("null")
-			}
+			items[i] = lookupSection(c.settings, it.Section)
 		}
 		result = items
 	case lspRegisterCapability, lspUnregisterCapability:
@@ -550,10 +651,7 @@ func (c *client) serverRequest(req *rpc.Request, reply rpc.Replier) {
 	case lspApplyEdit:
 		result = map[string]any{"applied": false, "failureReason": "vi-imitation does not support workspace/applyEdit"}
 	case lspWorkspaceFolders:
-		c.mu.Lock()
-		root := c.root
-		c.mu.Unlock()
-		result = []workspaceFolder{{URI: pathToURI(root), Name: filepath.Base(root)}}
+		result = []workspaceFolder{{URI: pathToURI(c.root), Name: filepath.Base(c.root)}}
 	case lspInlayHintRefresh:
 		// 開いている文書のインレイヒントを問い合わせ直す。予約するだけなので、応答を遅らせない（inlay.go。FR-256）。
 		c.refreshInlay()
@@ -561,7 +659,7 @@ func (c *client) serverRequest(req *rpc.Request, reply rpc.Replier) {
 		rerr = &rpc.Error{Code: rpc.CodeMethodNotFound, Message: "method not found: " + req.Method}
 	}
 	if err := reply(result, rerr); err != nil {
-		c.x.logf("%s: reply to %s: %v", c.name(), req.Method, err)
+		c.logf("%s: reply to %s: %v", c.name(), req.Method, err)
 	}
 }
 
@@ -571,7 +669,7 @@ func (c *client) serverNotification(p *proc, n *rpc.Notification) {
 	case lspPublishDiagnostics:
 		var params publishDiagnosticsParams
 		if err := json.Unmarshal(n.Params, &params); err != nil {
-			c.x.logf("%s: %s: %v", c.name(), n.Method, err)
+			c.logf("%s: %s: %v", c.name(), n.Method, err)
 			return
 		}
 		c.publishDiagnostics(p, &params)
@@ -583,12 +681,12 @@ func (c *client) serverNotification(p *proc, n *rpc.Notification) {
 	case lspLogMessage:
 		var params showMessageParams
 		if json.Unmarshal(n.Params, &params) == nil {
-			c.x.logf("%s: %s", c.name(), params.Message)
+			c.logf("%s: %s", c.name(), params.Message)
 		}
 	case lspProgress:
 		var params progressParams
 		if err := json.Unmarshal(n.Params, &params); err != nil {
-			c.x.logf("%s: %s: %v", c.name(), n.Method, err)
+			c.logf("%s: %s: %v", c.name(), n.Method, err)
 			return
 		}
 		c.progress(p, params)
@@ -606,7 +704,7 @@ func (c *client) showServerMessage(p showMessageParams) {
 	case messageInfo:
 		level = ext.MessageInfo
 	default:
-		c.x.logf("%s: %s", c.name(), p.Message)
+		c.logf("%s: %s", c.name(), p.Message)
 		return
 	}
 	c.x.showMessage(level, c.name()+": "+p.Message)
@@ -643,7 +741,7 @@ func (c *client) publishDiagnostics(p *proc, params *publishDiagnosticsParams) {
 	}
 	ls, err := d.at(v)
 	if err != nil {
-		c.x.logf("%s: diagnostics for %s: %v; dropped", c.name(), path, err)
+		c.logf("%s: diagnostics for %s: %v; dropped", c.name(), path, err)
 		return
 	}
 	diags := make([]ext.Diagnostic, 0, len(params.Diagnostics))

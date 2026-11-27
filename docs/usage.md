@@ -2673,7 +2673,9 @@ gopls の設定は、言語サーバーの設定の `settings.gopls` に書く�
 #### 言語を足し、言語サーバーを mise で入れる
 
 既定の言語サーバーは Go の gopls だけである。
-ほかの言語は、`extensions.settings.lsp.servers` にファイルの種類（`python`、`sh` など）ごとの言語サーバーを書き、`extensions.activation.lsp` にそのファイルの種類の起動の契機を足す。
+ほかの言語は、`extensions.settings.lsp.servers` に言語サーバーを名前（`pyright`、`vtsls` など）で書き、受け持つファイルの種類を `fileTypes` に書く。
+`extensions.activation.lsp` には、そのファイルの種類の起動の契機を足す。
+`fileTypes` を省くと、名前をファイルの種類として、その種類だけを受け持つ（`"python": { … }` のように、鍵にファイルの種類を書く書き方も読める）。
 言語サーバーの実行ファイルは、vi-imitation が取ってこない。
 [mise](https://mise.jdx.dev/) で入れる前提で、言語サーバーごとに mise の道具の ID（`mise`）を書いておくと、見つからないときに入れ方を案内する。
 
@@ -2683,7 +2685,8 @@ gopls の設定は、言語サーバーの設定の `settings.gopls` に書く�
     "settings": {
       "lsp": {
         "servers": {
-          "python": {
+          "pyright": {
+            "fileTypes": ["python"],
             "command": "pyright-langserver",
             "args": ["--stdio"],
             "rootMarkers": ["pyproject.toml", "setup.py", ".git"],
@@ -2717,6 +2720,104 @@ mise の shim のディレクトリを PATH に置いていると、その道具
 vi-imitation は上のとおり、そのような shim を使わずに `mise exec` で起動する。
 入れるのに失敗したとき（ネットワークに出られない、プロジェクトの `mise.toml` を信頼していない、など）は、mise と、mise が起動した npm などの誤りの行をメッセージの行に出す。
 信頼していない `mise.toml` で止まったときは、内容を確かめてから `mise trust` を打つ。vi-imitation は、利用者の代わりに信頼しない。
+
+#### 言語サーバーと根
+
+言語サーバーは、言語サーバーの名前とワークスペースの根の組ごとに 1 つ起動する（nvim の `vim.lsp` が設定の名前と `root_dir` ごとに 1 つの client を起動するのと同じ）。
+
+- 根は、ファイルを開くたびに、そのファイルのディレクトリから親へ `rootMarkers` をたどり、目印のあるディレクトリにする。無ければファイルのディレクトリにする
+- 同じ根のファイルは、ファイルの種類が違っても 1 つのプロセスを共有する。根の違うファイル（別のリポジトリ、モノレポの別のプロジェクト）には別のプロセスを起動する
+- `didOpen` の `languageId` は、`languageId` を書けばその値、書かなければファイルの種類の名前である。`fileTypes` に複数の種類を書いた言語サーバーでは書かない
+- ある根のファイルをすべて閉じると、10 分後にその根の言語サーバーを止める（nvim は閉じても残す）。その前に同じ根のファイルを開けば、動いている言語サーバーをそのまま使う。時間は `extensions.settings.lsp.idleStopMs`（ミリ秒）で変え、`0` にすると止めない
+
+TypeScript の言語サーバー（vtsls）で `.ts`、`.tsx`、`.js`、`.jsx` を 1 つのプロセスで受け持つには、次のように書く。
+
+`.tsx` と `.jsx` は本体の既定のファイルの種類の表に無いので、設定ファイルの最上位の `fileTypes`（[設定ファイルの項目](#設定ファイルの項目)）にも足す。
+
+```jsonc
+{
+  "fileTypes": { ".tsx": "typescriptreact", ".jsx": "javascriptreact" },
+  "extensions": {
+    "settings": {
+      "lsp": {
+        "servers": {
+          "vtsls": {
+            "fileTypes": ["typescript", "typescriptreact", "javascript", "javascriptreact"],
+            "command": "vtsls",
+            "args": ["--stdio"],
+            "rootMarkers": ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
+            "mise": "npm:@vtsls/language-server@0.3.0",
+          },
+        },
+      },
+    },
+    "activation": {
+      "lsp": [
+        { "on": "filetype", "pattern": "typescript" },
+        { "on": "filetype", "pattern": "typescriptreact" },
+        { "on": "filetype", "pattern": "javascript" },
+        { "on": "filetype", "pattern": "javascriptreact" },
+      ],
+    },
+  },
+}
+```
+
+`fileTypes` を書かずに `"typescript"` と `"typescriptreact"` を別の鍵で書くと、別の言語サーバーとして 2 つのプロセスの組を起動し、片方の編集がもう片方に保存まで届かない。
+同じファイルの種類を 2 つの言語サーバーに書くと、設定の誤りになる。
+ただし、既定の gopls（鍵は `go`）と同じ種類を受け持つ言語サーバーを書いたときは、既定の gopls を使わない。
+
+##### Python の仮想環境
+
+pyright は、仮想環境を `python.pythonPath` の設定でしか受け取らない。
+`pythonVenvSetting` に、仮想環境の python を入れる設定の場所（section と項目を `.` でつないだもの）を書くと、根から仮想環境を探し、見つかればその `bin/python` の絶対パスを入れて渡す。
+
+```jsonc
+{
+  "extensions": {
+    "settings": {
+      "lsp": {
+        "servers": {
+          "pyright": {
+            "fileTypes": ["python"],
+            "command": "pyright-langserver",
+            "args": ["--stdio"],
+            "rootMarkers": ["pyproject.toml", "setup.py", ".git"],
+            "pythonVenvSetting": "python.pythonPath",
+            "settings": { "python": { "analysis": { "typeCheckingMode": "basic" } } },
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+- 仮想環境は、根から親へ、各ディレクトリの `.venv`、`venv` の順に探し、無ければ有効にした仮想環境（絶対パスの `VIRTUAL_ENV`）を使う（デバッグの拡張機能と同じ探し方）。uv のワークスペースのメンバーは自分の `.venv` を持たないが、親へたどってワークスペースの根の `.venv` に届く
+- 見つからなければ入れない。言語サーバーは PATH の python を使う
+- `settings` に同じ場所の値を書いていても、見つかった仮想環境の値で置き換える
+- 仮想環境は、言語サーバーと根の組を作るとき（その根の最初のファイルを開いたとき）に探す。後から `uv sync` で `.venv` を作ったときは、`:lsp.root --markers` で言語サーバーを起動し直すと、探し直す（目印で探した根なら根は変わらない。`:lsp.root .` は、根より深いディレクトリのファイルで打つと、そのファイルのディレクトリが根になるので使わない）
+- `settings` の section は、`python.analysis` のような `.` で区切った問い合わせにも、`settings.python.analysis` の値で答える
+
+##### 根を見る、指定する
+
+| コマンド | 結果 |
+|---|---|
+| `:lsp.root` | カーソルのあるバッファの言語サーバーの名前、実行ファイル、根、根の決め方（`指定した` か `目印で探した`）、仮想環境の python（`pythonVenvSetting` を書いた言語サーバーだけ。根の中に無く `VIRTUAL_ENV` のものを使っているときは、そう添える）を最下行に出す |
+| `:lsp.root <ディレクトリ>` | そのディレクトリを、カーソルのあるバッファの言語サーバーの根にする。相対パスはバッファのファイルのディレクトリから解く（`:lsp.root ..` はファイルの親のディレクトリ）。`~/` も使える。バッファのファイルがその下に無いディレクトリは誤りになる |
+| `:lsp.root --markers` | 指定した根をやめ、目印で探す根へ戻す |
+
+- 根を指定すると、同じ言語サーバーで開いているバッファのうち、そのディレクトリの下のものを、新しい根の言語サーバーへ移す。移したバッファの診断は、新しい言語サーバーが付け直す
+- 受け持つバッファが残らなくなった言語サーバーは止める
+- 根が変わらなかったとき（目印で探した根のままの `:lsp.root --markers`、今と同じディレクトリの指定）と、既に動いている根の言語サーバーへ移ったときは、その言語サーバーを起動し直し、仮想環境を探し直す
+- 指定した根は、本体を終えるまで、その言語サーバーの、後から開くそのディレクトリの下のファイルにも効く
+
+上の 2 つの設定で、uv 0.13.4 のワークスペース（根の `pyproject.toml` と `.venv`、メンバーの `packages/member`）のメンバーのファイルを開いて `:lsp.root` を打つと、次のように出る（2026-11-27 に pyright 1.1.410 と vtsls 0.3.0 で確かめた。`<ws>` はワークスペースの根）。
+メンバーの依存（`import six`）は解け、`.ts` と `.tsx` を開いても vtsls のプロセスの組は 1 つで、`.ts` の保存前の編集が `.tsx` の診断に効いた。
+
+```text
+言語サーバー pyright（pyright-langserver）、根 <ws>/packages/member（目印で探した）、仮想環境 <ws>/.venv/bin/python（python.pythonPath に入れた）
+```
 
 ### 整形ツール
 

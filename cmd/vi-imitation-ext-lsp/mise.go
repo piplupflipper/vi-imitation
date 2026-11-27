@@ -89,7 +89,7 @@ func (c *client) prepare(ctx context.Context, root string) (cmd command, retry b
 	}
 	mise, merr := exec.LookPath(c.mise)
 	if merr != nil {
-		c.x.logf("%s: mise: %v", c.name(), merr)
+		c.logf("%s: mise: %v", c.name(), merr)
 		c.guide(append(notes, "mise が見つからないので、自動では入れない（mise を入れてから打つ）")...)
 		return command{}, true, errReported
 	}
@@ -105,7 +105,7 @@ func (c *client) prepare(ctx context.Context, root string) (cmd command, retry b
 // guide は、言語サーバーの入れ方を message/show で案内する。notes は、入れ方の後ろに置く説明である。
 // メッセージの行は画面の幅で切れるので、利用者が打つ入れ方（mise use -g …）を前に置き、長くなりうる説明（shim のパスなど）を後ろに置く
 // （PR #281 の再レビューの推奨 2）。
-// 同じ実行ファイルと道具の ID の案内は、拡張機能が動いている間に 2 回出さない（別のファイルの種類の client からも）。
+// 同じ実行ファイルと道具の ID の案内は、拡張機能が動いている間に 2 回出さない（別の言語サーバーの名前や根の client からも）。
 //
 // req: FR-143
 func (c *client) guide(notes ...string) {
@@ -136,7 +136,7 @@ func miseShim(path string) (string, bool) {
 func (c *client) shimResolves(ctx context.Context, mise, root string) bool {
 	out, err := c.runMiseQuiet(ctx, mise, root, "which", c.cfg.Command)
 	if err != nil {
-		c.x.logf("%s: mise which %s: %v: %s", c.name(), c.cfg.Command, err, out)
+		c.logf("%s: mise which %s: %v: %s", c.name(), c.cfg.Command, err, out)
 		return false
 	}
 	return true
@@ -148,7 +148,7 @@ func (c *client) shimResolves(ctx context.Context, mise, root string) bool {
 func (c *client) miseInstalled(ctx context.Context, mise, root string) bool {
 	out, err := c.runMiseQuiet(ctx, mise, root, "where", c.cfg.Mise)
 	if err != nil {
-		c.x.logf("%s: mise where %s: %v: %s", c.name(), c.cfg.Mise, err, out)
+		c.logf("%s: mise where %s: %v: %s", c.name(), c.cfg.Mise, err, out)
 		return false
 	}
 	return true
@@ -237,7 +237,7 @@ func (c *client) miseInstall(ctx context.Context, mise, root string) error {
 	w.flush()
 	switch {
 	case err == nil:
-		c.x.logf("%s: mise install %s: done", c.name(), c.cfg.Mise)
+		c.logf("%s: mise install %s: done", c.name(), c.cfg.Mise)
 		endMessage, failed = fmt.Sprintf("%s を入れた。言語サーバー %s を起動する", c.cfg.Mise, c.name()), false
 		return nil
 	case errors.Is(err, errStopped) || errors.Is(ctx.Err(), context.Canceled):
@@ -245,7 +245,7 @@ func (c *client) miseInstall(ctx context.Context, mise, root string) error {
 		return fmt.Errorf("mise install %s: %w", c.cfg.Mise, context.Canceled)
 	}
 	endMessage = fmt.Sprintf("%s を入れられない", c.cfg.Mise)
-	c.x.logf("%s: mise install %s: %v", c.name(), c.cfg.Mise, err)
+	c.logf("%s: mise install %s: %v", c.name(), c.cfg.Mise, err)
 	detail := strings.Join(miseDetail(w.cause(), w.tail()), " ")
 	if ctx.Err() != nil {
 		detail = fmt.Sprintf("%s 以内に終わらなかった", c.installTimeout)
@@ -298,7 +298,7 @@ func isCauseLine(s string) bool {
 // miseLine は、mise install の出力の 1 行をログに書き、前に出してから miseLineInterval が過ぎていれば、
 // 進み具合（progress/report の report）の本文にする。
 func (c *client) miseLine(line string, last time.Time) bool {
-	c.x.logf("%s: mise: %s", c.name(), line)
+	c.logf("%s: mise: %s", c.name(), line)
 	if time.Since(last) < miseLineInterval {
 		return false
 	}
@@ -307,9 +307,9 @@ func (c *client) miseLine(line string, last time.Time) bool {
 }
 
 // miseToken は、mise に言語サーバーを入れさせる間の進み具合の識別子である。入れるのは client ごとに 1 つずつなので、
-// ファイルの種類で分ける。
+// 言語サーバーの名前と根で分ける（同じ言語サーバーの、根の違う client が同時に入れさせうる。FR-320）。
 func (c *client) miseToken() string {
-	return "mise/" + c.fileType
+	return "mise/" + c.server + "/" + c.root
 }
 
 // lineWriter は、子プロセスの出力を行に分け、空でない行ごとに line を呼ぶ io.Writer である。

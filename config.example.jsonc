@@ -319,10 +319,16 @@
               },
             },
           },
-          "python": {
+          // 鍵は言語サーバーの名前で、受け持つファイルの種類は fileTypes に書く（省くと鍵をファイルの種類として扱う）。
+          // 同じ根のファイルは 1 つのプロセスを共有し、根の違うファイルには別のプロセスを起動する。根は :lsp.root で見て、指定し直せる
+          "pyright": {
+            "fileTypes": ["python"],
             "command": "pyright-langserver",
             "args": ["--stdio"],
             "rootMarkers": ["pyproject.toml", "setup.py", ".git"],
+            // 根から .venv を探し（uv のワークスペースのメンバーからは、ワークスペースの根の .venv に届く）、
+            // その bin/python を settings の python.pythonPath に入れて渡す（nvim で before_init に pythonPath を入れるのに当たる）
+            "pythonVenvSetting": "python.pythonPath",
             // pyright-langserver が PATH に無いときに案内する mise の道具の ID。
             // 版は、自分の mise の設定（~/.config/mise/config.toml）に書いた版に合わせる
             "mise": "npm:pyright@1.1.410",
