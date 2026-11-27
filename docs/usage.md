@@ -2810,6 +2810,13 @@ pyright は、仮想環境を `python.pythonPath` の設定でしか受け取ら
 - 受け持つバッファが残らなくなった言語サーバーは止める
 - 指定した根は、本体を終えるまで、その言語サーバーの、後から開くそのディレクトリの下のファイルにも効く
 
+上の 2 つの設定で、uv 0.13.4 のワークスペース（根の `pyproject.toml` と `.venv`、メンバーの `packages/member`）のメンバーのファイルを開いて `:lsp.root` を打つと、次のように出る（2026-11-27 に pyright 1.1.410 と vtsls 0.3.0 で確かめた。`<ws>` はワークスペースの根）。
+メンバーの依存（`import six`）は解け、`.ts` と `.tsx` を開いても vtsls のプロセスの組は 1 つで、`.ts` の保存前の編集が `.tsx` の診断に効いた。
+
+```text
+言語サーバー pyright（pyright-langserver）、根 <ws>/packages/member（目印で探した）、仮想環境 <ws>/.venv/bin/python（python.pythonPath に入れた）
+```
+
 ### 整形ツール
 
 外部の整形ツール（biome、ruff、stylua、shfmt など）で、`:w` の前と、`gq{モーション}`、`:format` で整形する（nvim の conform.nvim に当たる）。
