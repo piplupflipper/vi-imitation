@@ -31,6 +31,11 @@ const (
 	// defaultInstallTimeout は、mise に言語サーバーを入れさせるとき（mise where と mise install）に待つ時間の上限である（FR-143）。
 	// 入れている間は initialize の期限（defaultInitTimeout）を数えないので、別に上限を置く。
 	defaultInstallTimeout = 10 * time.Minute
+	// defaultIdleStop は、受け持つ文書が無くなった言語サーバーを止めるまでの時間である（FR-323。仮）。
+	// 根ごとに起動するので、閉じたリポジトリの言語サーバーが残り続けると、開いた根の数だけメモリが積み上がる
+	// （vtsls 0.3.0 は 1 組でおよそ 560 MB。PR #454 のレビュー）。
+	// 一方、ファイルを閉じてすぐ同じ根のファイルを開き直すたびに起動し直すと、読み込みの待ちが増えるので、すぐには止めない。
+	defaultIdleStop = 10 * time.Minute
 )
 
 // serverConfig は、1 つの言語サーバーの設定である。
@@ -133,6 +138,9 @@ type settings struct {
 	MaxRestarts *int `json:"maxRestarts,omitempty"`
 	// AutoInstall は、servers の autoInstall を省いた言語サーバーに使う値である。省くと false（入れ方を案内するだけ）である。
 	AutoInstall bool `json:"autoInstall,omitempty"`
+	// IdleStopMs は、言語サーバーと根の組の client が受け持つ文書が無くなってから、その言語サーバーを止めるまでのミリ秒である（FR-323）。
+	// 省くと defaultIdleStop。0 以下なら止めない（Neovim の既定と同じく、閉じても残す）。
+	IdleStopMs *int `json:"idleStopMs,omitempty"`
 	// InlayHints は、servers の inlayHints を省いた言語サーバーに使う値である。省くと false（出さない。Neovim 0.12.5 の
 	// vim.lsp.inlay_hint の既定と同じ）である（FR-255）。
 	InlayHints bool `json:"inlayHints,omitempty"`
@@ -160,12 +168,14 @@ type config struct {
 	// byFileType は、ファイルの種類の名前から、それを受け持つ言語サーバーの名前への対応である。
 	byFileType  map[string]string
 	maxRestarts int
+	// idleStop は、受け持つ文書が無くなった言語サーバーを止めるまでの時間である。0 なら止めない（FR-323）。
+	idleStop time.Duration
 }
 
 // parseSettings は、initialize の settings を読み、既定値を埋めた設定を返す。
 // raw が空なら既定値だけの設定を返す。
 func parseSettings(raw json.RawMessage) (*config, error) {
-	c := &config{servers: defaultServers(), maxRestarts: defaultMaxRestarts}
+	c := &config{servers: defaultServers(), maxRestarts: defaultMaxRestarts, idleStop: defaultIdleStop}
 	var s settings
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &s); err != nil {
@@ -212,6 +222,9 @@ func parseSettings(raw json.RawMessage) (*config, error) {
 	c.byFileType = byFT
 	if s.MaxRestarts != nil {
 		c.maxRestarts = max(*s.MaxRestarts, 0)
+	}
+	if s.IdleStopMs != nil {
+		c.idleStop = time.Duration(max(*s.IdleStopMs, 0)) * time.Millisecond
 	}
 	return c, errors.Join(errs...)
 }

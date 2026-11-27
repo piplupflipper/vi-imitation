@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -71,6 +73,10 @@ type client struct {
 	venv project.Venv
 	// settings は、workspace/configuration に答える値である。設定の Settings に、仮想環境の python を入れたものである。
 	settings map[string]json.RawMessage
+	// idleTimer と idleGen は、受け持つ文書が無くなった後に言語サーバーを止める予約である（extension.scheduleIdleStop。FR-323）。
+	// x.mu で守る。idleGen は、予約するたびと、clientAt でこの client を返すたびに増やし、古い予約を無効にする。
+	idleTimer *time.Timer
+	idleGen   uint64
 
 	// maxRestarts は、異常終了したときに再起動する回数の上限である。
 	maxRestarts int
@@ -138,12 +144,12 @@ func newClient(x *extension, server, root string, cfg *serverConfig, maxRestarts
 	case errors.Is(err, project.ErrNotFound):
 		return c
 	case err != nil:
-		x.logf("%s: Python virtual environment for %s: %v", c.name(), root, err)
+		c.logf("%s: Python virtual environment: %v", c.name(), err)
 		return c
 	}
 	settings, err := cfg.effectiveSettings(v.Python)
 	if err != nil {
-		x.logf("%s: %v", c.name(), err)
+		c.logf("%s: %v", c.name(), err)
 		return c
 	}
 	c.venv, c.settings = v, settings
@@ -152,6 +158,11 @@ func newClient(x *extension, server, root string, cfg *serverConfig, maxRestarts
 
 // name は、利用者へのメッセージに使う言語サーバーの名前である。
 func (c *client) name() string { return filepath.Base(c.cfg.Command) }
+
+// logf は、拡張機能のログに、根を前に付けて書く。同じ言語サーバーの、根の違う client のログを見分けるためである。
+func (c *client) logf(format string, args ...any) {
+	c.x.logf("[%s] "+format, append([]any{c.root}, args...)...)
+}
 
 // ready は、mu を持った状態で、稼働中の proc を返す。稼働中でなければ nil である。
 func (c *client) readyProc() *proc {
@@ -239,6 +250,13 @@ func (c *client) pathOf(id ext.BufferID) (path string, ok bool) {
 	return d.path, true
 }
 
+// bufferIDs は、受け持っている文書のバッファの番号を、小さい順に返す。
+func (c *client) bufferIDs() []ext.BufferID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Sorted(maps.Keys(c.docs))
+}
+
 // idle は、受け持つ文書が無いかを返す。
 func (c *client) idle() bool {
 	c.mu.Lock()
@@ -277,7 +295,7 @@ func (c *client) change(e *server.BufferChangeEvent) {
 	}
 	changes, err := d.apply(e.Edits, e.ToVersion, enc, incremental)
 	if err != nil {
-		c.x.logf("%s: buffer %d: %v; resending the whole text", c.name(), d.buffer, err)
+		c.logf("%s: buffer %d: %v; resending the whole text", c.name(), d.buffer, err)
 		d.reset(e.Buffer)
 		incremental = false
 	}
@@ -335,7 +353,7 @@ func (c *client) detach(b *server.Buffer) {
 	}
 	c.x.setDiagnostics(ext.DiagnosticSetParams{Buffer: b.ID(), Version: b.Version(), Diagnostics: []ext.Diagnostic{}})
 	if err := c.x.srv.SetVirtualTexts(ext.VirtualTextSetParams{Buffer: b.ID(), Version: b.Version(), VirtualTexts: []ext.VirtualText{}}); err != nil {
-		c.x.logf("virtualText/set: %v", err)
+		c.logf("virtualText/set: %v", err)
 	}
 }
 
@@ -379,7 +397,7 @@ func lspVersion(v ext.Version) int64 {
 // notify は、言語サーバーへ通知を送る。送れなければログに書く（接続が終わっていれば、監視の goroutine が後始末をする）。
 func (c *client) notify(p *proc, method string, params any) {
 	if err := p.conn.Notify(method, params); err != nil {
-		c.x.logf("%s: %s: %v", c.name(), method, err)
+		c.logf("%s: %s: %v", c.name(), method, err)
 	}
 }
 
@@ -418,7 +436,7 @@ func (c *client) start() {
 	case err != nil:
 		c.failed = true
 		c.mu.Unlock()
-		c.x.logf("%s: %v", c.name(), err)
+		c.logf("%s: %v", c.name(), err)
 		if !errors.Is(err, errReported) {
 			c.x.showMessage(ext.MessageError, fmt.Sprintf("言語サーバー %s を起動できない: %v", c.name(), err))
 		}
@@ -446,7 +464,7 @@ func (c *client) start() {
 	defer cancel()
 	var res initializeResult
 	if err := p.conn.Call(ctx, lspInitialize, params, &res); err != nil {
-		c.x.logf("%s: initialize: %v", c.name(), err)
+		c.logf("%s: initialize: %v", c.name(), err)
 		_ = p.cmd.Process.Kill()
 		return
 	}
@@ -545,13 +563,13 @@ func (c *client) watch(p *proc) {
 	if n > c.maxRestarts {
 		c.failed = true
 		c.mu.Unlock()
-		c.x.logf("%s exited (%v); giving up after %d restarts", c.name(), err, c.maxRestarts)
+		c.logf("%s exited (%v); giving up after %d restarts", c.name(), err, c.maxRestarts)
 		c.x.showMessage(ext.MessageError, fmt.Sprintf("言語サーバー %s が終了した。再起動の回数の上限（%d 回）に達したので、もう起動しない", c.name(), c.maxRestarts))
 		return
 	}
 	c.starting = true
 	c.mu.Unlock()
-	c.x.logf("%s exited (%v); restarting (%d/%d)", c.name(), err, n, c.maxRestarts)
+	c.logf("%s exited (%v); restarting (%d/%d)", c.name(), err, n, c.maxRestarts)
 	c.x.showMessage(ext.MessageWarning, fmt.Sprintf("言語サーバー %s が終了した。再起動する（%d/%d 回目）", c.name(), n, c.maxRestarts))
 	time.AfterFunc(c.restartDelay*time.Duration(n), c.start)
 }
@@ -641,7 +659,7 @@ func (c *client) serverRequest(req *rpc.Request, reply rpc.Replier) {
 		rerr = &rpc.Error{Code: rpc.CodeMethodNotFound, Message: "method not found: " + req.Method}
 	}
 	if err := reply(result, rerr); err != nil {
-		c.x.logf("%s: reply to %s: %v", c.name(), req.Method, err)
+		c.logf("%s: reply to %s: %v", c.name(), req.Method, err)
 	}
 }
 
@@ -651,7 +669,7 @@ func (c *client) serverNotification(p *proc, n *rpc.Notification) {
 	case lspPublishDiagnostics:
 		var params publishDiagnosticsParams
 		if err := json.Unmarshal(n.Params, &params); err != nil {
-			c.x.logf("%s: %s: %v", c.name(), n.Method, err)
+			c.logf("%s: %s: %v", c.name(), n.Method, err)
 			return
 		}
 		c.publishDiagnostics(p, &params)
@@ -663,12 +681,12 @@ func (c *client) serverNotification(p *proc, n *rpc.Notification) {
 	case lspLogMessage:
 		var params showMessageParams
 		if json.Unmarshal(n.Params, &params) == nil {
-			c.x.logf("%s: %s", c.name(), params.Message)
+			c.logf("%s: %s", c.name(), params.Message)
 		}
 	case lspProgress:
 		var params progressParams
 		if err := json.Unmarshal(n.Params, &params); err != nil {
-			c.x.logf("%s: %s: %v", c.name(), n.Method, err)
+			c.logf("%s: %s: %v", c.name(), n.Method, err)
 			return
 		}
 		c.progress(p, params)
@@ -686,7 +704,7 @@ func (c *client) showServerMessage(p showMessageParams) {
 	case messageInfo:
 		level = ext.MessageInfo
 	default:
-		c.x.logf("%s: %s", c.name(), p.Message)
+		c.logf("%s: %s", c.name(), p.Message)
 		return
 	}
 	c.x.showMessage(level, c.name()+": "+p.Message)
@@ -723,7 +741,7 @@ func (c *client) publishDiagnostics(p *proc, params *publishDiagnosticsParams) {
 	}
 	ls, err := d.at(v)
 	if err != nil {
-		c.x.logf("%s: diagnostics for %s: %v; dropped", c.name(), path, err)
+		c.logf("%s: diagnostics for %s: %v; dropped", c.name(), path, err)
 		return
 	}
 	diags := make([]ext.Diagnostic, 0, len(params.Diagnostics))

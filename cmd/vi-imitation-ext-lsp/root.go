@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/piplupflipper/vi-imitation/ext"
+	"github.com/piplupflipper/vi-imitation/ext/project"
 	"github.com/piplupflipper/vi-imitation/ext/server"
 )
 
@@ -31,6 +33,7 @@ const rootArgMarkers = "--markers"
 //
 // 根を変えたら、同じ言語サーバーで開いているすべてのバッファの根を決め直し、根の変わったバッファを、新しい根の client へ移す（reassign）。
 // 受け持つバッファが残らなくなった client の言語サーバーは止める。
+// 呼んだバッファの client が前からあったもの（今と同じ根を指定したときを含む）なら、作り直して仮想環境を探し直す（reassignAndRenew）。
 // 指定した根は、拡張機能が動いている間、後から開くファイルにも当てる（そのディレクトリの下のファイルは、目印に依らずその根になる）。
 //
 // req: FR-322
@@ -58,9 +61,9 @@ func (x *extension) rootCommand(_ context.Context, _ *server.Buffer, p *ext.Comm
 		if len(x.pins[c.server]) == 0 {
 			delete(x.pins, c.server)
 		}
-		moved := x.reassign(c.server)
+		moved, renewed := x.reassignAndRenew(c.server, p.Buffer)
 		nc := x.byBuffer[p.Buffer]
-		x.showMessage(ext.MessageInfo, fmt.Sprintf("言語サーバー %s の根を、目印で探した %s にした%s", c.server, nc.root, movedText(moved)))
+		x.showMessage(ext.MessageInfo, fmt.Sprintf("言語サーバー %s の根を、目印で探した %s にした%s", c.server, nc.root, movedText(moved, renewed)))
 		return ext.CommandExecuteResult{OK: true}, nil
 	}
 	dir, err := resolveRootArg(arg, filepath.Dir(path))
@@ -75,17 +78,65 @@ func (x *extension) rootCommand(_ context.Context, _ *server.Buffer, p *ext.Comm
 	if !slices.Contains(x.pins[c.server], dir) {
 		x.pins[c.server] = append(x.pins[c.server], dir)
 	}
-	moved := x.reassign(c.server)
-	x.showMessage(ext.MessageInfo, fmt.Sprintf("言語サーバー %s の根を %s にした%s", c.server, dir, movedText(moved)))
+	moved, renewed := x.reassignAndRenew(c.server, p.Buffer)
+	x.showMessage(ext.MessageInfo, fmt.Sprintf("言語サーバー %s の根を %s にした%s", c.server, dir, movedText(moved, renewed)))
 	return ext.CommandExecuteResult{OK: true}, nil
 }
 
-// movedText は、移したバッファの数を、メッセージに添える形にする。
-func movedText(n int) string {
-	if n == 0 {
-		return "（移したバッファは無い）"
+// reassignAndRenew は、言語サーバー name のバッファの根を決め直して移し（reassign）、
+// コマンドを呼んだバッファ buf の client が前からあったものなら、それを作り直す（renew）。移したバッファの数と、作り直したかを返す。
+//
+// 前からある client を作り直すのは、根が変わらなくても、言語サーバーを起動し直して仮想環境を探し直させるためである
+// （後から uv sync で .venv を作ったときに、:lsp.root . で拾える）。新しく作った client は、作ったときに探しているので作り直さない。
+//
+// req: FR-322
+func (x *extension) reassignAndRenew(name string, buf ext.BufferID) (moved int, renewed bool) {
+	x.mu.Lock()
+	before := make(map[*client]bool, len(x.clients))
+	for _, c := range x.clients {
+		before[c] = true
 	}
-	return fmt.Sprintf("（バッファ %d 個を移した）", n)
+	x.mu.Unlock()
+	moved = x.reassign(name)
+	if c := x.byBuffer[buf]; c != nil && before[c] {
+		x.renew(c)
+		renewed = true
+	}
+	return moved, renewed
+}
+
+// renew は、client c を、同じ言語サーバーと根の新しい client に置き換える。ループから呼ぶ。
+// c の文書をすべて新しい client へ移し（take と adopt）、c の言語サーバーを止める（retire）。
+// 新しい client は、作るときに仮想環境を探し直し、言語サーバーを起動し直す。
+//
+// req: FR-322
+func (x *extension) renew(c *client) {
+	key := clientKey{server: c.server, root: c.root}
+	x.mu.Lock()
+	if x.clients[key] == c {
+		delete(x.clients, key)
+	}
+	x.mu.Unlock()
+	nc := x.clientAt(c.server, c.root)
+	for _, id := range c.bufferIDs() {
+		if d := c.take(id); d != nil {
+			nc.adopt(d)
+			x.byBuffer[id] = nc
+		}
+	}
+	x.retire(c)
+}
+
+// movedText は、移したバッファの数と、言語サーバーを起動し直したかを、メッセージに添える形にする。
+func movedText(n int, renewed bool) string {
+	text := "（移したバッファは無い"
+	if n > 0 {
+		text = fmt.Sprintf("（バッファ %d 個を移した", n)
+	}
+	if renewed {
+		text += "。言語サーバーを起動し直した"
+	}
+	return text + "）"
 }
 
 // resolveRootArg は、lsp.root の引数 arg を、根にするディレクトリの絶対パスにする。
@@ -121,6 +172,9 @@ func (x *extension) describeRoot(c *client) string {
 	text := fmt.Sprintf("言語サーバー %s（%s）、根 %s（%s）", c.server, c.name(), c.root, how)
 	switch {
 	case c.cfg.PythonVenvSetting == "":
+	case c.venv.Python != "" && c.venv.Source == project.FromVirtualEnv:
+		// 根の中に無く、本体を起動したシェルで有効にした仮想環境を使っている。別のプロジェクトの仮想環境でありうるので、そう分かるように出す。
+		text += fmt.Sprintf("、仮想環境 %s（根の中に無いので VIRTUAL_ENV のもの。%s に入れた）", c.venv.Python, c.cfg.PythonVenvSetting)
 	case c.venv.Python != "":
 		text += fmt.Sprintf("、仮想環境 %s（%s に入れた）", c.venv.Python, c.cfg.PythonVenvSetting)
 	default:
@@ -171,16 +225,70 @@ func (x *extension) reassign(name string) int {
 	return moved
 }
 
+// scheduleIdleStop は、client c が受け持つ文書が無ければ、設定の idleStop の後に c を止める予約をする。ループから呼ぶ（FR-323）。
+// 予約は、その前に c が文書を受け持てば（clientAt が c を返せば）無効になる。
+// 止める時点でも、文書が無く、x.clients の c のままで、予約が新しいものかを、mu を持って確かめる。
+// clientAt も mu を持って予約を無効にするので、clientAt が c を返した後に止めることは無い。
+//
+// req: FR-323
+func (x *extension) scheduleIdleStop(c *client) {
+	if x.cfg == nil || x.cfg.idleStop <= 0 || !c.idle() {
+		return
+	}
+	key := clientKey{server: c.server, root: c.root}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.clients[key] != c || x.closing {
+		return
+	}
+	c.idleGen++
+	gen := c.idleGen
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+	}
+	c.idleTimer = time.AfterFunc(x.cfg.idleStop, func() {
+		x.mu.Lock()
+		ok := c.idleGen == gen && x.clients[key] == c && c.idle() && x.retireLocked(c)
+		x.mu.Unlock()
+		if ok {
+			c.logf("%s: no documents for %v; stopping", c.name(), x.cfg.idleStop)
+			x.stopRetired(c)
+		}
+	})
+}
+
 // retire は、受け持つ文書の無くなった client を x.clients から外し、言語サーバーを止める。止めるのは別の goroutine で待つ。
 // 拡張機能が終わるとき（stop）は、止め終えるのを待つ。
 func (x *extension) retire(c *client) {
 	x.mu.Lock()
+	ok := x.retireLocked(c)
+	x.mu.Unlock()
+	if ok {
+		x.stopRetired(c)
+	}
+}
+
+// retireLocked は、mu を持った状態で、client c を x.clients から外し、止めることにする。
+// 拡張機能が終わる途中（closing）なら何もせずに false を返す（stop が集めた client を止める）。
+// true を返したら、呼ぶ側は mu を放してから stopRetired を呼ぶ。
+func (x *extension) retireLocked(c *client) bool {
 	key := clientKey{server: c.server, root: c.root}
 	if x.clients[key] == c {
 		delete(x.clients, key)
 	}
-	x.mu.Unlock()
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+		c.idleTimer = nil
+	}
+	if x.closing {
+		return false
+	}
 	x.retiring.Add(1)
+	return true
+}
+
+// stopRetired は、retireLocked で外した client の言語サーバーを、別の goroutine で止める。
+func (x *extension) stopRetired(c *client) {
 	go func() {
 		defer x.retiring.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)

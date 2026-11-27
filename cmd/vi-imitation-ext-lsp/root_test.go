@@ -31,13 +31,19 @@ func fakeServer(logPath string, fileTypes []string, extra map[string]any, args .
 func (h *host) touch(name string, mode os.FileMode) string {
 	h.t.Helper()
 	path := filepath.Join(h.dir, name)
+	writeScript(h.t, path, mode)
+	return path
+}
+
+// writeScript は、path に中身が "#!/bin/sh" だけのファイルを、権限 mode で作る。途中のディレクトリも作る。
+func writeScript(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		h.t.Fatal(err)
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), mode); err != nil {
-		h.t.Fatal(err)
+		t.Fatal(err)
 	}
-	return path
 }
 
 // startedPids は、ログ path に "start" を書いた fakels のプロセス ID を、書いた順に返す。
@@ -247,6 +253,91 @@ func TestPythonVenvSetting(t *testing.T) {
 	if msg := receive(t, h.msgs, "message/show"); !strings.Contains(msg.Text, "仮想環境は見つからない") {
 		t.Errorf("lsp.root message without a virtual environment = %q", msg.Text)
 	}
+
+	// 後から仮想環境を作り、今と同じ根を指定し直すと、言語サーバーを起動し直して仮想環境を探し直す。
+	otherPython := h.touch("other/.venv/bin/python", 0o700)
+	if res := h.runRoot(2, "."); !res.OK {
+		t.Fatalf("lsp.root . = %+v", res)
+	}
+	if msg := receive(t, h.msgs, "message/show"); !strings.Contains(msg.Text, "起動し直した") {
+		t.Errorf("lsp.root . message = %q", msg.Text)
+	}
+	h.waitLogFile(logPath, "shutdown of the old process", func(e logEntry) bool { return e.Kind == lspShutdown && e.Pid == pidO })
+	reopened := h.waitLogFile(logPath, "didOpen in the restarted process", func(e logEntry) bool {
+		return e.Kind == lspDidOpen && e.Pid != pidO && e.Pid != pid && decode[didOpenParams](t, e.Value).TextDocument.URI == pathToURI(o)
+	})
+	cfg = h.waitLogFile(logPath, "configuration result", func(e logEntry) bool {
+		return e.Kind == "configuration result" && e.Pid == reopened.Pid
+	})
+	if !strings.Contains(string(cfg.Value), otherPython) {
+		t.Errorf("configuration result after re-specifying the root = %s, want pythonPath %s", cfg.Value, otherPython)
+	}
+}
+
+// TestPythonVenvFromVirtualEnv は、根の中に仮想環境が無く、VIRTUAL_ENV の仮想環境を使ったときに、
+// lsp.root の表示でそれが分かることを確かめる。
+//
+// req: FR-321, FR-322
+func TestPythonVenvFromVirtualEnv(t *testing.T) {
+	venv := filepath.Join(t.TempDir(), "active")
+	writeScript(t, filepath.Join(venv, "bin", "python"), 0o700)
+	t.Setenv("VIRTUAL_ENV", venv)
+	logPath := filepath.Join(t.TempDir(), "py.log")
+	h := startHost(t, hostOptions{maxRestarts: -1, servers: map[string]any{
+		"pyright": fakeServer(logPath, []string{"python"}, map[string]any{
+			"rootMarkers": []string{"pyproject.toml"}, "pythonVenvSetting": "python.pythonPath",
+		}),
+	}})
+	h.touch("p/pyproject.toml", 0o600)
+	m := h.openAs(1, "p/m.py", "python", "m")
+	h.didOpenOf(logPath, pathToURI(m))
+	if res := h.runRoot(1, ""); !res.OK {
+		t.Fatalf("lsp.root = %+v", res)
+	}
+	if msg := receive(t, h.msgs, "message/show"); !strings.Contains(msg.Text, filepath.Join(venv, "bin", "python")) || !strings.Contains(msg.Text, "VIRTUAL_ENV") {
+		t.Errorf("lsp.root message = %q, want the python of VIRTUAL_ENV marked as such", msg.Text)
+	}
+}
+
+// TestIdleStop は、受け持つ文書が無くなった言語サーバーを、設定の idleStopMs の後に止めること、
+// その前に同じ根のファイルを開き直せば止めないことを確かめる。
+//
+// req: FR-323
+func TestIdleStop(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ts.log")
+	h := startHost(t, hostOptions{maxRestarts: -1, settings: map[string]any{"idleStopMs": 300}, servers: map[string]any{
+		"vtsls": fakeServer(logPath, []string{"typescript"}, nil),
+	}})
+	h.touch("p/package.json", 0o600)
+	a := h.openAs(1, "p/a.ts", "typescript", "a")
+	_, pid := h.didOpenOf(logPath, pathToURI(a))
+	closeBuf := func(id ext.BufferID) {
+		t.Helper()
+		if err := h.conn.Notify(ext.MethodBufferClose, ext.BufferCloseParams{Buffer: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 閉じてすぐに同じ根のファイルを開けば、同じプロセスが受け持ち、止めない。
+	closeBuf(1)
+	b := h.openAs(2, "p/b.ts", "typescript", "b")
+	if _, got := h.didOpenOf(logPath, pathToURI(b)); got != pid {
+		t.Errorf("b.ts went to %d, want the same process %d", got, pid)
+	}
+	time.Sleep(600 * time.Millisecond)
+	for _, e := range readLogFile(logPath) {
+		if e.Kind == lspShutdown {
+			t.Fatalf("the language server was stopped while it had a document")
+		}
+	}
+
+	// すべて閉じると、idleStopMs の後に止め、次に開くと新しいプロセスを起動する。
+	closeBuf(2)
+	h.waitLogFile(logPath, "shutdown after the idle time", func(e logEntry) bool { return e.Kind == lspShutdown && e.Pid == pid })
+	c := h.openAs(3, "p/c.ts", "typescript", "c")
+	if _, got := h.didOpenOf(logPath, pathToURI(c)); got == pid {
+		t.Errorf("c.ts went to the stopped process %d", got)
+	}
 }
 
 // runRoot は、コマンド lsp.root を、コマンドラインの引数 text（空なら引数なし）を付けて、バッファ buf で送る。
@@ -270,25 +361,27 @@ func (h *host) runRoot(buf ext.BufferID, text string) ext.CommandExecuteResult {
 }
 
 // TestRootCommand は、lsp.root で根を指定すると、その下で開いているバッファが新しい根のプロセスへ移り、
+// 前のプロセスへ didClose を送り、前のプロセスの診断とインレイヒントを消してから新しいプロセスが付け直すこと、
 // 受け持つバッファの無くなったプロセスを止めること、--markers で目印の根へ戻すことを確かめる。
 //
 // req: FR-322
 func TestRootCommand(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "ts.log")
 	h := startHost(t, hostOptions{maxRestarts: -1, servers: map[string]any{
-		"vtsls": fakeServer(logPath, []string{"typescript"}, nil),
+		"vtsls": fakeServer(logPath, []string{"typescript"}, map[string]any{"inlayHints": true}, "-inlay"),
 	}})
 	h.touch("mono/package.json", 0o600)
 	h.touch("mono/a/package.json", 0o600)
 	h.touch("mono/b/package.json", 0o600)
-	xPath := h.openAs(1, "mono/a/x.ts", "typescript", "x ERR")
-	yPath := h.openAs(2, "mono/b/y.ts", "typescript", "y ERR")
+	xPath := h.openAs(1, "mono/a/x.ts", "typescript", "x ERR HINT")
+	yPath := h.openAs(2, "mono/b/y.ts", "typescript", "y ERR HINT")
 	_, pidA := h.didOpenOf(logPath, pathToURI(xPath))
 	_, pidB := h.didOpenOf(logPath, pathToURI(yPath))
 	if pidA == pidB {
 		t.Fatal("x.ts and y.ts under different roots share a process")
 	}
 	h.waitDiagnostics(func(p ext.DiagnosticSetParams) bool { return len(p.Diagnostics) == 1 }, 1, 2)
+	h.waitVirtualTexts(func(p ext.VirtualTextSetParams) bool { return len(p.VirtualTexts) > 0 }, 1, 2)
 
 	// バッファのファイルの下に無いディレクトリは根にできない。
 	if res := h.runRoot(1, "../../mono/b"); res.OK {
@@ -324,8 +417,15 @@ func TestRootCommand(t *testing.T) {
 	for _, pid := range []int{pidA, pidB} {
 		h.waitLogFile(logPath, "shutdown of the old process", func(e logEntry) bool { return e.Kind == lspShutdown && e.Pid == pid })
 	}
-	// 移したバッファの診断は、前のプロセスの分を消し、新しいプロセスが付け直す。
-	h.waitDiagnostics(func(p ext.DiagnosticSetParams) bool { return len(p.Diagnostics) == 1 }, 1, 2)
+	// 前のプロセスには、移したバッファの didClose を送る。
+	for pid, p := range map[int]string{pidA: xPath, pidB: yPath} {
+		h.waitLogFile(logPath, "didClose in the old process", func(e logEntry) bool {
+			return e.Kind == lspDidClose && e.Pid == pid && decode[didCloseParams](t, e.Value).TextDocument.URI == pathToURI(p)
+		})
+	}
+	// 移したバッファの診断とインレイヒントは、まず前のプロセスの分を空の一覧で消し、その後に新しいプロセスが付け直す。
+	waitClearedThenSet(h, func(p ext.DiagnosticSetParams) int { return len(p.Diagnostics) }, h.diags, "diagnostic/set", 1, 2)
+	waitClearedThenSet(h, func(p ext.VirtualTextSetParams) int { return len(p.VirtualTexts) }, h.vtexts, "virtualText/set", 1, 2)
 
 	// 指定した根の下で後から開くファイルも、その根になる。
 	zPath := h.openAs(3, "mono/a/z.ts", "typescript", "z")
@@ -345,6 +445,21 @@ func TestRootCommand(t *testing.T) {
 	}
 	receive(t, h.msgs, "message/show")
 	h.waitLogFile(logPath, "shutdown of the pinned process", func(e logEntry) bool { return e.Kind == lspShutdown && e.Pid == pidM })
+	// x.ts と y.ts が、a、b、mono のどれでもない新しいプロセスへ開き直されるまで待ってから数える。
+	newPids := map[int]bool{}
+	for _, p := range []string{xPath, yPath} {
+		h.waitLogFile(logPath, "didOpen in the process of the marker root", func(e logEntry) bool {
+			if e.Kind != lspDidOpen || e.Pid == pidA || e.Pid == pidB || e.Pid == pidM ||
+				decode[didOpenParams](t, e.Value).TextDocument.URI != pathToURI(p) {
+				return false
+			}
+			newPids[e.Pid] = true
+			return true
+		})
+	}
+	if len(newPids) != 2 {
+		t.Errorf("x.ts and y.ts after --markers went to %v, want 2 processes", newPids)
+	}
 	if pids := startedPids(logPath); len(pids) != 5 {
 		t.Errorf("started processes = %v, want 5 (a, b, mono, a, b)", pids)
 	}
@@ -365,6 +480,61 @@ func TestRootCommand(t *testing.T) {
 		t.Error("lsp.root without a language server: ok")
 	}
 	receive(t, h.msgs, "message/show")
+}
+
+// waitVirtualTexts は、バッファ bufs のそれぞれに、cond を満たす virtualText/set が届くまで待つ。
+func (h *host) waitVirtualTexts(cond func(ext.VirtualTextSetParams) bool, bufs ...ext.BufferID) {
+	h.t.Helper()
+	deadline := time.After(testTimeout)
+	for len(bufs) > 0 {
+		select {
+		case p := <-h.vtexts:
+			if cond(p) {
+				bufs = slices.DeleteFunc(bufs, func(b ext.BufferID) bool { return b == p.Buffer })
+			}
+		case <-deadline:
+			h.t.Fatalf("virtualText/set of buffers %v did not arrive", bufs)
+		}
+	}
+}
+
+// bufferParams は、バッファの番号を持つ通知の params である。
+type bufferParams interface {
+	ext.DiagnosticSetParams | ext.VirtualTextSetParams
+}
+
+// waitClearedThenSet は、ch に届く通知のうち、バッファ bufs のそれぞれについて、最初の 1 つが空の一覧（count が 0）で、
+// その後に空でない一覧が届くまで待つ。最初の 1 つが空でなければ失敗にする。
+func waitClearedThenSet[T bufferParams](h *host, count func(T) int, ch <-chan T, what string, bufs ...ext.BufferID) {
+	h.t.Helper()
+	cleared := map[ext.BufferID]bool{}
+	pending := slices.Clone(bufs)
+	deadline := time.After(testTimeout)
+	for len(pending) > 0 {
+		select {
+		case p := <-ch:
+			var id ext.BufferID
+			switch v := any(p).(type) {
+			case ext.DiagnosticSetParams:
+				id = v.Buffer
+			case ext.VirtualTextSetParams:
+				id = v.Buffer
+			}
+			if !slices.Contains(pending, id) {
+				continue
+			}
+			switch {
+			case !cleared[id] && count(p) != 0:
+				h.t.Fatalf("%s of buffer %d: the first one after moving is not empty: %+v", what, id, p)
+			case !cleared[id]:
+				cleared[id] = true
+			case count(p) > 0:
+				pending = slices.DeleteFunc(pending, func(b ext.BufferID) bool { return b == id })
+			}
+		case <-deadline:
+			h.t.Fatalf("%s of buffers %v did not arrive", what, pending)
+		}
+	}
 }
 
 // waitDiagnostics は、バッファ bufs のそれぞれに、cond を満たす診断が届くまで待つ。

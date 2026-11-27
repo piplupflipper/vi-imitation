@@ -55,8 +55,11 @@ type extension struct {
 	// lsp.root で受け持つ文書が無くなった client を外す（ループ）。
 	mu      sync.Mutex
 	clients map[clientKey]*client
-	// retiring は、lsp.root で受け持つ文書が無くなり、止めている途中の client の数である。stop が待つ。
+	// retiring は、受け持つ文書が無くなり（lsp.root で移したか、閉じてから idleStop が経った）、止めている途中の client の数である。
+	// stop が待つ。増やすのは mu を持ち、closing が false のときだけである。
 	retiring sync.WaitGroup
+	// closing は、stop が止める client を集めた後であることを表す。mu で守る。
+	closing bool
 	// pins は、言語サーバーの名前から、lsp.root で指定した根の一覧への対応である。ループだけが触る（FR-322）。
 	pins map[string][]string
 	// guided は、言語サーバーの入れ方を案内した実行ファイルと道具の ID の組である（client.guide。FR-143）。
@@ -93,6 +96,7 @@ func newExtension(ctx context.Context) *extension {
 		if c := x.byBuffer[e.Buffer]; c != nil {
 			c.close(e.Buffer)
 			delete(x.byBuffer, e.Buffer)
+			x.scheduleIdleStop(c)
 		}
 	})
 	x.srv.OnBufferDidSave(func(_ context.Context, e *server.BufferDidSaveEvent) {
@@ -127,9 +131,15 @@ func newExtension(ctx context.Context) *extension {
 // req: FR-30
 func (x *extension) stop() {
 	x.mu.Lock()
+	// これより後は、retire と停止の予約が retiring を増やさない（止めるのはここで集めた client だけにする）。
+	x.closing = true
 	cs := make([]*client, 0, len(x.clients))
 	for _, c := range x.clients {
 		cs = append(cs, c)
+		if c.idleTimer != nil {
+			c.idleTimer.Stop()
+			c.idleTimer = nil
+		}
 	}
 	x.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
@@ -238,6 +248,12 @@ func (x *extension) clientAt(name, root string) *client {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if c := x.clients[key]; c != nil {
+		// 呼ぶ側はこの後に文書を渡すので、受け持つ文書が無くなった後の停止の予約を無効にする（FR-323）。
+		c.idleGen++
+		if c.idleTimer != nil {
+			c.idleTimer.Stop()
+			c.idleTimer = nil
+		}
 		return c
 	}
 	c := newClient(x, name, root, x.cfg.servers[name], x.cfg.maxRestarts)
@@ -265,6 +281,9 @@ func (x *extension) bufferOpen(_ context.Context, e *server.BufferOpenEvent) {
 	if old != nil && (old != c || !old.syncs(b.ID(), b.Path(), b.FileType())) {
 		old.detach(b)
 		delete(x.byBuffer, b.ID())
+		if old != c {
+			x.scheduleIdleStop(old)
+		}
 		old = nil
 	}
 	if c == nil {

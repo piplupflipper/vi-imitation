@@ -202,7 +202,7 @@ func (c *client) fireInlay(d *document, gen uint64) {
 	f, err := p.conn.Go(lspInlayHint, inlayHintParams{TextDocument: textDocumentIdentifier{URI: d.uri}, Range: lspRange{End: end}})
 	st.last = time.Now()
 	if err != nil {
-		c.x.logf("%s: %s: %v", c.name(), lspInlayHint, err)
+		c.logf("%s: %s: %v", c.name(), lspInlayHint, err)
 		return
 	}
 	st.seq++
@@ -240,7 +240,7 @@ func (c *client) awaitInlay(d *document, r *request, seq uint64) {
 	switch {
 	case err != nil && errors.As(err, &rerr) && (rerr.Code == codeRequestCancelled || rerr.Code == codeContentModified):
 	case err != nil:
-		c.x.logf("%s: %s: %v", c.name(), lspInlayHint, err)
+		c.logf("%s: %s: %v", c.name(), lspInlayHint, err)
 	case live && c.inlayEnabled():
 		c.sendInlay(d, r.version, vts)
 	}
@@ -266,12 +266,12 @@ func (c *client) sendInlay(d *document, v ext.Version, vts []ext.VirtualText) {
 	}
 	err := c.x.srv.SetVirtualTexts(ext.VirtualTextSetParams{Buffer: d.buffer, Version: v, VirtualTexts: vts})
 	if errors.Is(err, server.ErrMessageTooLarge) {
-		c.x.logf("%s: %d inlay hints for buffer %d: %v; cleared", c.name(), len(vts), d.buffer, err)
+		c.logf("%s: %d inlay hints for buffer %d: %v; cleared", c.name(), len(vts), d.buffer, err)
 		vts = []ext.VirtualText{}
 		err = c.x.srv.SetVirtualTexts(ext.VirtualTextSetParams{Buffer: d.buffer, Version: v, VirtualTexts: vts})
 	}
 	if err != nil {
-		c.x.logf("virtualText/set: %v", err)
+		c.logf("virtualText/set: %v", err)
 		return
 	}
 	d.inlay.shown = len(vts) > 0
