@@ -97,7 +97,7 @@ func TestParseSettings(t *testing.T) {
 	if ft := got["other"].fileTypes; !slices.Equal(ft, []string{"other"}) {
 		t.Errorf("other.fileTypes = %v", ft)
 	}
-	if ts := got["ts"]; ts.path != "typescript" || !slices.Equal(ts.queries, []string{"queries/highlights.scm", "extra.scm"}) || ts.repo != "/srv/tree-sitter-typescript" || ts.version != "main" {
+	if ts := got["ts"]; ts.path != "typescript" || !slices.Equal(ts.queries, []querySource{{file: "queries/highlights.scm"}, {file: "extra.scm"}}) || ts.repo != "/srv/tree-sitter-typescript" || ts.version != "main" {
 		t.Errorf("ts = %+v", ts)
 	}
 	// 誤りのある項目の名前も listed に入れ、ロックファイルの記録を消さない。
@@ -137,6 +137,67 @@ func TestParseSettings(t *testing.T) {
 	for _, raw := range []string{`[]`, `{"parsers": []}`, `{"compiler": ""}`} {
 		if _, problems := parseSettings(json.RawMessage(raw)); len(problems) != 1 {
 			t.Errorf("parseSettings(%q) problems = %q, want 1", raw, problems)
+		}
+	}
+}
+
+// TestParseSettingsInherits は、queries にほかのパーサのファイルを {"parser", "file"} で書けることと、
+// 継ぐパーサが誤り無く書かれていなければ、継ぐ側のパーサを（継ぐ側を継ぐパーサも続けて）使わないことを確かめる。
+//
+// req: FR-328
+func TestParseSettingsInherits(t *testing.T) {
+	s, problems := parseSettings(json.RawMessage(`{
+  "parsers": {
+    "javascript": { "repo": "/r/js", "version": "v1", "fileTypes": ["javascript"] },
+    "typescript": { "repo": "/r/ts", "version": "v1", "fileTypes": ["typescript"], "path": "typescript",
+      "queries": ["queries/highlights.scm", { "parser": "javascript", "file": "queries/highlights.scm" }] },
+    "tsx": { "repo": "/r/ts", "version": "v1", "fileTypes": ["typescriptreact"], "path": "tsx",
+      "queries": ["queries/highlights.scm", { "parser": "javascript", "file": "queries/highlights-jsx.scm" }, { "parser": "javascript", "file": "queries/highlights.scm" }] },
+    "missing": { "repo": "/r/m", "version": "v1", "fileTypes": ["m"], "queries": [{ "parser": "nothere", "file": "q.scm" }] },
+    "broken": { "repo": "/r/b", "version": "v1", "fileTypes": [] },
+    "onbroken": { "repo": "/r/c", "version": "v1", "fileTypes": ["c1"], "queries": [{ "parser": "broken", "file": "q.scm" }] },
+    "chain": { "repo": "/r/d", "version": "v1", "fileTypes": ["d1"], "queries": [{ "parser": "onbroken", "file": "q.scm" }] },
+    "self": { "repo": "/r/s", "version": "v1", "fileTypes": ["s1"], "queries": [{ "parser": "self", "file": "q.scm" }] },
+    "escape": { "repo": "/r/e", "version": "v1", "fileTypes": ["e1"], "queries": [{ "parser": "javascript", "file": "../x.scm" }] },
+    "extra": { "repo": "/r/x", "version": "v1", "fileTypes": ["x1"], "queries": [{ "parser": "javascript", "file": "q.scm", "tag": "v1" }] },
+    "number": { "repo": "/r/n", "version": "v1", "fileTypes": ["n1"], "queries": [1] }
+  }
+}`))
+	var names []string
+	got := map[string]parserSpec{}
+	for _, p := range s.parsers {
+		names = append(names, p.name)
+		got[p.name] = p
+	}
+	if want := []string{"javascript", "tsx", "typescript"}; !slices.Equal(names, want) {
+		t.Fatalf("parsers = %v, want %v (problems %q)", names, want, problems)
+	}
+	if q := got["tsx"].queries; !slices.Equal(q, []querySource{
+		{file: "queries/highlights.scm"},
+		{parser: "javascript", file: "queries/highlights-jsx.scm"},
+		{parser: "javascript", file: "queries/highlights.scm"},
+	}) {
+		t.Errorf("tsx.queries = %+v", q)
+	}
+	if in := got["tsx"].inherits(); !slices.Equal(in, []string{"javascript"}) {
+		t.Errorf("tsx.inherits() = %v", in)
+	}
+	want := []string{
+		"パーサ broken を使わない",
+		"パーサ escape を使わない",
+		"パーサ extra を使わない",
+		"パーサ number を使わない",
+		"パーサ self を使わない",
+		"パーサ missing を使わない: queries の継ぐパーサ nothere",
+		"パーサ onbroken を使わない: queries の継ぐパーサ broken",
+		"パーサ chain を使わない: queries の継ぐパーサ onbroken",
+	}
+	if len(problems) != len(want) {
+		t.Fatalf("problems = %q", problems)
+	}
+	for i, w := range want {
+		if !strings.Contains(problems[i], w) {
+			t.Errorf("problems[%d] = %q, want it to contain %q", i, problems[i], w)
 		}
 	}
 }
@@ -505,6 +566,90 @@ func messageTexts(ms []ext.MessageShowParams) string {
 		texts[i] = string(m.Level) + ": " + m.Text
 	}
 	return strings.Join(texts, "\n")
+}
+
+// TestUserParserInheritsQueries は、queries に書いたほかのパーサ（継ぐパーサ）のファイルを、自身のクエリの後ろにつなぎ、
+// 継ぐパーサの定義の色（予約語）が付くことと、同じ範囲には先に書いた自身の定義の色が付くことを確かめる（FR-328）。
+// 継ぐパーサのリポジトリは、そのファイルの種類のバッファを開いていなくても取得し、ロックファイルに記録する（ビルドはしない）。
+// 次の起動では git も C コンパイラも使わずに読み込み、継ぐパーサの版を変えたら、つないだクエリを読み直す（FR-329）。
+//
+// req: FR-328, FR-329
+func TestUserParserInheritsQueries(t *testing.T) {
+	// 継ぐパーサの定義は true を予約語に、数値を文字列にする。継ぐ側の定義は数値を数値にするだけである。
+	base := newGrammarRepo(t, ".", map[string]string{"queries/highlights.scm": "(true) @keyword\n(number) @string\n"})
+	child := newGrammarRepo(t, "grammar", map[string]string{"queries/highlights.scm": "(number) @number\n"})
+	baseV1 := base.git("rev-parse", "v1^{commit}")
+	env := testParserEnv(t)
+	parsers := func(baseVersion string) map[string]map[string]any {
+		return map[string]map[string]any{
+			"base": {"repo": base.dir, "version": baseVersion, "fileTypes": []string{"basejson"}},
+			"main": {
+				"repo": child.dir, "version": "v1", "fileTypes": []string{"mainjson"}, "path": "grammar",
+				"queries": []any{"queries/highlights.scm", map[string]string{"parser": "base", "file": "queries/highlights.scm"}},
+			},
+		}
+	}
+	text := `{"a": true, "b": 1}`
+	trueAt := ext.Position{Line: 0, Byte: strings.Index(text, "true")}
+	numberAt := ext.Position{Line: 0, Byte: strings.Index(text, "1")}
+
+	conn, got, msgs, progress := connectParsers(t, env, settingsJSON(t, "", parsers("v1")))
+	openBuffer(t, conn, 1, "mainjson", text)
+	p := receiveBuffer(t, got, 1, nil)
+	if styleAt(p.Decorations, trueAt) != "keyword" || styleAt(p.Decorations, numberAt) != "number" {
+		t.Errorf("decorations = %+v, want keyword at %v and number at %v", p.Decorations, trueAt, numberAt)
+	}
+	seen := waitProgress(t, progress, "パーサ main を用意した")
+	var texts []string
+	for _, s := range seen {
+		texts = append(texts, s.Message)
+	}
+	if !slices.ContainsFunc(texts, func(s string) bool {
+		return strings.Contains(s, "パーサ main が継ぐクエリのパーサ base を取得している")
+	}) {
+		t.Errorf("progress = %q", texts)
+	}
+	if ms := drainMessages(msgs); len(ms) != 0 {
+		t.Errorf("message/show = %+v, want none", ms)
+	}
+	if e := readLockFile(t, env.lockPath).Parsers["base"]; e.Commit != baseV1 || e.Version != "v1" || e.Repo != base.dir {
+		t.Errorf("lock の base = %+v, want commit %s", e, baseV1)
+	}
+	if built, _ := filepath.Glob(filepath.Join(env.dataDir, "parsers", "base", "*")); len(built) != 0 {
+		t.Errorf("継ぐパーサをビルドした: %v", built)
+	}
+
+	// 次の起動では、ロックファイルの記録とビルドしたものを使う。git と C コンパイラが無くても、継いだ定義の色が付く。
+	env2 := env
+	env2.git = "no-such-git-for-test"
+	conn2, got2, msgs2, _ := connectParsers(t, env2, settingsJSON(t, "no-such-cc-for-test", parsers("v1")))
+	openBuffer(t, conn2, 1, "mainjson", text)
+	if p := receiveBuffer(t, got2, 1, nil); styleAt(p.Decorations, trueAt) != "keyword" {
+		t.Errorf("2 回目の decorations = %+v", p.Decorations)
+	}
+	if ms := drainMessages(msgs2); len(ms) != 0 {
+		t.Errorf("2 回目の message/show = %+v, want none", ms)
+	}
+
+	// 継ぐパーサの版を変えたら、継ぐ側の版が同じでも、つないだクエリを読み直す。
+	baseV2 := base.commit(map[string]string{"queries/highlights.scm": "(true) @constant\n"})
+	base.git("tag", "v2")
+	conn3, got3, _, progress3 := connectParsers(t, env, settingsJSON(t, "", parsers("v2")))
+	openBuffer(t, conn3, 1, "mainjson", text)
+	if p := receiveBuffer(t, got3, 1, nil); styleAt(p.Decorations, trueAt) != "constant" || styleAt(p.Decorations, numberAt) != "number" {
+		t.Errorf("base v2 の decorations = %+v, want constant at %v", p.Decorations, trueAt)
+	}
+	waitProgress(t, progress3, "パーサ main を用意した")
+	lock := readLockFile(t, env.lockPath)
+	if e := lock.Parsers["base"]; e.Commit != baseV2 || e.Version != "v2" {
+		t.Errorf("lock の base = %+v, want commit %s", e, baseV2)
+	}
+	if _, ok := lock.Parsers["main"]; !ok {
+		t.Errorf("lock に main が無い: %+v", lock)
+	}
+	if built, _ := filepath.Glob(filepath.Join(env.dataDir, "parsers", "main", "*", libraryFileName)); len(built) != 1 {
+		t.Errorf("main のビルド = %v, want 1（前のビルドを消す）", built)
+	}
 }
 
 // TestUserParserFailureIsolated は、用意できないパーサ（ビルドできない、取得できない）は、そのパーサだけを使わず、

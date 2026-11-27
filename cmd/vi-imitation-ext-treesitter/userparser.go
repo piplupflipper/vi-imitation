@@ -49,10 +49,15 @@ func (h *highlighter) configure(raw json.RawMessage) {
 	h.problems = problems
 	h.sticky.configure(s.context)
 	h.chunk.configure(s.chunk)
+	specs := map[string]parserSpec{}
+	for _, spec := range s.parsers {
+		specs[spec.name] = spec
+	}
 	h.prep = &preparer{
 		env:      h.env,
 		compiler: s.compiler,
 		listed:   s.listed,
+		specs:    specs,
 		progress: h.progress,
 	}
 	clear(h.user)

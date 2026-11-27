@@ -39,7 +39,7 @@
 | `vi-imitation-ext-mcp` | MCP のサーバー | 不使用 | FR-32 |
 | `vi-imitation-mcp-bridge` | MCP の中継コマンド | 不使用 | FR-33 |
 | `vi-imitation-ext-acp` | ACP のクライアント | 不使用 | FR-34 |
-| `vi-imitation-ext-treesitter` | tree-sitter による構文解析 | 使用（glibc に動的にリンクする。9.1） | FR-35、FR-142 |
+| `vi-imitation-ext-treesitter` | tree-sitter による構文解析 | 使用（glibc に動的にリンクする。9.1） | FR-35、FR-142、FR-328、FR-329 |
 | `vi-imitation-ext-script` | yaegi によるスクリプトの拡張機能の実行 | 不使用 | FR-36 |
 | `vi-imitation-ext-formatter` | 外部の整形ツールによる整形と、整形ツールの設定からのインデント（6.10。#339、#349） | 不使用 | FR-175、FR-176、FR-193 |
 
@@ -2972,15 +2972,20 @@ hlchunk.nvim は、カーソルが動くたびに（`delay` を待たずに）�
 | `parsers.<名前>.version` | 版。タグ、ブランチ、コミットのハッシュの順に探す（5.6 の `:ext sync` と同じ） |
 | `parsers.<名前>.fileTypes` | このパーサを使うファイルの種類の列 |
 | `parsers.<名前>.path` | `src/parser.c` のある `src/` の親のディレクトリ（リポジトリの中の相対パス）。既定は最上位 |
-| `parsers.<名前>.queries` | ハイライトのクエリのファイルの列（リポジトリの中の相対パス）。既定は `path` の下の `queries/highlights.scm`、無ければ最上位の `queries/highlights.scm` |
+| `parsers.<名前>.queries` | ハイライトのクエリのファイルの列。項目は、自身のリポジトリの中の相対パスの文字列か、ほかのパーサのリポジトリのファイルを指す `{"parser": <名前>, "file": <相対パス>}`（FR-328）。並べた順につなぐ。既定は `path` の下の `queries/highlights.scm`、無ければ最上位の `queries/highlights.scm` |
 | `compiler` | C コンパイラ。既定は PATH の `cc` |
+
+`queries` でほかのパーサ（継ぐパーサ）のファイルを指すのは、tree-sitter-typescript のように、`tree-sitter.json` の `highlights` で別の文法（tree-sitter-javascript）のクエリを並べるパーサのためである（#455）。
+つないだクエリでは、同じ範囲に複数のパターンが当たれば先に書いたパターンの色を付ける（`decorate.go` の `decorations`。tree-sitter-highlight と同じ）ので、`tree-sitter.json` と同じ順（自身のファイルを先）に書けば、自身の定義が継いだ定義より優先される。
+継ぐパーサは、同じ設定の `parsers` に誤り無く書いたものに限り、無ければ継ぐ側のパーサを使わない（`settings.go` の `dropBrokenInherits`）。
+継ぐパーサのファイルの中の継ぎ（nvim-treesitter のクエリの `; inherits:` など）はたどらない。
 
 置き場所は次のとおりである（仮）。
 
 | 置き場所 | 中身 |
 |---|---|
 | `$XDG_DATA_HOME/vi-imitation/treesitter/src/<名前>/` | 取得したソース（git のリポジトリ） |
-| `$XDG_DATA_HOME/vi-imitation/treesitter/parsers/<名前>/<鍵>/` | ビルドしたもの。`parser.so`、`highlights.scm`（クエリをつないだもの）、`build.json`（取得元、コミット、文法の関数の名前）。鍵はコミットと `path` と `queries` から作り、同じパスの `.so` を中身を変えて読み直すことはしない |
+| `$XDG_DATA_HOME/vi-imitation/treesitter/parsers/<名前>/<鍵>/` | ビルドしたもの。`parser.so`、`highlights.scm`（クエリをつないだもの）、`build.json`（取得元、コミット、文法の関数の名前）。鍵はコミットと `path` と `queries` と継ぐパーサのコミット（FR-329）から作り、同じパスの `.so` を中身を変えて読み直すことはしない |
 | `$XDG_DATA_HOME/vi-imitation/treesitter/lock` | 取得とビルドを、別の server（FR-59）の拡張機能と 1 つずつにする `flock` のファイル |
 | 設定ファイルと同じディレクトリの `treesitter.lock.json` | 取得したコミットのロックファイル。形は `{"version": 1, "parsers": {"<名前>": {"repo", "version", "commit"}}}` で、5.6 の `extensions.lock.json` と同じ考え方で書く（symlink ならリンク先を書き換える） |
 
@@ -2989,9 +2994,9 @@ hlchunk.nvim は、カーソルが動くたびに（`delay` を待たずに）�
 用意の流れは次のとおりである。
 
 1. `buffer/open` のファイルの種類を利用者の設定のパーサが持ち、まだ用意していなければ、用意の goroutine に頼み、バッファの複製を待ちの表に置いて戻る。待つ間の `buffer/change` は複製を最新のものに替える
-2. 用意の goroutine は、置き場所の `flock` を取り、ロックファイルを読む。記録が設定の `repo` と `version` に合い、そのコミットの鍵のディレクトリがあれば、git も C コンパイラも起動せずに 5 へ進む
-3. `internal/extmgr` の `Checkout`（`:ext sync` と同じ取得と版の解決）で取得してコミットを取り出す。記録が合えばそのコミットを、合わなければ `version` を解決したコミットを使う
-4. 鍵のディレクトリが無ければ、`<C コンパイラ> -shared -fPIC -O2 -I src -o parser.so src/parser.c [src/scanner.c]` でビルドし、クエリと一緒に置く。tree-sitter の CLI は要らない。前のビルド（別の鍵）は消す。ロックファイルに取り出したコミットを記録し、設定に並べなくなったパーサの記録を消す
+2. 用意の goroutine は、置き場所の `flock` を取り、ロックファイルを読む。記録が設定の `repo` と `version` に合い（継ぐパーサがあれば、その記録もそのパーサの設定に合い）、そのコミットの鍵のディレクトリがあれば、git も C コンパイラも起動せずに 5 へ進む
+3. `internal/extmgr` の `Checkout`（`:ext sync` と同じ取得と版の解決）で取得してコミットを取り出す。記録が合えばそのコミットを、合わなければ `version` を解決したコミットを使う。継ぐパーサがあれば、先にそのリポジトリを同じ規則で `src/<継ぐパーサの名前>/` に取得する（ビルドはしない。FR-329）
+4. 鍵のディレクトリが無ければ、`<C コンパイラ> -shared -fPIC -O2 -I src -o parser.so src/parser.c [src/scanner.c]` でビルドし、クエリと一緒に置く。tree-sitter の CLI は要らない。前のビルド（別の鍵）は消す。ロックファイルに取り出したコミット（継ぐパーサのものを含む）を記録し、設定に並べなくなったパーサの記録を消す
 5. `parser.so` を `dlopen` し、`tree_sitter_<文法の名前>`（`src/grammar.json` の `name`）を呼んで得た言語でパーサとクエリを作る。待ちの表のバッファを、その言語で全文から解析させる
 
 取得とビルドは、メッセージを処理する goroutine とも解析の goroutine とも別の、1 つの用意の goroutine で行う。メッセージを処理する goroutine で待つと、ping の応答が遅れ、本体の生存確認の期限切れで強制終了されるためである（5.2）。

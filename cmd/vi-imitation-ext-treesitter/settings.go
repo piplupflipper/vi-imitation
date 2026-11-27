@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -33,6 +34,14 @@ import (
 //	          "path": "",
 //	          // 省略できる。ハイライトのクエリのファイル（リポジトリの中の相対パス）。複数あれば順につなぐ
 //	          "queries": ["queries/highlights.scm"]
+//	        },
+//	        // ほかのパーサのリポジトリのクエリを継ぐ例（FR-328）。queries の項目に {"parser", "file"} を書く
+//	        "typescript": {
+//	          "repo": "https://github.com/tree-sitter/tree-sitter-typescript",
+//	          "version": "v0.23.2",
+//	          "fileTypes": ["typescript"],
+//	          "path": "typescript",
+//	          "queries": ["queries/highlights.scm", {"parser": "javascript", "file": "queries/highlights.scm"}]
 //	        }
 //	      },
 //	      // 見出しの帯の設定（contextSettings）
@@ -52,9 +61,38 @@ type parserSpec struct {
 	// path は、src/parser.c のある src/ の親のディレクトリの、リポジトリの中の相対パスである。空ならリポジトリの最上位である。
 	// 1 つのリポジトリに複数の文法を置くもの（typescript/ と tsx/ を持つ tree-sitter-typescript など）に使う。
 	path string
-	// queries は、ハイライトのクエリのファイルの、リポジトリの中の相対パスの列である。
+	// queries は、ハイライトのクエリのファイルの列である。並べた順につなぐ（先に書いたものの色が優先される。decorations の doc）。
 	// 空なら、path の下の queries/highlights.scm、無ければリポジトリの最上位の queries/highlights.scm を使う。
-	queries []string
+	queries []querySource
+}
+
+// querySource は、ハイライトのクエリの 1 つのファイルである。
+// 設定では、このパーサのリポジトリのファイルは文字列で、ほかのパーサのリポジトリのファイルは {"parser", "file"} で書く（FR-328）。
+type querySource struct {
+	// parser は、ファイルを持つパーサの名前である。空なら、このパーサ自身のリポジトリである。
+	// 空でなければ、同じ設定の parsers に誤り無く書いたパーサの名前で、自身の名前ではない（parseSettings が確かめる）。
+	parser string
+	// file は、そのパーサのリポジトリの中の相対パスである。
+	file string
+}
+
+// String は、誤りの文言とビルドの鍵に使う表記（"file" か "parser:file"）を返す。
+func (q querySource) String() string {
+	if q.parser == "" {
+		return q.file
+	}
+	return q.parser + ":" + q.file
+}
+
+// inherits は、spec のクエリが継ぐほかのパーサの名前を、初めて出てきた順に重ねずに返す。
+func (spec parserSpec) inherits() []string {
+	var names []string
+	for _, q := range spec.queries {
+		if q.parser != "" && !slices.Contains(names, q.parser) {
+			names = append(names, q.parser)
+		}
+	}
+	return names
 }
 
 // treesitterSettings は、設定の extensions.settings.treesitter の値である（parserSpec の doc の形）。
@@ -285,11 +323,12 @@ var parserName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 //   - 知らない項目（最上位と各パーサ）は誤りにする。最上位の知らない項目は無視し、パーサの知らない項目はそのパーサを使わない
 //   - repo が空か "-" で始まるか相対パス、version が空か "-" で始まる、fileTypes が空か空の名前を含む、
 //     path か queries がリポジトリの外を指す（絶対パスや ".." を含む）パーサは使わない
+//   - queries で継ぐパーサ（FR-328）が、誤り無く読めたパーサに無ければ、継ぐ側のパーサを使わない（dropBrokenInherits）
 //   - 2 つ以上のパーサが同じファイルの種類を持てば、その種類にはどのパーサも使わない（ほかの種類には使う）
 //
 // settings が nil（設定が無い）なら、誤りの無い空の設定を返す。
 //
-// req: FR-142
+// req: FR-142, FR-328
 func parseSettings(settings json.RawMessage) (treesitterSettings, []string) {
 	out := treesitterSettings{compiler: defaultCompiler, listed: map[string]bool{}, context: defaultContextSettings, chunk: defaultChunkSettings}
 	if len(bytes.TrimSpace(settings)) == 0 || bytes.Equal(bytes.TrimSpace(settings), []byte("null")) {
@@ -340,6 +379,7 @@ func parseSettings(settings json.RawMessage) (treesitterSettings, []string) {
 		}
 		out.parsers = append(out.parsers, spec)
 	}
+	out.parsers, problems = dropBrokenInherits(out.parsers, problems)
 
 	// 利用者の設定の中で重なったファイルの種類は、どのパーサにも使わない。
 	owners := map[string][]string{}
@@ -362,13 +402,82 @@ func parseSettings(settings json.RawMessage) (treesitterSettings, []string) {
 	return out, problems
 }
 
+// dropBrokenInherits は、クエリを継ぐパーサ（querySource.parser）が、誤り無く読めたパーサ（parsers）に無いパーサを除き、
+// 除いた理由を problems に足して返す。除いたパーサを継ぐパーサも、続けて除く。
+//
+// req: FR-328
+func dropBrokenInherits(parsers []parserSpec, problems []string) ([]parserSpec, []string) {
+	for {
+		valid := map[string]bool{}
+		for _, p := range parsers {
+			valid[p.name] = true
+		}
+		var kept []parserSpec
+		for _, p := range parsers {
+			missing := ""
+			for _, name := range p.inherits() {
+				if !valid[name] {
+					missing = name
+					break
+				}
+			}
+			if missing != "" {
+				problems = append(problems, fmt.Sprintf("パーサ %s を使わない: queries の継ぐパーサ %s が、parsers に誤り無く書かれていない", p.name, missing))
+				continue
+			}
+			kept = append(kept, p)
+		}
+		if len(kept) == len(parsers) {
+			return kept, problems
+		}
+		parsers = kept
+	}
+}
+
 // parserJSON は、parsers の 1 項目の JSON の形である。
 type parserJSON struct {
 	Repo      string   `json:"repo"`
 	Version   string   `json:"version"`
 	FileTypes []string `json:"fileTypes"`
 	Path      string   `json:"path"`
-	Queries   []string `json:"queries"`
+	// Queries の項目は、このパーサのリポジトリの中の相対パスの文字列か、queryJSON のオブジェクトである。
+	Queries []json.RawMessage `json:"queries"`
+}
+
+// queryJSON は、queries の項目のうち、ほかのパーサのリポジトリのファイルを指すものの JSON の形である（FR-328）。
+type queryJSON struct {
+	// Parser は、同じ設定の parsers に書いたパーサの名前である。
+	Parser string `json:"parser"`
+	// File は、そのパーサのリポジトリの中の相対パスである。
+	File string `json:"file"`
+}
+
+// parseQuery は、queries の 1 項目を読んで検査する。self は、そのパーサ自身の名前である。
+//
+// req: FR-328
+func parseQuery(self string, raw json.RawMessage) (querySource, error) {
+	var file string
+	if err := json.Unmarshal(raw, &file); err == nil {
+		if !filepath.IsLocal(file) {
+			return querySource{}, fmt.Errorf("queries の %q はリポジトリの中の相対パスにする", file)
+		}
+		return querySource{file: file}, nil
+	}
+	var j queryJSON
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&j); err != nil {
+		return querySource{}, fmt.Errorf("queries の項目 %s は、文字列か {\"parser\": 名前, \"file\": パス} にする", raw)
+	}
+	switch {
+	case j.Parser == "":
+		return querySource{}, errors.New("queries の項目の parser が空である")
+	case j.Parser == self:
+		return querySource{}, fmt.Errorf("queries の項目の parser に自身の名前 %s は書かない（自身のファイルは文字列で書く）", self)
+	case !filepath.IsLocal(j.File):
+		return querySource{}, fmt.Errorf("queries の項目の file %q はパーサ %s のリポジトリの中の相対パスにする", j.File, j.Parser)
+	}
+	return querySource{parser: j.Parser, file: j.File}, nil
 }
 
 // parseParser は、parsers の 1 項目を読んで検査する。
@@ -396,10 +505,13 @@ func parseParser(name string, raw json.RawMessage) (parserSpec, error) {
 	case j.Path != "" && !filepath.IsLocal(j.Path):
 		return parserSpec{}, fmt.Errorf("path %q はリポジトリの中の相対パスにする", j.Path)
 	}
-	for _, q := range j.Queries {
-		if !filepath.IsLocal(q) {
-			return parserSpec{}, fmt.Errorf("queries の %q はリポジトリの中の相対パスにする", q)
+	var queries []querySource
+	for _, raw := range j.Queries {
+		q, err := parseQuery(name, raw)
+		if err != nil {
+			return parserSpec{}, err
 		}
+		queries = append(queries, q)
 	}
 	fileTypes := slices.Clone(j.FileTypes)
 	slices.Sort(fileTypes)
@@ -409,7 +521,7 @@ func parseParser(name string, raw json.RawMessage) (parserSpec, error) {
 		version:   j.Version,
 		fileTypes: slices.Compact(fileTypes),
 		path:      filepath.Clean(j.Path),
-		queries:   j.Queries,
+		queries:   queries,
 	}, nil
 }
 

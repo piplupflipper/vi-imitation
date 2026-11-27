@@ -2509,7 +2509,7 @@ hlchunk.nvim との違いは次のとおりである（[基本設計](basic-desi
 | `parsers.<名前>.version` | 取り出す版。タグ、ブランチ、コミットのハッシュの順に探す | 省けない |
 | `parsers.<名前>.fileTypes` | このパーサを使うファイルの種類の列 | 省けない |
 | `parsers.<名前>.path` | `src/parser.c` のある `src/` の親のディレクトリ（リポジトリの中の相対パス）。1 つのリポジトリに複数の文法があるとき（tree-sitter-typescript の `typescript` と `tsx` など）に書く | リポジトリの最上位 |
-| `parsers.<名前>.queries` | ハイライトのクエリのファイル（リポジトリの中の相対パス）の列。複数あれば順につなぐ | `path` の下の `queries/highlights.scm`、無ければ最上位の `queries/highlights.scm` |
+| `parsers.<名前>.queries` | ハイライトのクエリのファイルの列。複数あれば順につなぐ。項目は、そのパーサのリポジトリの中の相対パスの文字列か、ほかのパーサのリポジトリのファイルを指す `{ "parser": "<名前>", "file": "<相対パス>" }`（[ほかのパーサのクエリを継ぐ](#ほかのパーサのクエリを継ぐ)） | `path` の下の `queries/highlights.scm`、無ければ最上位の `queries/highlights.scm` |
 | `compiler` | パーサをビルドする C コンパイラ | PATH の `cc` |
 
 パーサを足したファイルの種類のファイルを初めて開くと、次の順に用意する。
@@ -2550,6 +2550,64 @@ nvim-treesitter のクエリは、Neovim だけが解釈する述語（`#lua-mat
 パーサの項目に `fileTypes` が無い（`filetypes` と綴りを誤ったなど）と、そのパーサでは拡張機能が起動しないので、本体が起動したときに設定の誤りとして知らせる。
 拡張子からファイルの種類への既定の対応に無い言語（`.lua` など）は、設定の `fileTypes` の対応表（`{ ".lua": "lua" }`）にも書く。パーサの `fileTypes` には、その対応表の右辺の名前を書く。
 C++ で書いた外部スキャナー（`src/scanner.cc`）を持つパーサはビルドしない。
+
+##### ほかのパーサのクエリを継ぐ
+
+TypeScript と TSX のパーサ（tree-sitter-typescript）のハイライトのクエリは、TypeScript に固有の部分（型など）だけを持ち、予約語（`import`、`from`、`const` など）の定義は JavaScript のパーサ（tree-sitter-javascript）のクエリにある（FR-328）。
+このようなパーサは、`queries` に、自身のファイルに続けて、ほかのパーサのリポジトリのファイルを `{ "parser": "<名前>", "file": "<相対パス>" }` で並べる。
+`parser` には、同じ `parsers` に書いたパーサの名前を書く。
+例は、tree-sitter-typescript の v0.23.2 を、tree-sitter-javascript の v0.25.0 のクエリを継いで足すものである。
+並べるファイルと順は、tree-sitter-typescript の `tree-sitter.json` の `highlights` と同じにした。
+
+```jsonc
+{
+  // .tsx は既定のファイルの種類の表に無いので足す
+  "fileTypes": { ".tsx": "typescriptreact" },
+  "extensions": {
+    "settings": {
+      "treesitter": {
+        "parsers": {
+          "javascript": {
+            "repo": "https://github.com/tree-sitter/tree-sitter-javascript",
+            "version": "v0.25.0",
+            "fileTypes": ["javascript"],
+          },
+          "typescript": {
+            "repo": "https://github.com/tree-sitter/tree-sitter-typescript",
+            "version": "v0.23.2",
+            "path": "typescript",
+            "fileTypes": ["typescript"],
+            "queries": [
+              "queries/highlights.scm",
+              { "parser": "javascript", "file": "queries/highlights.scm" },
+            ],
+          },
+          "tsx": {
+            "repo": "https://github.com/tree-sitter/tree-sitter-typescript",
+            "version": "v0.23.2",
+            "path": "tsx",
+            "fileTypes": ["typescriptreact"],
+            "queries": [
+              "queries/highlights.scm",
+              { "parser": "javascript", "file": "queries/highlights-jsx.scm" },
+              { "parser": "javascript", "file": "queries/highlights.scm" },
+            ],
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+- 並べた順につなぎ、同じ範囲に複数の定義が当たれば、先に書いた定義の色を付ける。自身のファイルを先に書けば、自身の定義が優先される
+- 継ぐパーサのリポジトリは、継ぐ側のファイルを初めて開いたときに取得し（進み具合「パーサ typescript が継ぐクエリのパーサ javascript を取得している」）、そのコミットをロックファイルに記録する。継ぐパーサのファイル（`.js`）を開いていなくても取得し、ビルドはしない
+- 継ぐパーサの `version` を変えると、継ぐ側のファイルを次に開いたときに、つないだクエリを読み直してビルドし直す（FR-329）
+- 継ぐパーサが `parsers` に無いか、設定の誤りで使えないときは、継ぐ側のパーサも使わない（最初にファイルを開いたときにメッセージの行で知らせる）
+- 継ぐパーサのファイルの中の継ぎ（nvim-treesitter のクエリの `; inherits:`）はたどらない
+- tree-sitter-javascript の `queries/highlights-jsx.scm` は、JSX のタグの名前を `@tag`、属性の名前を `@attribute` で捕まえるが、これらの名前は色の種類（[基本設計](basic-design.md) 6.1 の表）に無いので、色が付かない
+
+2026-11-27 に、`make dist` の配布物の本体を tmux の中で起動し、上の例の設定で `.ts` と `.tsx` のファイルを開いて、`import`、`from`、`export`、`const`、`return` に予約語の色が付くことと、起動し直して開いたときも同じ色が付くことを確かめた（tmux 3.4、git 2.43.0、gcc 13.3.0）。
 
 ### 行のテキストオブジェクト
 
