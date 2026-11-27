@@ -87,7 +87,7 @@ func (x *extension) rootCommand(_ context.Context, _ *server.Buffer, p *ext.Comm
 // コマンドを呼んだバッファ buf の client が前からあったものなら、それを作り直す（renew）。移したバッファの数と、作り直したかを返す。
 //
 // 前からある client を作り直すのは、根が変わらなくても、言語サーバーを起動し直して仮想環境を探し直させるためである
-// （後から uv sync で .venv を作ったときに、:lsp.root . で拾える）。新しく作った client は、作ったときに探しているので作り直さない。
+// （後から uv sync で .venv を作ったときに、根を変えない :lsp.root --markers で拾える）。新しく作った client は、作ったときに探しているので作り直さない。
 //
 // req: FR-322
 func (x *extension) reassignAndRenew(name string, buf ext.BufferID) (moved int, renewed bool) {
