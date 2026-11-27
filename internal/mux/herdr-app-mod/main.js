@@ -130,7 +130,7 @@ export default class ViImitation extends View {
         await this.reapOrphans();
         for (const on of names) {
           try {
-            await this.serveMachine(on);
+            await this.serveMachine(on, names);
             this.retryAt.delete(on);
           } catch (e) {
             // このマシンで hc を動かせない（hc が無い、PATH に無い、繋がらない）。しばらく探さず、ほかのマシンは続ける。
@@ -165,13 +165,21 @@ export default class ViImitation extends View {
   }
 
   // serveMachine は、マシン on（null はこのコンピューター）の、依頼の印のある端末を処理する。
-  async serveMachine(on) {
+  // scanned は、この探索で探すマシンの名前である。
+  //
+  // このコンピューターの hc は、herdr app がつないだ別のマシンの端末も <マシン>/t72 の形の番地で返す
+  // （2026-11-27 にオーナーの Windows の herdr app で、dev-minipc の依頼をこのコンピューターの依頼として処理し、
+  // Windows の hc で hc run を動かして env が無く失敗した。#452）。前置きの付いた番地（machineOf）は、そのマシンの依頼として扱う。
+  // そのマシンをこの探索で探すなら、ここでは処理しない（同じ依頼を 2 回処理しない）。探さないマシンなら、そのマシンとして処理する。
+  async serveMachine(on, scanned = []) {
     const out = await hcRun(["ls", "--json", "--label", `${PENDING}=1`], on);
     const terminals = JSON.parse(out).terminals ?? [];
     if (terminals.length > 0) this.lastActive = Date.now();
     for (const t of terminals) {
+      const [where, address] = machineOf(on, t.address);
+      if (where !== on && scanned.includes(where)) continue;
       try {
-        await this.serveTerminal(on, t.address);
+        await this.serveTerminal(where, address);
       } catch (e) {
         // 1 つの端末の誤り（hc ls の後に終わった端末の hc get など）で、このマシンのほかの端末の依頼を止めない。
         // 投げ上げると poll がマシンごと FAIL_BACKOFF_MS の間探さなくなり、その間の依頼を誰も引き受けない
@@ -579,6 +587,15 @@ async function findSplit(on, id) {
     if (on) await exec("sleep", ["0.1"], { on, timeout: HC_TIMEOUT_MS }).catch(() => {});
   }
   return { terminal, pane: null };
+}
+
+// machineOf は、マシン on の hc ls が返した番地 address を、[その端末のあるマシン, そのマシンでの番地] にする。
+// このコンピューター（on が null）の hc が <マシン>/t72 の形で返したら、そのマシンの t72 にする。そうでなければそのまま返す。
+function machineOf(on, address) {
+  const i = typeof address === "string" ? address.indexOf("/") : -1;
+  if (on == null && i > 0) return [address.slice(0, i), address.slice(i + 1)];
+  if (on != null && typeof address === "string" && address.startsWith(`${on}/`)) return [on, address.slice(on.length + 1)];
+  return [on, address];
 }
 
 // machineNames は、依頼を探すマシンの名前を返す。null はこのコンピューターである。
