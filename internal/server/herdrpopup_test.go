@@ -194,15 +194,26 @@ func TestTerminalPopupHerdrApp(t *testing.T) {
 	}
 	waitNoLabels(t, hc, "t7")
 
-	// 窓が開いている間は、mod が Busy を返す。開き直しても開けなければ、誤りをメッセージの行に出す。
-	sendKeys(t, c, ":terminal.popup sleep 3<CR>")
+	// 窓が開いている間は、mod が Busy を返す。前の窓が popupBusyTimeout（1.5 秒）より後に閉じても、herdr app では
+	// herdrAppPopupBusyTimeout まで開き直すので、閉じた後に開く（PR #453 のレビューの推奨 2）。
+	sendKeys(t, c, ":terminal.popup sleep 2<CR>")
 	w.waitPopups(t, 2)
 	sendKeys(t, c, ":terminal.popup true<CR>")
+	w.waitPopups(t, 3)
+	w.waitClosed(t, 3)
+
+	// 開き直しても開けなければ、誤りをメッセージの行に出す。
+	old := herdrAppPopupBusyTimeout.Load()
+	herdrAppPopupBusyTimeout.Store(int64(500 * time.Millisecond))
+	t.Cleanup(func() { herdrAppPopupBusyTimeout.Store(old) })
+	sendKeys(t, c, ":terminal.popup sleep 3<CR>")
+	w.waitPopups(t, 4)
+	sendKeys(t, c, ":terminal.popup true<CR>")
 	waitScreenText(t, ch, "端末多重化ソフトのポップアップを開けません")
-	if got := w.waitPopups(t, 2); len(got) != 2 {
+	if got := w.waitPopups(t, 4); len(got) != 4 {
 		t.Errorf("窓が開いている間に開いた: %+v", got)
 	}
-	w.waitClosed(t, 2)
+	w.waitClosed(t, 4)
 }
 
 // herdr app の中で、mod がポップアップを知っていれば、中央のポップアップの部品（:h のヘルプ）は、mod の窓の中の部品の client に描く。

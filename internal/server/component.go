@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/internal/editor"
@@ -37,6 +38,25 @@ const (
 	popupBusyTimeout = 1500 * time.Millisecond
 	popupBusyRetry   = 50 * time.Millisecond
 )
+
+// herdrAppPopupBusyTimeout は、herdr app の中で、mod の窓が既に開いていて開けないとき（mux.ErrPopupBusy）に、開き直すのを待つ上限である（仮。#452）。
+// herdr app では、前の窓の中身（部品の client、コマンド）が終わってから、mod が次の探索（窓のある間は 0.5 秒ごと）で窓を外すまで busy が続き、
+// 1 回の開き直しも mod の探索 1 回と、別のマシンへの hc の往復を待つ。popupBusyTimeout の 1.5 秒では 1 回程度しか開き直せないので延ばす
+// （PR #453 のレビューの推奨 2）。
+// テストが server を動かしたまま短くするので、atomic で持つ（値は time.Duration）。
+var herdrAppPopupBusyTimeout = func() *atomic.Int64 {
+	v := new(atomic.Int64)
+	v.Store(int64(6 * time.Second))
+	return v
+}()
+
+// popupBusyWait は、端末多重化ソフトの層 m で、ポップアップが既に開いていて開けないときに開き直すのを待つ上限である。
+func popupBusyWait(m mux.Mux) time.Duration {
+	if m.Kind() == mux.KindHerdrApp {
+		return time.Duration(herdrAppPopupBusyTimeout.Load())
+	}
+	return popupBusyTimeout
+}
 
 // componentCommand は、部品 view を描く部品の client を起動するコマンドと、端末多重化ソフトの層を返す。
 // flag は ComponentFlagPopup か ComponentFlagPane である。
@@ -77,14 +97,14 @@ func (s *Server) openPopup(from string, view uint64, dir string, opts editor.Pop
 	return s.openPopupRetry(m, po)
 }
 
-// openPopupRetry は、m で中央のポップアップ po を開く。ポップアップが既に開いていれば（mux.ErrPopupBusy）、popupBusyTimeout まで
+// openPopupRetry は、m で中央のポップアップ po を開く。ポップアップが既に開いていれば（mux.ErrPopupBusy）、popupBusyWait まで
 // popupBusyRetry ごとに開き直す。部品の client（openPopup）と :terminal.popup（runPopup）が同じ扱いにするためにまとめた。
 // 1 回に待つ上限は、ペインの分割と同じ（splitWait。herdr app では mod の結果を待つ。#452）で、server の終わりで打ち切る。
 // herdr app の mod が無いか古くて開けなければ、次からは client の画面の中に描くように覚え直す（herdrPopups.fail）。
 //
 // req: FR-326
 func (s *Server) openPopupRetry(m mux.Mux, po mux.PopupOptions) error {
-	deadline := time.Now().Add(popupBusyTimeout)
+	deadline := time.Now().Add(popupBusyWait(m))
 	for {
 		ctx, cancel := context.WithTimeout(s.muxContext(), splitWait(m))
 		err := m.OpenPopup(ctx, po)

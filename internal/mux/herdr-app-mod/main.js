@@ -20,7 +20,8 @@
 //   focused      terminal の端末のペインにフォーカスがあるかを答える
 //   popup        argv を、herdr.* のラベルの無い端末として hc run で cwd に起動し、その端末を画面の中央の窓（openOverlay の kind window）に出して、
 //                キーボードをその端末へ移す。窓の大きさは、width と height の百分率を画面の大きさ（window()）から決める。
-//                この herdr app に窓が既に開いていれば、開かずに busy を返す（#452）
+//                この herdr app に窓が既に開いていれば、開かずに busy を返す（#452）。窓の上には、この mod の写し（props の popup）を
+//                帯として置く。帯はドラッグの取っ手と閉じるボタンで、窓が mod の外で消えたら（レイアウトを替えたなど）close で端末を終わらせる
 //   popup_close  依頼を書いた端末から開いた窓の端末を終わらせ、窓を閉じる
 //   hello        この mod の知っている op を ops で答える。本体は、popup を知っているかをこれで確かめ、知らなければ（古い mod）
 //                ポップアップを vi-imitation の画面の中に描く
@@ -28,7 +29,7 @@
 // herdr app が別のマシンの端末を扱うときは、hc をそのマシンで動かし（exec の on）、app の命令には machine/t7 の形の番地を渡す。
 // ラベルに書く番地は、そのマシンの番地（machine/ の前置きなし）にする。
 
-import { View } from "gpui-kit";
+import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import {
   checking,
@@ -38,6 +39,7 @@ import {
   machines,
   openOverlay,
   panes,
+  props,
   run,
   theme,
   window as appWindow,
@@ -70,9 +72,13 @@ const OPS = ["split", "focus", "focused", "popup", "popup_close", "hello"];
 // 窓の大きさの百分率の既定（依頼に無いとき。本体の既定と同じ 80%）と、画面の大きさを読めないときの窓の大きさ（論理ピクセル。仮）。
 const POPUP_PERCENT = 80;
 const POPUP_FALLBACK = { width: 960, height: 600 };
+// MOD は、この mod のフォルダーの名前である（使い方の mods/vi-imitation/）。窓の上の帯に、この mod の写しを props で置く。
+const MOD = "vi-imitation";
+// TITLE_PX は、窓の上の帯（ドラッグと閉じるボタン）の高さ（論理ピクセル）である。
+const TITLE_PX = 26;
 
-// popups は、この herdr app に開いている（開いている途中を含む）窓である。{ on, from, id, terminal, overlay } を持つ。
-// 写しの間で共有し、1 つの herdr app に窓を 1 つだけ開く（tmux と CLI の herdr のポップアップと同じ）。
+// popups は、この herdr app に開いている（開いている途中を含む）窓である。{ on, from, id, terminal, overlay, tab } を持つ。
+// 写しの間で共有し、1 つの herdr app に窓を 1 つだけ開く（どのタブの vi-imitation からの依頼でも同じ。使い方に書いた）。
 const popups = new Set();
 // watching は、ある写しが窓の端末の終わりを確かめている途中であることを表す（写しが重ねて閉じない）。
 let watching = false;
@@ -83,6 +89,14 @@ const inFlight = new Set();
 
 export default class ViImitation extends View {
   init(_props, cx) {
+    // 窓の上の帯の写し（props の popup に依頼の番号）は、依頼を探さず、ドラッグの取っ手と閉じるボタンだけを出す。
+    // 窓が mod の外で消えたとき（レイアウトを替えた、herdr app を閉じた）は close が呼ばれるので、そこで窓の端末を終わらせる。
+    const p = popupProps();
+    if (p) {
+      this.popup = String(p.popup);
+      this.title = typeof p.title === "string" ? p.title : "vi-imitation";
+      return;
+    }
     this.busy = false;
     this.served = 0;
     this.status = "待機中";
@@ -267,8 +281,39 @@ export default class ViImitation extends View {
     }
   }
 
+  // close は、この写しのブロックが消えるときに 1 回呼ばれる（AGENTS.md の Cleanup）。窓の上の帯の写しなら、窓が mod の外で消えた
+  // （レイアウトを替えた、閉じるボタン、herdr app を閉じた）ので、窓の端末を hc kill で終わらせて席を空ける。
+  // mod が窓を閉じたとき（中のコマンドが終わった、popup_close）は、席は既に空いていて何もしない。
+  async close(_cx) {
+    if (this.popup) await endPopup(this.popup);
+  }
+
   render(_cx) {
     const t = theme();
+    if (this.popup) {
+      // 帯を押すと窓をドラッグできる（帯は押下を止めない）。閉じるボタンだけは押下を止め、窓の端末を終わらせて窓を閉じる。
+      return h_flex()
+        .size_full()
+        .items_center()
+        .justify_between()
+        .px(8)
+        .bg(t.chrome)
+        .text_size(11)
+        .text_color(t.muted)
+        .child(this.title)
+        .child(
+          div()
+            .id("vi-imitation-popup-close")
+            .px(6)
+            .text_color(t.foreground)
+            .hover((s) => s.bg(t.hover))
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+            .on_click(() => {
+              endPopup(this.popup, true);
+            })
+            .child("×"),
+        );
+    }
     return h_flex()
       .size_full()
       .items_center()
@@ -308,7 +353,13 @@ async function paneOf(on, address) {
 async function openPopup(on, address, req) {
   if (popups.size > 0) return { busy: true, error: "a vi-imitation popup is already open" };
   if (!Array.isArray(req.argv) || req.argv.length === 0) return { error: "popup: empty argv" };
-  const seat = { on, from: address, id: req.id, terminal: null, overlay: null };
+  let tab = null;
+  try {
+    tab = focused()?.tab ?? null;
+  } catch {
+    tab = null;
+  }
+  const seat = { on, from: address, id: req.id, terminal: null, overlay: null, tab };
   popups.add(seat);
   try {
     const args = ["run", "--bg", "--json", "--no-parent", "--no-notify", "--rm", "--label", `${POPUP}=${req.id}`];
@@ -320,10 +371,17 @@ async function openPopup(on, address, req) {
     if (on && term.startsWith(`${on}/`)) term = term.slice(on.length + 1);
     seat.terminal = term;
     const qualTerm = on ? `${on}/${term}` : term;
+    // 上に帯（この mod の写し。ドラッグの取っ手と閉じるボタン。窓が消えたら close で端末を終わらせる）、下に端末を置く（AGENTS.md の Windows の例）。
     seat.overlay = await openOverlay({
       kind: "window",
       ...popupSize(req.width, req.height),
-      layout: { type: "block", content: { terminal: qualTerm } },
+      layout: {
+        type: "column",
+        children: [
+          { type: "block", size: { px: TITLE_PX }, content: { mod: MOD, props: { popup: req.id, title: "vi-imitation" } } },
+          { type: "block", content: { terminal: qualTerm } },
+        ],
+      },
     });
     await command("pane.focus", { terminal: qualTerm }).catch(() => {});
     return { terminal: term };
@@ -369,11 +427,50 @@ async function watchPopups() {
         continue;
       }
       if (alive) continue;
+      // 窓を閉じる前に、利用者がまだ窓（かペインの無いところ）にいて、開いたときと同じタブにいるかを見る。
+      // 窓の外を押して別のペインやタブへ移った利用者を、元の端末へ引き戻さない（#248 の部品のペインと同じ考え方）。
+      const back = stillInPopup(p);
       await closePopups((x) => x === p, false);
-      await command("pane.focus", { terminal: p.on ? `${p.on}/${p.from}` : p.from }).catch(() => {});
+      if (back) await command("pane.focus", { terminal: p.on ? `${p.on}/${p.from}` : p.from }).catch(() => {});
     }
   } finally {
     watching = false;
+  }
+}
+
+// stillInPopup は、今のフォーカスが窓 p の端末か、ペインの無いところ（窓の中のブロックなど）で、窓を開いたときと同じタブにあるかを返す。
+// 読めなければ戻さない。
+function stillInPopup(p) {
+  let f = null;
+  try {
+    f = focused();
+  } catch {
+    return false;
+  }
+  if (!f) return false;
+  if (p.tab != null && f.tab != null && f.tab !== p.tab) return false;
+  const term = p.on ? `${p.on}/${p.terminal}` : p.terminal;
+  return f.terminal === term || f.terminal === p.terminal || !f.pane;
+}
+
+// endPopup は、依頼の番号 id の窓の席を空け、窓の端末を hc kill で終わらせる。close なら窓も閉じる（閉じるボタン）。
+// 席が無ければ（mod が既に閉じた）何もしない。
+async function endPopup(id, close = false) {
+  for (const p of [...popups]) {
+    if (p.id !== id) continue;
+    popups.delete(p);
+    if (close && p.overlay != null) closeOverlayQuietly(p.overlay);
+    if (p.terminal) await hcRun(["kill", p.terminal], p.on).catch(() => {});
+  }
+}
+
+// popupProps は、この写しが窓の上の帯なら、その props（{ popup, title }）を返す。そうでなければ null を返す。
+function popupProps() {
+  try {
+    const p = props();
+    return p && p.popup != null ? p : null;
+  } catch {
+    return null;
   }
 }
 
