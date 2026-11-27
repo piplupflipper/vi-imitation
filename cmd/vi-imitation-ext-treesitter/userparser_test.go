@@ -202,6 +202,34 @@ func TestParseSettingsInherits(t *testing.T) {
 	}
 }
 
+// TestBuildKeyWithoutInherits は、継ぐパーサの無いパーサのビルドの鍵が、FR-328 より前と同じ値であることを確かめる。
+// 変わると、利用者が前にビルドしたパーサ（Python など）が、版を変えていなくても黙ってビルドし直しになる。
+// 期待値は、FR-328 より前の buildKey（コミット、path、queries の文字列を NUL で区切って sha256 にし、16 進の先頭 16 文字）で、
+// シェルの printf 'commit\0path\0...\0' | sha256sum で求めた。
+// 継ぐパーサがあれば、そのコミットで鍵が変わることも確かめる（FR-329）。
+//
+// req: FR-329
+func TestBuildKeyWithoutInherits(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	for _, c := range []struct {
+		spec parserSpec
+		want string
+	}{
+		{parserSpec{name: "python", path: "."}, "9d3cb9554df66184"},
+		{parserSpec{name: "ts", path: "typescript", queries: []querySource{{file: "queries/highlights.scm"}, {file: "extra.scm"}}}, "3c0ad4dd242d7be8"},
+	} {
+		if got := buildKey(c.spec, commit, nil); got != c.want {
+			t.Errorf("buildKey(%+v) = %s, want %s", c.spec, got, c.want)
+		}
+	}
+	spec := parserSpec{name: "ts", path: "typescript", queries: []querySource{{file: "queries/highlights.scm"}, {parser: "javascript", file: "queries/highlights.scm"}}}
+	k1 := buildKey(spec, commit, map[string]string{"javascript": strings.Repeat("a", 40)})
+	k2 := buildKey(spec, commit, map[string]string{"javascript": strings.Repeat("b", 40)})
+	if k1 == k2 {
+		t.Errorf("継ぐパーサのコミットが違っても鍵が同じ: %s", k1)
+	}
+}
+
 var (
 	jsonGrammarOnce sync.Once
 	jsonGrammarDir  string
