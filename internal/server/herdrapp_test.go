@@ -18,9 +18,17 @@ import (
 )
 
 // TestMain は、このテストの実行ファイルが偽の hc として起動されたら、偽の hc として動いて終わる（muxtest.RunIfHC）。
+// 調べるための記録（herdrTrace）は、利用者の ~/.local/state/vi-imitation でなく、空の一時ディレクトリに向ける（目印が無いので書かない）。
 func TestMain(m *testing.M) {
 	muxtest.RunIfHC()
-	os.Exit(m.Run())
+	dir, err := os.MkdirTemp("", "server-trace-")
+	if err != nil {
+		panic(err)
+	}
+	herdrTraceDir.Store(&dir)
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 // inHerdrApp は、環境変数を herdr app の端末 t7 の中にし、偽の hc を PATH に置く（#440）。

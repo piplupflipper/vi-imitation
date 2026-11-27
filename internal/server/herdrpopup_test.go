@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -242,6 +243,123 @@ func TestComponentPopupHerdrApp(t *testing.T) {
 	waitNoLabels(t, hc, "t7")
 	if got := servedOps(hc, "popup"); len(got) != 1 || got[0].Terminal != "t7" {
 		t.Errorf("popup の依頼 = %+v, want 端末 t7 に 1 つ", got)
+	}
+
+	// 窓が閉じた後の 2 回目と 3 回目も mod に頼む。herdr app ではキーボードが元のペインに残ることがあるので
+	// （2026-11-27 のオーナーの記録）、閉じるキーは元の client から打つ。
+	for n := 2; n <= 3; n++ {
+		sendKeys(t, c, ":h K<CR>")
+		w.waitPopups(t, n)
+		waitScreenText(t, w.screens, "K")
+		sendKeys(t, c, "<Esc>")
+		w.waitClosed(t, n)
+		waitNoLabels(t, hc, "t7")
+	}
+	if got := servedOps(hc, "popup"); len(got) != 3 {
+		t.Errorf("popup の依頼 = %d 個, want 3 個（窓を閉じた後も mod に頼む）", len(got))
+	}
+}
+
+// 調べるための記録は、目印のファイル herdr-app-mod.debug があるときだけ、herdr-app-server.log に 1 行の JSON で追記する。
+// herdr app の中で client が繋ぐと、そのペインを記録し、ポップアップを開くと、問いの答えと開いた結果を記録する。
+func TestHerdrTrace(t *testing.T) {
+	old := herdrTraceDir.Load()
+	dir := t.TempDir()
+	herdrTraceDir.Store(&dir)
+	t.Cleanup(func() { herdrTraceDir.Store(old) })
+	log := filepath.Join(dir, "herdr-app-server.log")
+	herdrTrace("x", "a", 1)
+	if _, err := os.Stat(log); err == nil {
+		t.Fatal("目印が無いのに書いた")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "herdr-app-mod.debug"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	hc := inHerdrApp(t)
+	w := newFakeWindows(t)
+	hc.ServeMod(t, w.handle)
+	c, _, srv, _ := startHerdrAppServerAt(t)
+	waitPopupReady(t, srv)
+	sendKeys(t, c, ":h K<CR>")
+	w.waitPopups(t, 1)
+	waitNoLabels(t, hc, "t7")
+	var b []byte
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var err error
+		if b, err = os.ReadFile(log); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), `"event":"opened"`) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var events []string
+	for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("1 行の JSON でない: %q", line)
+		}
+		events = append(events, m["event"].(string))
+		if m["event"] == "client" && m["pane"] != "t7" {
+			t.Errorf("client の記録 = %v, want pane t7", m)
+		}
+	}
+	for _, want := range []string{"client", "probe", "ready", "open", "opened"} {
+		if !slices.Contains(events, want) {
+			t.Errorf("記録 = %v, want %s を含む", events, want)
+		}
+	}
+}
+
+// 見比べでペインを割った後（元の client t7 と、割ったペインの client t9 の 2 つ）も、どちらの client の中央のポップアップも、
+// 窓を閉じた後に開き直すたびに mod に頼む（2026-11-27 のオーナーの確かめで、MrReview の見比べ中の 2 回目から頼まれなかった）。
+//
+// req: FR-325
+func TestComponentPopupHerdrAppAfterDiffSplit(t *testing.T) {
+	hc := inHerdrApp(t)
+	w := newFakeWindows(t)
+	clients := &modClients{}
+	t.Cleanup(clients.close)
+	var mu sync.Mutex
+	var split protocol.ClientConn
+	hc.ServeMod(t, func(term string, req muxtest.Request) muxtest.Reply {
+		if req.Op == "split" {
+			clients.connect(t, req.Argv, "t9")
+			mu.Lock()
+			split = clients.conns[len(clients.conns)-1]
+			mu.Unlock()
+			return muxtest.Reply{Terminal: "t9"}
+		}
+		return w.handle(term, req)
+	})
+	c, ch, srv, _ := startHerdrAppServerAt(t)
+	waitPopupReady(t, srv)
+	sendKeys(t, c, ":diffsplit b.txt<CR>")
+	waitScreenText(t, ch, "b.txt を別のペインで開いて見比べます")
+	waitDiffing(t, c, ch, "b.txt と既に見比べています")
+	waitNoLabels(t, hc, "t7")
+	mu.Lock()
+	sc := split
+	mu.Unlock()
+
+	n := 0
+	for _, who := range []struct {
+		conn protocol.ClientConn
+		term string
+	}{{c, "t7"}, {c, "t7"}, {sc, "t9"}, {sc, "t9"}, {c, "t7"}} {
+		n++
+		sendKeys(t, who.conn, ":h K<CR>")
+		got := w.waitPopups(t, n)
+		waitScreenText(t, w.screens, "K")
+		sendKeys(t, who.conn, "<Esc>")
+		w.waitClosed(t, n)
+		waitNoLabels(t, hc, who.term)
+		if s := servedOps(hc, "popup"); len(s) != n || s[n-1].Terminal != who.term {
+			t.Fatalf("%d 回目の popup の依頼 = %+v（窓 %+v）, want 端末 %s に頼む", n, s, got[n-1], who.term)
+		}
 	}
 }
 

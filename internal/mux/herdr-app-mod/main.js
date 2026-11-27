@@ -76,8 +76,6 @@ const POPUP_FALLBACK = { width: 960, height: 600 };
 const MOD = "vi-imitation";
 // TITLE_PX は、窓の上の帯（ドラッグと閉じるボタン）の高さ（論理ピクセル）である。
 const TITLE_PX = 26;
-// FOCUS_DELAY_MS は、窓を開いてから、キーボードを窓の端末へ移すかを確かめるまでの間である（仮）。
-const FOCUS_DELAY_MS = 300;
 
 // popups は、この herdr app に開いている（開いている途中を含む）窓である。{ on, from, id, terminal, overlay, tab } を持つ。
 // 写しの間で共有し、1 つの herdr app に窓を 1 つだけ開く（どのタブの vi-imitation からの依頼でも同じ。使い方に書いた）。
@@ -377,7 +375,7 @@ async function paneOf(on, address) {
 // req.argv を hc run --bg で起動する。--no-parent は、起動した端末を元の端末の子（sub-agent）として扱わせず、元の端末の
 // プログラムが終わっても道連れにしないため、--no-notify は元の端末へ知らせの文字を打ち込ませないため、--rm は終わった端末を
 // hc ls から消して終わりに気づくためである。herdr.* のラベルを付けないので、端末はタブに取り込まれない。
-// 起動した端末を窓の中のブロックに出す。キーボードは、次の探索で focusPopup が移す（移せなくても窓は開いたままにする）。
+// 起動した端末を窓の中のブロックに出す。キーボードを窓へ移す命令は呼ばない（下の注）。
 async function openPopup(on, address, req) {
   if (popups.size > 0) return { busy: true, error: "a vi-imitation popup is already open" };
   if (!Array.isArray(req.argv) || req.argv.length === 0) return { error: "popup: empty argv" };
@@ -418,9 +416,11 @@ async function openPopup(on, address, req) {
       throw e;
     }
     record(on, "overlay", "openOverlay", spec, seat.overlay, undefined);
-    // キーボードは、窓のブロックが描かれた後（次の探索）に、まだ窓の端末に無ければ移す（focusPopup）。開いた直後に pane.focus を呼ぶと、
-    // 窓の端末のブロックがまだ無く失敗し、herdr app がトーストに出す（2026-11-27 にオーナーの herdr app で「pane.focus failed」）。
-    seat.focusAt = Date.now() + FOCUS_DELAY_MS;
+    // キーボードを窓の端末へ移す命令は呼ばない。AGENTS.md の pane.focus {terminal} は「レイアウトの端末のブロック、無ければモデルのペイン」を
+    // 選ぶとあり、窓（openOverlay）の中のブロックは対象に書かれていない。2026-11-27 のオーナーの記録では、窓の端末へ pane.focus を呼ぶと、
+    // run は null を返し、herdr app は「pane.focus failed」をトーストに出し、focused() は元の端末のままだった。
+    // 窓の端末へは、利用者が窓を押せばキーボードが移る（AGENTS.md の「Clicking a terminal block focuses it too」）。
+    // キーボードが元の端末に残っていても、中央のポップアップの部品は元の client のフォーカスのあるポップアップなので、元の端末で打ったキーで動く。
     return { terminal: term };
   } catch (e) {
     popups.delete(seat);
@@ -457,7 +457,6 @@ async function watchPopups() {
     for (const p of [...popups]) {
       if (p.overlay == null) continue; // 開いている途中
       await withTrace({ on: p.on, id: p.id, op: "watch", from: p.from }, async () => {
-        await focusPopup(p);
         let alive = true;
         try {
           const out = await hcRun(["ls", "--json", "--label", `${POPUP}=${p.id}`], p.on);
@@ -480,22 +479,6 @@ async function watchPopups() {
   }
 }
 
-// focusPopup は、窓 p を開いてから FOCUS_DELAY_MS が経っていれば、キーボードを窓の端末へ移す（1 回だけ）。
-// 既に窓の端末にあれば（herdr app が窓にキーボードを渡した）呼ばない。利用者が窓を開いた後に別のペインへ移っていれば、引き戻さない。
-async function focusPopup(p) {
-  if (p.focusAt == null || Date.now() < p.focusAt) return;
-  p.focusAt = null;
-  const term = p.on ? `${p.on}/${p.terminal}` : p.terminal;
-  let f = null;
-  try {
-    f = focused();
-  } catch {
-    f = null;
-  }
-  if (f && (f.terminal === term || f.terminal === p.terminal)) return;
-  if (f && f.terminal !== (p.on ? `${p.on}/${p.from}` : p.from) && f.terminal !== p.from) return;
-  await command("pane.focus", { terminal: term }).catch(() => {});
-}
 
 // paneShowing は、マシン on の端末 address を出しているペインの ID を panes() から返す。無ければ null を返す。
 function paneShowing(on, address) {
@@ -647,14 +630,16 @@ async function hcLabels(address, on) {
 // command は、herdr app の命令を動かす。{ error } が返れば誤りにする。
 async function command(name, args) {
   const on = trace.cur.on;
+  // 命令が効いたかを見られるように、呼ぶ前の focused() も記録に残す（record は呼んだ後の値を focused に書く）。
+  const before = traceFocused(on);
   let r;
   try {
     r = await run(name, args);
   } catch (e) {
-    record(on, "run", name, args, undefined, errorText(e));
+    record(on, "run", name, args, undefined, errorText(e), before);
     throw e;
   }
-  record(on, "run", name, args, r, undefined);
+  record(on, "run", name, args, r, undefined, before);
   if (r && typeof r === "object" && r.error) throw new Error(`${name}: ${r.error}`);
   return r;
 }
@@ -709,8 +694,19 @@ async function refreshTrace(on) {
   trace.marks.set(key, { on: enabled, until: Date.now() + TRACE_CHECK_MS });
 }
 
+// traceFocused は、マシン on で目印があれば今の focused() を返す。無ければ undefined を返す（記録しないときは読まない）。
+function traceFocused(on) {
+  if (!trace.marks.get(on ?? "")?.on) return undefined;
+  try {
+    return focused();
+  } catch (e) {
+    return { error: errorText(e) };
+  }
+}
+
 // record は、マシン on で目印があれば、命令 1 回の記録を溜める。記録を作れなくても投げない。
-function record(on, kind, name, args, result, error) {
+// focused には記録するとき（命令の後）の focused() を書く。before を渡したら（run）、呼ぶ前の値を focused_before に書く。
+function record(on, kind, name, args, result, error, before) {
   const key = on ?? "";
   if (!trace.marks.get(key)?.on) return;
   try {
@@ -749,6 +745,7 @@ function record(on, kind, name, args, result, error) {
       args: cut(args),
       result: cut(result),
       error,
+      focused_before: before,
       focused: f,
       panes: related,
     });

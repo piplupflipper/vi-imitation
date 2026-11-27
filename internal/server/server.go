@@ -255,9 +255,12 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, first protocol.Serv
 	if err != nil {
 		return err
 	}
-	if s.herdrPopups != nil && hello.Pane != "" {
-		// 1 つのプロセスの構成の最初の client は admit を通らないので、ここでも問い始める（問いの途中なら重ねない）。
-		s.herdrPopups.prime(hello.Pane)
+	if s.herdrPopups != nil {
+		herdrTrace("client", "pane", hello.Pane, "files", hello.Files, "first", true)
+		if hello.Pane != "" {
+			// 1 つのプロセスの構成の最初の client は admit を通らないので、ここでも問い始める（問いの途中なら重ねない）。
+			s.herdrPopups.prime(hello.Pane)
+		}
 	}
 	id := editor.ClientID(s.nextID.Add(1))
 	s.client.attach(id, conn, hello)
@@ -482,9 +485,13 @@ func (s *Server) admit(a *acceptor, conn protocol.ServerConn, pc *progressConn) 
 		s.serveComponent(a, conn, h)
 		return
 	}
-	if s.herdrPopups != nil && h.Pane != "" {
-		// 最初のポップアップの前に、herdr app の mod がポップアップを知っているかを問うておく（#452）。
-		s.herdrPopups.prime(h.Pane)
+	if s.herdrPopups != nil {
+		// ペインを知らせない client は、中央のポップアップを mod に頼まない（editor の requestPopup）ので、調べる記録に残す。
+		herdrTrace("client", "pane", h.Pane, "files", h.Files)
+		if h.Pane != "" {
+			// 最初のポップアップの前に、herdr app の mod がポップアップを知っているかを問うておく（#452）。
+			s.herdrPopups.prime(h.Pane)
+		}
 	}
 	select {
 	case a.joined <- joined{conn: conn, hello: h}:

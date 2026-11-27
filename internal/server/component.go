@@ -105,10 +105,17 @@ func (s *Server) openPopup(from string, view uint64, dir string, opts editor.Pop
 // req: FR-326
 func (s *Server) openPopupRetry(m mux.Mux, po mux.PopupOptions) error {
 	deadline := time.Now().Add(popupBusyWait(m))
+	herdrApp := m.Kind() == mux.KindHerdrApp
 	for {
+		if herdrApp {
+			herdrTrace("open", "target", po.Target, "argv", po.Command.Args)
+		}
 		ctx, cancel := context.WithTimeout(s.muxContext(), splitWait(m))
 		err := m.OpenPopup(ctx, po)
 		cancel()
+		if herdrApp {
+			herdrTrace("opened", "target", po.Target, "err", err)
+		}
 		if !errors.Is(err, mux.ErrPopupBusy) || time.Now().After(deadline) {
 			if err != nil && s.herdrPopups != nil {
 				s.herdrPopups.fail(err)
@@ -224,7 +231,11 @@ func (s *Server) serveComponent(a *acceptor, conn protocol.ServerConn, h protoco
 	t := s.newTerm()
 	t.attach(editor.ClientID(s.nextID.Add(1)), conn, h)
 	s.track(t)
-	if err := s.ed.AttachComponent(t, editor.ComponentInfo{View: h.View, Pane: h.Kind == protocol.KindPane, MuxPane: h.Pane}); err != nil {
+	err := s.ed.AttachComponent(t, editor.ComponentInfo{View: h.View, Pane: h.Kind == protocol.KindPane, MuxPane: h.Pane})
+	if s.herdrPopups != nil {
+		herdrTrace("component", "view", h.View, "pane", h.Pane, "err", err)
+	}
+	if err != nil {
 		s.log.Info("部品の client を断った", "kind", h.Kind, "view", h.View, "err", err)
 		t.end("")
 		return
