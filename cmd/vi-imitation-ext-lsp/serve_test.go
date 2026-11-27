@@ -116,6 +116,8 @@ type hostOptions struct {
 	secondExtra map[string]any
 	// settings は、settings の最上位に足す項目である。
 	settings map[string]any
+	// servers は、servers に足す言語サーバーの設定である（鍵は言語サーバーの名前）。
+	servers map[string]any
 	// mise は、空でなければ client の mise（mise の実行ファイル）を置き換える。
 	mise string
 	// inlayInterval は、正なら client の inlayInterval（インレイヒントの問い合わせの間隔）を置き換える。
@@ -170,6 +172,7 @@ func startHost(t *testing.T, o hostOptions) *host {
 		maps.Copy(second, o.secondExtra)
 		servers[o.secondFileType] = second
 	}
+	maps.Copy(servers, o.servers)
 	settings := map[string]any{"servers": servers}
 	maps.Copy(settings, o.settings)
 	if o.maxRestarts >= 0 {
@@ -311,7 +314,16 @@ func receive[T any](t *testing.T, ch <-chan T, what string) T {
 // open は、ファイル name を書き、その全文 text（末尾の改行を除いたもの）でバッファ id を開く。
 func (h *host) open(id ext.BufferID, name, text string) string {
 	h.t.Helper()
+	return h.openAs(id, name, "go", text)
+}
+
+// openAs は、ファイルの種類を fileType にした open である。name の途中のディレクトリは作る。
+func (h *host) openAs(id ext.BufferID, name, fileType, text string) string {
+	h.t.Helper()
 	path := filepath.Join(h.dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		h.t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(text+"\n"), 0o600); err != nil {
 		h.t.Fatal(err)
 	}
@@ -319,7 +331,7 @@ func (h *host) open(id ext.BufferID, name, text string) string {
 	h.mu.Lock()
 	h.bufs[id] = &simBuffer{path: path, text: text, version: 1}
 	h.mu.Unlock()
-	if err := h.conn.Notify(ext.MethodBufferOpen, ext.BufferOpenParams{Buffer: id, Path: path, FileType: "go", Version: 1, Text: text}); err != nil {
+	if err := h.conn.Notify(ext.MethodBufferOpen, ext.BufferOpenParams{Buffer: id, Path: path, FileType: fileType, Version: 1, Text: text}); err != nil {
 		h.t.Fatal(err)
 	}
 	return path
@@ -455,6 +467,8 @@ func (h *host) diagnosticsAt(id ext.BufferID, v ext.Version) ext.DiagnosticSetPa
 type logEntry struct {
 	Kind  string          `json:"kind"`
 	Value json.RawMessage `json:"value"`
+	// Pid は、その行を書いた fakels のプロセス ID である。
+	Pid int `json:"pid"`
 }
 
 // secondLogPath は、hostOptions.secondFileType の fakels のログのパスである。
@@ -1417,12 +1431,15 @@ func (h *host) shutdown() time.Duration {
 	return time.Since(start)
 }
 
-// serverProc は、ファイルの種類 go の言語サーバーのプロセスを返す。
+// serverProc は、言語サーバー go の、作業のディレクトリを根にした client の言語サーバーのプロセスを返す。
 func (h *host) serverProc() *proc {
 	h.t.Helper()
 	h.x.mu.Lock()
-	c := h.x.clients["go"]
+	c := h.x.clients[clientKey{server: "go", root: h.dir}]
 	h.x.mu.Unlock()
+	if c == nil {
+		h.t.Fatal("no client for the language server go")
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.proc == nil {

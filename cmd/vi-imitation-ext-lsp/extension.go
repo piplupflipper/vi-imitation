@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -32,8 +33,14 @@ var providedOps = []ext.Operation{
 // その期限の中で言語サーバーを止め終えるように、それより短くする。値は仮。
 const stopTimeout = 2 * time.Second
 
+// clientKey は、client を見分ける、言語サーバーの名前と根の組である（FR-320）。
+type clientKey struct {
+	server string
+	root   string
+}
+
 // extension は、LSP の拡張機能の全体である。
-// ファイルの種類ごとの client を持ち、ext/server のフックとハンドラーを client へ振り分ける。
+// 言語サーバーの名前と根の組ごとの client を持ち、ext/server のフックとハンドラーを client へ振り分ける。
 type extension struct {
 	srv *server.Server
 	log *log.Logger
@@ -41,10 +48,17 @@ type extension struct {
 	ctx context.Context
 	// requestTimeout は、sync が false のコマンドが言語サーバーの応答を待つ時間の上限である。
 	requestTimeout time.Duration
+	// cfg は、initialize で読んだ設定である。その後は変えない。
+	cfg *config
 
-	// mu は clients と guided を守る。clients は initialize で作り、その後は変えない。
+	// mu は clients と guided を守る。clients は、ファイルを開いて新しい組が要るときに足し（ループ）、
+	// lsp.root で受け持つ文書が無くなった client を外す（ループ）。
 	mu      sync.Mutex
-	clients map[string]*client
+	clients map[clientKey]*client
+	// retiring は、lsp.root で受け持つ文書が無くなり、止めている途中の client の数である。stop が待つ。
+	retiring sync.WaitGroup
+	// pins は、言語サーバーの名前から、lsp.root で指定した根の一覧への対応である。ループだけが触る（FR-322）。
+	pins map[string][]string
 	// guided は、言語サーバーの入れ方を案内した実行ファイルと道具の ID の組である（client.guide。FR-143）。
 	guided map[string]bool
 	// tune は、テストが client の待ち時間などを変えるための関数である。nil なら何もしない。
@@ -64,6 +78,8 @@ func newExtension(ctx context.Context) *extension {
 		ctx:            ctx,
 		requestTimeout: defaultRequestTimeout,
 		byBuffer:       make(map[ext.BufferID]*client),
+		clients:        make(map[clientKey]*client),
+		pins:           make(map[string][]string),
 	}
 	x.srv.ErrorLog = x.log
 	x.srv.OnInitialize(x.initialize)
@@ -95,6 +111,7 @@ func newExtension(ctx context.Context) *extension {
 	x.srv.ProviderAsync(ext.OpRename, x.rename)
 	x.srv.BufferWillSaveAsync(x.willSave)
 	x.srv.Command(cmdInlayHintsToggle, x.toggleInlayHints)
+	x.srv.Command(cmdRoot, x.rootCommand)
 	x.srv.OnShutdown(func(context.Context, *server.ShutdownEvent) { x.stop() })
 	return x
 }
@@ -122,6 +139,7 @@ func (x *extension) stop() {
 		wg.Go(func() { c.stop(ctx) })
 	}
 	wg.Wait()
+	x.retiring.Wait()
 }
 
 func (x *extension) logf(format string, args ...any) { x.log.Printf(format, args...) }
@@ -154,45 +172,97 @@ func (x *extension) setDiagnostics(p ext.DiagnosticSetParams) {
 	}
 }
 
-// initialize は、initialize の settings を読み、ファイルの種類ごとの client を作る。
+// initialize は、initialize の settings を読む。client は、ファイルを開いたときに、言語サーバーの名前と根の組ごとに作る。
 // 設定に誤りがあれば initialize に失敗を応答する。
 func (x *extension) initialize(_ context.Context, e *server.InitializeEvent) error {
 	cfg, err := parseSettings(e.Settings)
 	if err != nil {
 		return err
 	}
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	x.clients = make(map[string]*client, len(cfg.servers))
-	for ft, sc := range cfg.servers {
-		c := newClient(x, ft, sc, cfg.maxRestarts)
-		if x.tune != nil {
-			x.tune(c)
-		}
-		x.clients[ft] = c
-	}
+	x.cfg = cfg
 	return nil
 }
 
-// bufferOpen は、設定に言語サーバーのあるファイルの種類のバッファを、その client で同期する。
+// serverFor は、ファイルの種類 fileType を受け持つ言語サーバーの名前と設定を返す。無ければ nil を返す。
+func (x *extension) serverFor(fileType string) (string, *serverConfig) {
+	if x.cfg == nil {
+		return "", nil
+	}
+	name, ok := x.cfg.byFileType[fileType]
+	if !ok {
+		return "", nil
+	}
+	return name, x.cfg.servers[name]
+}
+
+// rootFor は、言語サーバー name（設定 sc）の、パス path のファイルのワークスペースの根を返す。ループから呼ぶ。
+// lsp.root で指定した根のうち path を含むものがあれば、いちばん深いものを返す（FR-322）。
+// 無ければ、path のディレクトリから親へ設定の rootMarkers をたどって決める（findRoot）。
+//
+// req: FR-320, FR-322
+func (x *extension) rootFor(name string, sc *serverConfig, path string) string {
+	best := ""
+	for _, r := range x.pins[name] {
+		if within(path, r) && len(r) > len(best) {
+			best = r
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return findRoot(path, sc.RootMarkers)
+}
+
+// within は、パス path がディレクトリ dir の下（dir そのものを含む）にあるかを返す。どちらも filepath.Clean した絶対パスとして比べる。
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
+}
+
+// clientFor は、ファイルの種類 fileType、パス path のファイルを受け持つ client を返す。ループから呼ぶ。
+// 言語サーバーの名前と根の組の client が無ければ作る（言語サーバーは、最初の文書を開いたときに起動する）。
+// ファイルの種類を受け持つ言語サーバーが無いか、パスが空なら nil を返す。
+//
+// req: FR-320
+func (x *extension) clientFor(fileType, path string) *client {
+	name, sc := x.serverFor(fileType)
+	if sc == nil || path == "" {
+		return nil
+	}
+	return x.clientAt(name, x.rootFor(name, sc, path))
+}
+
+// clientAt は、言語サーバー name の根 root の client を返す。無ければ作る。
+func (x *extension) clientAt(name, root string) *client {
+	key := clientKey{server: name, root: root}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if c := x.clients[key]; c != nil {
+		return c
+	}
+	c := newClient(x, name, root, x.cfg.servers[name], x.cfg.maxRestarts)
+	if x.tune != nil {
+		x.tune(c)
+	}
+	x.clients[key] = c
+	return c
+}
+
+// bufferOpen は、設定に言語サーバーのあるファイルの種類のバッファを、言語サーバーの名前と根の組の client で同期する。
 // ファイルに対応しないバッファ（パスが空）は、言語サーバーへ URI で示せないので同期しない。
 //
 // 本体は、バッファのファイルの種類かパスが変わると、buffer/open を送り直す（:set filetype=、別名での保存。exthost の UpdateBuffer）。
-// 同期していた client と違う client になったか、パスが変わったら、前の client から外し（didClose）、その client の診断を消す（client.detach）。
+// 同期していた client と違う client になったか、パスか languageId が変わったら、前の client から外し（didClose）、
+// その client の診断を消す（client.detach）。
 // その後、新しい client があれば、新しい文書として didOpen を送る。
 // パスが変わったときに外し直すのは、言語サーバーの文書は URI で区別されるので、全文の送り直しでは新しいパスに移せないためである。
 //
-// req: FR-30
+// req: FR-30, FR-320
 func (x *extension) bufferOpen(_ context.Context, e *server.BufferOpenEvent) {
 	b := e.Buffer
-	x.mu.Lock()
-	c := x.clients[b.FileType()]
-	x.mu.Unlock()
-	if b.Path() == "" {
-		c = nil
-	}
+	c := x.clientFor(b.FileType(), b.Path())
 	old := x.byBuffer[b.ID()]
-	if old != nil && (old != c || !old.syncs(b.ID(), b.Path())) {
+	if old != nil && (old != c || !old.syncs(b.ID(), b.Path(), b.FileType())) {
 		old.detach(b)
 		delete(x.byBuffer, b.ID())
 		old = nil

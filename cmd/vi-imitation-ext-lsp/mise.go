@@ -105,7 +105,7 @@ func (c *client) prepare(ctx context.Context, root string) (cmd command, retry b
 // guide は、言語サーバーの入れ方を message/show で案内する。notes は、入れ方の後ろに置く説明である。
 // メッセージの行は画面の幅で切れるので、利用者が打つ入れ方（mise use -g …）を前に置き、長くなりうる説明（shim のパスなど）を後ろに置く
 // （PR #281 の再レビューの推奨 2）。
-// 同じ実行ファイルと道具の ID の案内は、拡張機能が動いている間に 2 回出さない（別のファイルの種類の client からも）。
+// 同じ実行ファイルと道具の ID の案内は、拡張機能が動いている間に 2 回出さない（別の言語サーバーの名前や根の client からも）。
 //
 // req: FR-143
 func (c *client) guide(notes ...string) {
@@ -307,9 +307,9 @@ func (c *client) miseLine(line string, last time.Time) bool {
 }
 
 // miseToken は、mise に言語サーバーを入れさせる間の進み具合の識別子である。入れるのは client ごとに 1 つずつなので、
-// ファイルの種類で分ける。
+// 言語サーバーの名前と根で分ける（同じ言語サーバーの、根の違う client が同時に入れさせうる。FR-320）。
 func (c *client) miseToken() string {
-	return "mise/" + c.fileType
+	return "mise/" + c.server + "/" + c.root
 }
 
 // lineWriter は、子プロセスの出力を行に分け、空でない行ごとに line を呼ぶ io.Writer である。

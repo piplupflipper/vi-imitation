@@ -213,7 +213,7 @@ func TestParseSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.servers["go"] != nil || c.servers["rust"].LanguageID != "rust" || c.maxRestarts != 0 {
+	if c.servers["go"] != nil || c.servers["rust"].languageID("rust") != "rust" || c.byFileType["rust"] != "rust" || c.maxRestarts != 0 {
 		t.Errorf("settings = %+v", c)
 	}
 	if !c.servers["rust"].formatOnSave() || c.servers["rust"].tabSize() != 4 {
@@ -320,9 +320,13 @@ func TestConfigExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	py := c.servers["python"]
+	py := c.servers[c.byFileType["python"]]
 	if py == nil || py.Command != "pyright-langserver" || !strings.HasPrefix(py.Mise, "npm:pyright@") || py.autoInstall() {
-		t.Errorf("python = %+v, want pyright with a mise tool and no autoInstall", py)
+		t.Fatalf("python = %+v, want pyright with a mise tool and no autoInstall", py)
+	}
+	// 根の仮想環境の python を pyright へ渡す（#451）。
+	if py.PythonVenvSetting != "python.pythonPath" {
+		t.Errorf("python: pythonVenvSetting = %q, want python.pythonPath", py.PythonVenvSetting)
 	}
 	if c.servers["go"] == nil {
 		t.Error("the default go server is dropped")
@@ -478,16 +482,22 @@ func TestManifest(t *testing.T) {
 		t.Errorf("manifest = %+v", m)
 	}
 	// 段階 2 のコマンド（lsp.definition など）は、provides で名乗る本体の操作に置き換えた（#203）。
-	// コマンドは、本体の操作に無いインレイヒントの切り替え（FR-257）だけである。
-	if len(m.Contributes.Commands) != 1 || m.Contributes.Commands[0].ID != cmdInlayHintsToggle {
-		t.Errorf("commands = %v, want only %s", m.Contributes.Commands, cmdInlayHintsToggle)
+	// コマンドは、本体の操作に無いインレイヒントの切り替え（FR-257）と、根の指定（FR-322）だけである。
+	var ids []string
+	for _, c := range m.Contributes.Commands {
+		ids = append(ids, c.ID)
+	}
+	if want := []string{cmdInlayHintsToggle, cmdRoot}; !slices.Equal(ids, want) {
+		t.Errorf("commands = %v, want %v", ids, want)
 	}
 	if !slices.Equal(m.Provides, providedOps) {
 		t.Errorf("provides = %v, want %v", m.Provides, providedOps)
 	}
-	for ft := range defaultServers() {
-		if !slices.Contains(m.Activation, ext.Activation{On: ext.ActivationFileType, Pattern: ft}) {
-			t.Errorf("no filetype activation for the default server %q", ft)
+	for _, sc := range defaultServers() {
+		for _, ft := range sc.FileTypes {
+			if !slices.Contains(m.Activation, ext.Activation{On: ext.ActivationFileType, Pattern: ft}) {
+				t.Errorf("no filetype activation for the default file type %q", ft)
+			}
 		}
 	}
 }

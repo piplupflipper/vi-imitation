@@ -13,8 +13,9 @@ import (
 //
 // initialize で window.workDoneProgress を申し出る（clientCapabilities）。サーバーが window/workDoneProgress/create で作る識別子は
 // 受け付けるだけで覚えず（serverRequest）、$/progress の begin で覚え、end で忘れる。
-// 本体へ送る識別子は、ファイルの種類と、言語サーバーのプロセスの番号（proc.gen）と、サーバーの識別子の JSON をつないだものにする。
-// 同じ拡張機能の中で、ファイルの種類ごとの言語サーバーと、再起動の前後の言語サーバーの識別子が重ならないようにするためである。
+// 本体へ送る識別子は、言語サーバーの名前と、言語サーバーのプロセスの番号（proc.gen）と、サーバーの識別子の JSON をつないだものにする。
+// 同じ拡張機能の中で、言語サーバーと根の組ごとのプロセスと、再起動の前後の言語サーバーの識別子が重ならないようにするためである
+// （プロセスの番号は、根の違うプロセスでも重ならない）。
 // 表題は、言語サーバーの名前と、サーバーの表題をつないだもの（"gopls: Setting up workspace"）にする。
 // 言語サーバーのプロセスが終わったら、終わっていない進み具合をすべて end で終える（client.watch）。
 //
@@ -58,7 +59,7 @@ func (c *client) progress(p *proc, params progressParams) {
 	if v.Percentage != nil && out.Kind != ext.ProgressEnd {
 		out.Percentage = ext.Percent(int(math.Round(*v.Percentage)))
 	}
-	out.Token = fmt.Sprintf("lsp/%s/%d/%s", c.fileType, p.gen, params.Token)
+	out.Token = fmt.Sprintf("lsp/%s/%d/%s", c.server, p.gen, params.Token)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

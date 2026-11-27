@@ -18,7 +18,9 @@
 //     -inlay-delay の分だけ応答を遅らせ、取り消されたら "inlayHint cancelled" の行を書く
 //
 // 受け取ったメッセージと、各時点の文書の全文は、-log のファイルへ JSON の行で書き足す。
-// 起動したときに、自分と親（拡張機能）のプロセス ID を "start" の行で書く。
+// 起動したときに、自分と親（拡張機能）のプロセス ID を "start" の行で書く。どの行にも、書いたプロセスの ID を pid に付ける
+// （根ごとに起動した複数のプロセスが同じログに書くため）。
+// initialized を受け取ると、-config-sections の section を workspace/configuration で問い合わせ、答えを "configuration result" の行に書く。
 // -linger なら、接続が閉じても終わらない（拡張機能が強制終了されたときに残らないことを確かめるのに使う）。
 package main
 
@@ -54,6 +56,7 @@ var (
 	progressFlag = flag.Bool("progress", false, "クライアントが window.workDoneProgress を申し出たら、initialized の後に進み具合（$/progress）を送る")
 	inlayFlag    = flag.Bool("inlay", false, "textDocument/inlayHint に答える")
 	inlayDelay   = flag.Duration("inlay-delay", 0, "textDocument/inlayHint の応答を遅らせる時間")
+	sections     = flag.String("config-sections", "fake,other", "initialized の後に workspace/configuration で問い合わせる section（, で区切る）")
 )
 
 // hintGen は、インレイヒントのラベルに付ける世代である（-inlay の doc）。mu で守る。
@@ -130,7 +133,8 @@ func logEntry(kind string, v any) {
 	if logFile == nil {
 		return
 	}
-	data, _ := json.Marshal(map[string]any{"kind": kind, "value": v})
+	// pid は、同じログに書く複数のプロセス（根ごとの言語サーバー）を見分けるために付ける。
+	data, _ := json.Marshal(map[string]any{"kind": kind, "value": v, "pid": os.Getpid()})
 	_, _ = logFile.Write(append(data, '\n'))
 }
 
@@ -426,8 +430,11 @@ func notification(_ context.Context, n *rpc.Notification) {
 	case "initialized":
 		go func() {
 			var res json.RawMessage
-			err := conn.Call(context.Background(), "workspace/configuration",
-				map[string]any{"items": []map[string]any{{"section": "fake"}, {"section": "other"}}}, &res)
+			var items []map[string]any
+			for s := range strings.SplitSeq(*sections, ",") {
+				items = append(items, map[string]any{"section": s})
+			}
+			err := conn.Call(context.Background(), "workspace/configuration", map[string]any{"items": items}, &res)
 			if err != nil {
 				logEntry("configuration error", err.Error())
 				return
