@@ -76,6 +76,8 @@ const POPUP_FALLBACK = { width: 960, height: 600 };
 const MOD = "vi-imitation";
 // TITLE_PX は、窓の上の帯（ドラッグと閉じるボタン）の高さ（論理ピクセル）である。
 const TITLE_PX = 26;
+// FOCUS_DELAY_MS は、窓を開いてから、キーボードを窓の端末へ移すかを確かめるまでの間である（仮）。
+const FOCUS_DELAY_MS = 300;
 
 // popups は、この herdr app に開いている（開いている途中を含む）窓である。{ on, from, id, terminal, overlay, tab } を持つ。
 // 写しの間で共有し、1 つの herdr app に窓を 1 つだけ開く（どのタブの vi-imitation からの依頼でも同じ。使い方に書いた）。
@@ -164,7 +166,14 @@ export default class ViImitation extends View {
     const terminals = JSON.parse(out).terminals ?? [];
     if (terminals.length > 0) this.lastActive = Date.now();
     for (const t of terminals) {
-      await this.serveTerminal(on, t.address);
+      try {
+        await this.serveTerminal(on, t.address);
+      } catch (e) {
+        // 1 つの端末の誤り（hc ls の後に終わった端末の hc get など）で、このマシンのほかの端末の依頼を止めない。
+        // 投げ上げると poll がマシンごと FAIL_BACKOFF_MS の間探さなくなり、その間の依頼を誰も引き受けない
+        // （2026-11-27 にオーナーの herdr app で、見比べの左のペインからの popup の依頼が引き受けられずに残った。#452）。
+        this.status = `${t.address}: ${errorText(e)}`;
+      }
     }
   }
 
@@ -260,9 +269,12 @@ export default class ViImitation extends View {
         }
         return reply;
       }
-      case "focus":
-        await command("pane.focus", { terminal: qual(req.terminal) });
+      case "focus": {
+        // ペインが panes() にあればペインを指す。無ければ（レイアウトのブロックなど）端末の番地で頼む。
+        const pane = paneShowing(on, req.terminal);
+        await command("pane.focus", pane ? { pane } : { terminal: qual(req.terminal) });
         return {};
+      }
       case "focused": {
         const f = focused();
         const t = f?.terminal;
@@ -349,7 +361,7 @@ async function paneOf(on, address) {
 // req.argv を hc run --bg で起動する。--no-parent は、起動した端末を元の端末の子（sub-agent）として扱わせず、元の端末の
 // プログラムが終わっても道連れにしないため、--no-notify は元の端末へ知らせの文字を打ち込ませないため、--rm は終わった端末を
 // hc ls から消して終わりに気づくためである。herdr.* のラベルを付けないので、端末はタブに取り込まれない。
-// 起動した端末を窓の中のブロックに出し、pane.focus {terminal} でキーボードをその端末へ移す（移せなくても窓は開いたままにする）。
+// 起動した端末を窓の中のブロックに出す。キーボードは、次の探索で focusPopup が移す（移せなくても窓は開いたままにする）。
 async function openPopup(on, address, req) {
   if (popups.size > 0) return { busy: true, error: "a vi-imitation popup is already open" };
   if (!Array.isArray(req.argv) || req.argv.length === 0) return { error: "popup: empty argv" };
@@ -383,7 +395,9 @@ async function openPopup(on, address, req) {
         ],
       },
     });
-    await command("pane.focus", { terminal: qualTerm }).catch(() => {});
+    // キーボードは、窓のブロックが描かれた後（次の探索）に、まだ窓の端末に無ければ移す（focusPopup）。開いた直後に pane.focus を呼ぶと、
+    // 窓の端末のブロックがまだ無く失敗し、herdr app がトーストに出す（2026-11-27 にオーナーの herdr app で「pane.focus failed」）。
+    seat.focusAt = Date.now() + FOCUS_DELAY_MS;
     return { terminal: term };
   } catch (e) {
     popups.delete(seat);
@@ -419,6 +433,7 @@ async function watchPopups() {
   try {
     for (const p of [...popups]) {
       if (p.overlay == null) continue; // 開いている途中
+      await focusPopup(p);
       let alive = true;
       try {
         const out = await hcRun(["ls", "--json", "--label", `${POPUP}=${p.id}`], p.on);
@@ -431,10 +446,39 @@ async function watchPopups() {
       // 窓の外を押して別のペインやタブへ移った利用者を、元の端末へ引き戻さない（#248 の部品のペインと同じ考え方）。
       const back = stillInPopup(p);
       await closePopups((x) => x === p, false);
-      if (back) await command("pane.focus", { terminal: p.on ? `${p.on}/${p.from}` : p.from }).catch(() => {});
+      // 元の端末を出すペインがまだあるときだけ、そのペインを指して戻す（無いペインへの pane.focus は失敗してトーストになる）。
+      const pane = back ? paneShowing(p.on, p.from) : null;
+      if (pane) await command("pane.focus", { pane }).catch(() => {});
     }
   } finally {
     watching = false;
+  }
+}
+
+// focusPopup は、窓 p を開いてから FOCUS_DELAY_MS が経っていれば、キーボードを窓の端末へ移す（1 回だけ）。
+// 既に窓の端末にあれば（herdr app が窓にキーボードを渡した）呼ばない。利用者が窓を開いた後に別のペインへ移っていれば、引き戻さない。
+async function focusPopup(p) {
+  if (p.focusAt == null || Date.now() < p.focusAt) return;
+  p.focusAt = null;
+  const term = p.on ? `${p.on}/${p.terminal}` : p.terminal;
+  let f = null;
+  try {
+    f = focused();
+  } catch {
+    f = null;
+  }
+  if (f && (f.terminal === term || f.terminal === p.terminal)) return;
+  if (f && f.terminal !== (p.on ? `${p.on}/${p.from}` : p.from) && f.terminal !== p.from) return;
+  await command("pane.focus", { terminal: term }).catch(() => {});
+}
+
+// paneShowing は、マシン on の端末 address を出しているペインの ID を panes() から返す。無ければ null を返す。
+function paneShowing(on, address) {
+  const names = on ? [`${on}/${address}`, address] : [address];
+  try {
+    return (panes() ?? []).find((x) => x && x.id && names.includes(x.terminal))?.id ?? null;
+  } catch {
+    return null;
   }
 }
 
