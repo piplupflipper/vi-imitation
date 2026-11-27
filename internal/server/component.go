@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/piplupflipper/vi-imitation/internal/editor"
@@ -37,6 +38,25 @@ const (
 	popupBusyTimeout = 1500 * time.Millisecond
 	popupBusyRetry   = 50 * time.Millisecond
 )
+
+// herdrAppPopupBusyTimeout は、herdr app の中で、mod の窓が既に開いていて開けないとき（mux.ErrPopupBusy）に、開き直すのを待つ上限である（仮。#452）。
+// herdr app では、前の窓の中身（部品の client、コマンド）が終わってから、mod が次の探索（窓のある間は 0.5 秒ごと）で窓を外すまで busy が続き、
+// 1 回の開き直しも mod の探索 1 回と、別のマシンへの hc の往復を待つ。popupBusyTimeout の 1.5 秒では 1 回程度しか開き直せないので延ばす
+// （PR #453 のレビューの推奨 2）。
+// テストが server を動かしたまま短くするので、atomic で持つ（値は time.Duration）。
+var herdrAppPopupBusyTimeout = func() *atomic.Int64 {
+	v := new(atomic.Int64)
+	v.Store(int64(6 * time.Second))
+	return v
+}()
+
+// popupBusyWait は、端末多重化ソフトの層 m で、ポップアップが既に開いていて開けないときに開き直すのを待つ上限である。
+func popupBusyWait(m mux.Mux) time.Duration {
+	if m.Kind() == mux.KindHerdrApp {
+		return time.Duration(herdrAppPopupBusyTimeout.Load())
+	}
+	return popupBusyTimeout
+}
 
 // componentCommand は、部品 view を描く部品の client を起動するコマンドと、端末多重化ソフトの層を返す。
 // flag は ComponentFlagPopup か ComponentFlagPane である。
@@ -74,18 +94,32 @@ func (s *Server) openPopup(from string, view uint64, dir string, opts editor.Pop
 	}
 	po := popupOptions(from, opts)
 	po.Command = cmd
-	return openPopupRetry(m, po)
+	return s.openPopupRetry(m, po)
 }
 
-// openPopupRetry は、m で中央のポップアップ po を開く。ポップアップが既に開いていれば（mux.ErrPopupBusy）、popupBusyTimeout まで
+// openPopupRetry は、m で中央のポップアップ po を開く。ポップアップが既に開いていれば（mux.ErrPopupBusy）、popupBusyWait まで
 // popupBusyRetry ごとに開き直す。部品の client（openPopup）と :terminal.popup（runPopup）が同じ扱いにするためにまとめた。
-func openPopupRetry(m mux.Mux, po mux.PopupOptions) error {
-	deadline := time.Now().Add(popupBusyTimeout)
+// 1 回に待つ上限は、ペインの分割と同じ（splitWait。herdr app では mod の結果を待つ。#452）で、server の終わりで打ち切る。
+// herdr app の mod が無いか古くて開けなければ、次からは client の画面の中に描くように覚え直す（herdrPopups.fail）。
+//
+// req: FR-326
+func (s *Server) openPopupRetry(m mux.Mux, po mux.PopupOptions) error {
+	deadline := time.Now().Add(popupBusyWait(m))
+	herdrApp := m.Kind() == mux.KindHerdrApp
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), splitTimeout)
+		if herdrApp {
+			herdrTrace("open", "target", po.Target, "argv", po.Command.Args)
+		}
+		ctx, cancel := context.WithTimeout(s.muxContext(), splitWait(m))
 		err := m.OpenPopup(ctx, po)
 		cancel()
+		if herdrApp {
+			herdrTrace("opened", "target", po.Target, "err", err)
+		}
 		if !errors.Is(err, mux.ErrPopupBusy) || time.Now().After(deadline) {
+			if err != nil && s.herdrPopups != nil {
+				s.herdrPopups.fail(err)
+			}
 			return herdrHint(err)
 		}
 		time.Sleep(popupBusyRetry)
@@ -110,7 +144,7 @@ func (s *Server) runPopup(from string, argv []string, dir string, opts editor.Po
 	// 同じ window（タブ）の server に繋ぐように、from のペインを知らせる（mux.InPane。FR-59）。
 	po.Command = mux.InPane(m, from, mux.Command{Args: argv, Dir: dir})
 	po.KeepOnFailure = true
-	return openPopupRetry(m, po)
+	return s.openPopupRetry(m, po)
 }
 
 // popupScreenWidth は、editor.Config.PopupScreenWidth である（FR-149）。元のペイン from の上にポップアップを出す端末の列数を返す。
@@ -171,9 +205,13 @@ func herdrHint(err error) error {
 		return fmt.Errorf("herdr app に vi-imitation の mod が入っていないか、herdr app が動いていません"+
 			"（<配布物>/herdr-app-mod を herdr app の mods/vi-imitation に置いてください）: %w", err)
 	}
+	if errors.Is(err, mux.ErrHerdrAppModOutdated) {
+		// mod が依頼の操作を知らない（#452 より前の mod）。
+		return fmt.Errorf("herdr app の vi-imitation の mod が古いので、配布物の herdr-app-mod を入れ直してください: %w", err)
+	}
 	if errors.Is(err, mux.ErrHerdrAppSlow) {
 		// mod は入っていて引き受けたが、herdr app の命令が期限までに終わらなかった（#448 のレビューの推奨 1）。
-		return fmt.Errorf("herdr app の vi-imitation の mod がペインの分割を終えませんでした: %w", err)
+		return fmt.Errorf("herdr app の vi-imitation の mod が依頼（ペインの分割かポップアップ）を終えませんでした: %w", err)
 	}
 	return err
 }
@@ -193,7 +231,11 @@ func (s *Server) serveComponent(a *acceptor, conn protocol.ServerConn, h protoco
 	t := s.newTerm()
 	t.attach(editor.ClientID(s.nextID.Add(1)), conn, h)
 	s.track(t)
-	if err := s.ed.AttachComponent(t, editor.ComponentInfo{View: h.View, Pane: h.Kind == protocol.KindPane, MuxPane: h.Pane}); err != nil {
+	err := s.ed.AttachComponent(t, editor.ComponentInfo{View: h.View, Pane: h.Kind == protocol.KindPane, MuxPane: h.Pane})
+	if s.herdrPopups != nil {
+		herdrTrace("component", "view", h.View, "pane", h.Pane, "err", err)
+	}
+	if err != nil {
 		s.log.Info("部品の client を断った", "kind", h.Kind, "view", h.View, "err", err)
 		t.end("")
 		return

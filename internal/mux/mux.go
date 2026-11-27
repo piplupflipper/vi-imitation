@@ -65,6 +65,7 @@ var ErrUnsupported = errors.New("mux: no terminal multiplexer")
 
 // ErrPopupBusy は、ポップアップが既に開いていて、新しいポップアップを開けなかったことを表す。
 // tmux も herdr も、1 つの画面（tmux の client、herdr の端末）にポップアップを 1 つしか開かない。
+// herdr app の mod も、1 つの herdr app に自分の窓を 1 つしか開かない（#452）。
 var ErrPopupBusy = errors.New("mux: a popup is already open")
 
 // ErrFocusAfterSplit は、Mux.SplitPane がペインを開いた後に、SplitOptions.Focus のとおりにフォーカスを移せなかったことを表す
@@ -171,6 +172,7 @@ type Mux interface {
 	// tmux では、この層が target に開いたポップアップがまだ開いているときだけ閉じ、そうでなければ何もせずに nil を返す。
 	// herdr では、開いているポップアップを、誰が開いたものかを問わず閉じる（popup.close は引数を取らず、
 	// 開いたポップアップの ID も返らないため。herdr 0.9.0）。利用者が入れた他のプラグイン（starkeep など）のポップアップも閉じうる。
+	// herdr app では、mod が target の端末から開いた窓だけを閉じる（#452）。
 	// このため server が自分のポップアップを閉じるときは、ポップアップの部品の client へ server のソケットで終わりを伝える形を基本にし、
 	// ClosePopup は部品の client が応答しないときの最後の手段にする。
 	ClosePopup(ctx context.Context, target string) error
@@ -311,8 +313,14 @@ const herdrPaneScript = `HERDR_PANE_ID=$` + herdrPaneEnv + `; export HERDR_PANE_
 // herdr 0.9.0 のプラグインのポップアップには、HERDR_ENV と HERDR_SOCKET_PATH は入るが HERDR_PANE_ID は入らず、plugin.pane.open の env で
 // HERDR_PANE_ID を渡しても中のプロセスに届かなかった（2026-11-21 に確かめた。ほかの名前の環境変数は届いた）。
 // このため別の名前（herdrPaneEnv）で渡し、中で HERDR_PANE_ID に入れ直してから c を exec する sh のスクリプト（herdrPaneScript）で包む。
+// herdr app の窓（HerdrApp.OpenPopup）の端末は hc run で起動した別の端末で、中の HC_TERMINAL_ID はその端末の番地になり、
+// herdr app のタブのラベル（herdr.tab）も無い。このため HC_TERMINAL_ID に pane を入れる（env で足すので、hc run の入れた値より後に効く。FR-327）。
+//
+// req: FR-327
 func InPane(m Mux, pane string, c Command) Command {
 	switch m.(type) {
+	case *HerdrApp:
+		c.Env = withEnv(c.Env, "HC_TERMINAL_ID", pane)
 	case *Tmux:
 		c.Env = withEnv(c.Env, "TMUX_PANE", pane)
 	case *Herdr:

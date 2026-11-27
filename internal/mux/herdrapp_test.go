@@ -324,10 +324,159 @@ func TestHerdrAppOtherOperations(t *testing.T) {
 	if u, err := a.Unit(ctx); err != nil || u != "/run/hc.sock:tb1" {
 		t.Errorf("Unit = %q, %v; want /run/hc.sock:tb1", u, err)
 	}
-	if err := a.OpenPopup(ctx, PopupOptions{}); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("OpenPopup = %v, want ErrUnsupported", err)
+}
+
+// herdr app の中の中央のポップアップは、元の端末に popup の依頼を書き、mod の結果を待って戻る（#452）。
+// 依頼には、環境変数を env で足したコマンド、作業ディレクトリ、大きさの百分率が入り、KeepOnFailure なら 0 でないときにキーを待つ
+// スクリプトで包む。終わった後には依頼も結果も印も残らない。ClosePopup は、元の端末に popup_close の依頼を書く。
+//
+// req: FR-325
+func TestHerdrAppOpenPopup(t *testing.T) {
+	a, hc := newHerdrApp(t)
+	hc.ServeMod(t, func(string, muxtest.Request) muxtest.Reply { return muxtest.Reply{Terminal: "t20"} })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := Command{Args: []string{"/bin/sh", "-c", "git log"}, Env: map[string]string{"B": "2", "A": "1"}, Dir: "/work"}
+	if err := a.OpenPopup(ctx, PopupOptions{Target: "t8", Width: 90, Height: 80, Command: cmd}); err != nil {
+		t.Fatalf("OpenPopup = %v", err)
 	}
-	if err := a.ClosePopup(ctx, "t7"); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("ClosePopup = %v, want ErrUnsupported", err)
+	if err := a.OpenPopup(ctx, PopupOptions{Target: "t8", Command: cmd, KeepOnFailure: true}); err != nil {
+		t.Fatalf("OpenPopup(KeepOnFailure) = %v", err)
+	}
+	if err := a.ClosePopup(ctx, "t8"); err != nil {
+		t.Fatalf("ClosePopup = %v", err)
+	}
+	got := hc.Served()
+	if len(got) != 3 {
+		t.Fatalf("依頼 = %+v, want 3 つ", got)
+	}
+	want := []muxtest.Request{
+		{ID: got[0].Request.ID, Op: "popup", Argv: []string{"env", "A=1", "B=2", "/bin/sh", "-c", "git log"}, Cwd: "/work", Width: 90, Height: 80},
+		{ID: got[1].Request.ID, Op: "popup", Argv: []string{"env", "A=1", "B=2", "sh", "-c", keepScript, "sh", "/bin/sh", "-c", "git log"}, Cwd: "/work"},
+		{ID: got[2].Request.ID, Op: "popup_close"},
+	}
+	for i, s := range got {
+		if s.Terminal != "t8" || !reflect.DeepEqual(s.Request, want[i]) {
+			t.Errorf("依頼 %d = %+v, want 端末 t8 の %+v", i, s, want[i])
+		}
+	}
+	if labels := hc.Labels(t, "t8"); len(labels) != 0 {
+		t.Errorf("終わった後のラベル = %v, want なし", labels)
+	}
+	if err := a.OpenPopup(ctx, PopupOptions{Command: cmd}); !errors.Is(err, ErrNoTarget) {
+		t.Errorf("OpenPopup(Target が空) = %v, want ErrNoTarget", err)
+	}
+	if err := a.OpenPopup(ctx, PopupOptions{Target: "t8", Width: 120, Command: cmd}); err == nil {
+		t.Error("OpenPopup(幅 120) = nil, want 誤り")
+	}
+}
+
+// mod が窓を既に開いていれば（Busy）、OpenPopup は ErrPopupBusy を返す。mod が popup を知らなければ（古い mod。unknown op）、
+// OpenPopup と ClosePopup は ErrHerdrAppModOutdated を返す。mod が入っていなければ ErrHerdrAppNoReply を返す。
+//
+// req: FR-325
+func TestHerdrAppOpenPopupErrors(t *testing.T) {
+	a, hc := newHerdrApp(t)
+	var mu sync.Mutex
+	reply := muxtest.Reply{Busy: true, Error: "a vi-imitation popup is already open"}
+	hc.ServeMod(t, func(string, muxtest.Request) muxtest.Reply {
+		mu.Lock()
+		defer mu.Unlock()
+		return reply
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	opts := PopupOptions{Target: "t8", Command: Command{Args: []string{"true"}}}
+	if err := a.OpenPopup(ctx, opts); !errors.Is(err, ErrPopupBusy) {
+		t.Errorf("OpenPopup = %v, want ErrPopupBusy", err)
+	}
+	mu.Lock()
+	reply = muxtest.Reply{Error: "unknown op popup"}
+	mu.Unlock()
+	if err := a.OpenPopup(ctx, opts); !errors.Is(err, ErrHerdrAppModOutdated) {
+		t.Errorf("OpenPopup（古い mod）= %v, want ErrHerdrAppModOutdated", err)
+	}
+	if err := a.ClosePopup(ctx, "t8"); !errors.Is(err, ErrHerdrAppModOutdated) {
+		t.Errorf("ClosePopup（古い mod）= %v, want ErrHerdrAppModOutdated", err)
+	}
+
+	b, _ := newHerdrApp(t)
+	nctx, ncancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer ncancel()
+	if err := b.OpenPopup(nctx, opts); !errors.Is(err, ErrHerdrAppNoReply) {
+		t.Errorf("OpenPopup（mod なし）= %v, want ErrHerdrAppNoReply", err)
+	}
+}
+
+// PopupSupported は、mod に hello を問い、答えの操作に popup があるかを返す。hello を知らない mod（#452 より前）なら false と nil、
+// mod が入っていなければ false と ErrHerdrAppNoReply を返す。
+//
+// req: FR-326
+func TestHerdrAppPopupSupported(t *testing.T) {
+	a, hc := newHerdrApp(t)
+	var mu sync.Mutex
+	reply := muxtest.Reply{Ops: []string{"split", "popup"}}
+	hc.ServeMod(t, func(_ string, req muxtest.Request) muxtest.Reply {
+		if req.Op != "hello" {
+			return muxtest.Reply{Error: "unexpected op " + req.Op}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return reply
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if ok, err := a.PopupSupported(ctx, "t7"); !ok || err != nil {
+		t.Errorf("PopupSupported = %v, %v; want true", ok, err)
+	}
+	for _, r := range []muxtest.Reply{{Ops: []string{"split"}}, {Error: "unknown op hello"}} {
+		mu.Lock()
+		reply = r
+		mu.Unlock()
+		if ok, err := a.PopupSupported(ctx, "t7"); ok || err != nil {
+			t.Errorf("PopupSupported（%+v）= %v, %v; want false, nil", r, ok, err)
+		}
+	}
+	if ok, err := a.PopupSupported(ctx, ""); ok || !errors.Is(err, ErrNoTarget) {
+		t.Errorf("PopupSupported(空) = %v, %v; want ErrNoTarget", ok, err)
+	}
+
+	b, _ := newHerdrApp(t)
+	nctx, ncancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer ncancel()
+	if ok, err := b.PopupSupported(nctx, "t7"); ok || !errors.Is(err, ErrHerdrAppNoReply) {
+		t.Errorf("PopupSupported（mod なし）= %v, %v; want false と ErrHerdrAppNoReply", ok, err)
+	}
+}
+
+// InPane は、herdr app の窓の端末（hc run で起動した別の端末。中の HC_TERMINAL_ID はその端末）で動かすコマンドの HC_TERMINAL_ID を、
+// 下のペインの端末にする。OpenPopup が env で足すので、hc run の入れた値より後に効き、中で Detect すると下のペインを自分のペインとする。
+//
+// req: FR-327
+func TestInPaneHerdrApp(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh が無い")
+	}
+	m := &HerdrApp{Bin: "/bin/hc", Socket: "/run/hc.sock", Terminal: "t7"}
+	show := []string{"sh", "-c", `printf '%s\n%s\n' "$HC_TERMINAL_ID" "$HC_TERMINAL_SOCKET"`}
+	c := InPane(m, "t8", Command{Args: show, Env: map[string]string{"A": "1"}})
+	if c.Env["A"] != "1" {
+		t.Errorf("元の環境変数を落とした: %v", c.Env)
+	}
+	argv := herdrAppEnvArgv(c)
+	cmd := exec.CommandContext(testCtx(t), argv[0], argv[1:]...) //nolint:gosec // InPane と OpenPopup が包んだコマンドを試す
+	// hc run が窓の端末に入れる環境の代わり。
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HC_TERMINAL_ID=t20", "HC_TERMINAL_SOCKET=/run/hc.sock"}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("出力 = %q", out)
+	}
+	got := Detect(envOf(map[string]string{"HC_TERMINAL_ID": lines[0], "HC_TERMINAL_SOCKET": lines[1]}))
+	if want := (&HerdrApp{Socket: "/run/hc.sock", Terminal: "t8"}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Detect = %#v, want %#v", got, want)
 	}
 }

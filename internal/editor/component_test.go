@@ -108,6 +108,63 @@ func (h *harness) clientOf(term Terminal) *clientView {
 	return nil
 }
 
+// Config.PopupAwaitRemote（herdr app）なら、OpenPopup を頼んでから部品の client が繋ぐまで、中央のポップアップを元の client の画面に描かない
+// （画面の中に描いてから窓へ移るちらつきを出さない）。繋いだら部品の client の画面に描く。
+// OpenPopup が誤りを返したら、元の client の画面に描いて理由を出す。成功しても PopupAwaitTimeout までに繋がなければ、画面に描いて知らせる。
+//
+// req: FR-325
+func TestComponentPopupAwaitRemote(t *testing.T) {
+	var calls muxCalls
+	cfg := Config{Extensions: fakeSpecs(t), PopupAwaitRemote: true, PopupAwaitTimeout: 300 * time.Millisecond}
+	calls.config(&cfg)
+	h := start(t, cfg)
+	peer := h.attach(ClientInfo{ID: 2, Pane: "t7"})
+
+	peer.keys(":fake.popup list<CR>")
+	h.eventually("OpenPopup", func() bool { _, ok := calls.last(false); return ok })
+	call, _ := calls.last(false)
+	h.settle()
+	if strings.Contains(peer.term.screen(), "close me") {
+		t.Fatalf("部品の client が繋ぐ前に、元の client の画面に描いた:\n%s", peer.term.screen())
+	}
+	comp := h.attachComponent(call.view, false)
+	comp.waitScreen("close me")
+	h.settle()
+	if strings.Contains(peer.term.screen(), "close me") {
+		t.Errorf("部品の client が繋いだ後に、元の client の画面に描いた")
+	}
+	// 待つ上限を過ぎても、繋いだ後は何も出さない。
+	time.Sleep(400 * time.Millisecond)
+	h.settle()
+	var msg string
+	h.e.do(func() { msg = h.e.viewOf(h.clientOf(peer.term)).message.Text })
+	if strings.Contains(peer.term.screen(), "close me") || strings.Contains(msg, "画面の中に出します") {
+		t.Errorf("繋いだ後に画面の中に描いた: %q", msg)
+	}
+	comp.keys("<Esc>")
+	h.eventually("閉じる", func() bool { return h.e.viewOf(h.clientOf(peer.term)).float == nil })
+
+	// 開けたと答えたのに繋がなければ、上限の後に画面の中に描いて知らせる。
+	peer.keys(":fake.popup list<CR>")
+	h.eventually("2 つ目の OpenPopup", func() bool { c, _ := calls.last(false); return c.view != call.view })
+	h.settle()
+	if strings.Contains(peer.term.screen(), "close me") {
+		t.Fatal("繋ぐ前に描いた")
+	}
+	h.waitMessage("端末多重化ソフトのポップアップに部品が出ないので、この画面の中に出します")
+	h.eventually("上限の後の画面の中のポップアップ", func() bool { return strings.Contains(peer.term.screen(), "close me") })
+	peer.keys("<Esc>")
+	h.eventually("閉じる", func() bool { return h.e.viewOf(h.clientOf(peer.term)).float == nil })
+
+	// 開けなければ、すぐ画面の中に描いて理由を出す。
+	calls.mu.Lock()
+	calls.fail = errors.New("no mod")
+	calls.mu.Unlock()
+	peer.keys(":fake.popup list<CR>")
+	h.waitMessage("端末多重化ソフトのポップアップを開けないので、この画面の中に出します: no mod")
+	h.eventually("画面の中のポップアップ", func() bool { return strings.Contains(peer.term.screen(), "close me") })
+}
+
 // 端末多重化ソフトの中（client のペインを知っている）で中央のポップアップを開くと、Config.OpenPopup で端末多重化ソフトの
 // ポップアップを開かせる。ポップアップの部品の client が繋ぐまでは元の client の画面の中央に描き、繋いだら部品の client の画面に
 // 部品を広げて描き、元の client の画面には描かない。部品の client で打ったキーは元の client の操作になり（popupKeys、<CR>、<Esc>）、

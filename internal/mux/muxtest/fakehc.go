@@ -157,17 +157,22 @@ type Request struct {
 	Op        string   `json:"op"`
 	Direction string   `json:"direction,omitempty"`
 	Argv      []string `json:"argv,omitempty"`
+	Cwd       string   `json:"cwd,omitempty"`
+	Width     int      `json:"width,omitempty"`
+	Height    int      `json:"height,omitempty"`
 	Focus     bool     `json:"focus"`
 	Terminal  string   `json:"terminal,omitempty"`
 }
 
 // Reply は、mod が書き返す結果である（internal/mux の herdrAppReply と同じ形）。
 type Reply struct {
-	ID         string `json:"id"`
-	Error      string `json:"error,omitempty"`
-	Terminal   string `json:"terminal,omitempty"`
-	FocusError string `json:"focus_error,omitempty"`
-	Focused    bool   `json:"focused,omitempty"`
+	ID         string   `json:"id"`
+	Error      string   `json:"error,omitempty"`
+	Terminal   string   `json:"terminal,omitempty"`
+	FocusError string   `json:"focus_error,omitempty"`
+	Focused    bool     `json:"focused,omitempty"`
+	Busy       bool     `json:"busy,omitempty"`
+	Ops        []string `json:"ops,omitempty"`
 }
 
 // ServeMod は、mod の依頼の処理を真似た偽の係を、テストが終わるまで別の goroutine で動かす。
